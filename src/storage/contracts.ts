@@ -1,0 +1,134 @@
+import type { DatabaseDefinition } from '../database/schema.js';
+import type { Note } from '../domain/note.js';
+
+export interface NoteSummary {
+  id: string;
+  path: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface DatabaseSummary {
+  id: string;
+  name: string;
+  path: string;
+  propertyCount: number;
+}
+
+export type StorageIssueCode =
+  | 'INVALID_CONTENT'
+  | 'UNSUPPORTED_VERSION'
+  | 'DUPLICATE_ID'
+  | 'UNSAFE_PATH'
+  | 'INCOMPLETE_WRITE';
+
+export interface StorageIssue {
+  code: StorageIssueCode;
+  /** Workspace-relative path using `/` separators. */
+  path: string;
+  message: string;
+}
+
+export interface StorageHealth {
+  notes: NoteSummary[];
+  databases: DatabaseSummary[];
+  issues: StorageIssue[];
+}
+
+/** One serialized document, as stored or about to be stored. */
+export interface VaultEntry {
+  kind: 'note' | 'database';
+  id: string;
+  path: string;
+  text: string;
+}
+
+export interface NoteStore {
+  listNotes(): Promise<NoteSummary[]>;
+  readNote(id: string): Promise<Note>;
+  readNoteAtPath(path: string): Promise<Note>;
+  /** Fails with `CONFLICT` if the path exists or `DUPLICATE_ID` if the ID exists. */
+  createNote(note: Note): Promise<void>;
+  /** Replaces an existing note; the path may not change. Fails with `NOT_FOUND` or `CONFLICT`. */
+  replaceNote(note: Note): Promise<void>;
+  /** Moves a note to a new relative path, keeping its ID and bytes. */
+  moveNote(id: string, toPath: string): Promise<Note>;
+  deleteNote(id: string): Promise<void>;
+}
+
+export interface DatabaseStore {
+  listDatabases(): Promise<DatabaseSummary[]>;
+  readDatabase(id: string): Promise<DatabaseDefinition>;
+  createDatabase(database: DatabaseDefinition): Promise<void>;
+  replaceDatabase(database: DatabaseDefinition): Promise<void>;
+  deleteDatabase(id: string): Promise<void>;
+}
+
+export interface ImportOptions {
+  /** Required to replace existing notes or databases. Defaults to false. */
+  overwrite?: boolean;
+}
+
+export interface ImportReport {
+  notes: number;
+  databases: number;
+}
+
+export interface ImportPlan {
+  entries: VaultEntry[];
+  notes: Note[];
+  databases: DatabaseDefinition[];
+}
+
+export interface ExportReport {
+  targetDir: string;
+  notes: number;
+  databases: number;
+}
+
+export interface BackupManifestFile {
+  kind: 'note' | 'database';
+  id: string;
+  path: string;
+  sha256: string;
+}
+
+export interface BackupManifest {
+  format: 'nodus-backup';
+  version: 1;
+  createdAt: string;
+  files: BackupManifestFile[];
+}
+
+export interface BackupReport {
+  targetDir: string;
+  notes: number;
+  databases: number;
+}
+
+export interface BackupValidation {
+  manifest: BackupManifest;
+  entries: VaultEntry[];
+  notes: Note[];
+  databases: DatabaseDefinition[];
+}
+
+export interface BackupOptions {
+  /** Injectable clock for deterministic manifests and tests. */
+  now?: string;
+}
+
+/**
+ * The complete local vault contract.
+ *
+ * Implementations must not change the Phase 1 note or database formats.
+ */
+export interface VaultStorage extends NoteStore, DatabaseStore {
+  readonly root: string;
+  /** All valid documents as raw text, notes first, each group sorted by path. */
+  snapshot(): Promise<VaultEntry[]>;
+  /** Non-throwing diagnostic scan. I/O errors are still thrown. */
+  checkHealth(): Promise<StorageHealth>;
+  /** Applies a plan produced by `planImport`, validating every conflict first. */
+  applyImport(plan: ImportPlan, options?: ImportOptions): Promise<ImportReport>;
+}

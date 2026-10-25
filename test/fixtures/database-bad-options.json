@@ -1,0 +1,23 @@
+{
+  "format": "nodus-database",
+  "version": 1,
+  "id": "c2853739-8e0f-4a1b-9c2d-4e5f60718293",
+  "name": "Bad options",
+  "properties": [
+    {
+      "id": "d3964850-9f1a-4b2c-8d3e-5f6071829304",
+      "name": "Status",
+      "type": "select",
+      "options": [
+        {
+          "id": "e4a75961-0a2b-4c3d-9e4f-6071829304a5",
+          "name": "Done"
+        },
+        {
+          "id": "f5b86a72-1b3c-4d4e-8f50-718293a4b5c6",
+          "name": "Done"
+        }
+      ]
+    }
+  ]
+}
