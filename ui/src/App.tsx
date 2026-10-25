@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Menu } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import type {
   UiDatabase,
   UiNote,
@@ -12,10 +14,8 @@ import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
 import { Editor } from './Editor';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
-import { NoteList } from './NoteList';
 import { SettingsView } from './SettingsView';
 import { Sidebar } from './Sidebar';
-import { Button } from '@/components/ui/button';
 import type { SaveState, View } from './types';
 
 type ModalState =
@@ -28,7 +28,7 @@ const THEME_KEY = 'nodus-ui-theme';
 function initialTheme(): 'light' | 'dark' {
   const stored = window.localStorage.getItem(THEME_KEY);
   if (stored === 'light' || stored === 'dark') return stored;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return 'light';
 }
 
 function messageOf(error: unknown): string {
@@ -60,9 +60,11 @@ export default function App() {
 
   const [activeNote, setActiveNote] = useState<UiNote | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
-  const [noteLoading, setNoteLoading] = useState(false);
+  const [noteLoading, setNoteLoading] = useState(true);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftBody, setDraftBody] = useState('');
+  const [draftIcon, setDraftIcon] = useState<string | null>(null);
+  const [iconTouched, setIconTouched] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -78,6 +80,8 @@ export default function App() {
   const [commandOpen, setCommandOpen] = useState(false);
 
   const [theme, setTheme] = useState<'light' | 'dark'>(initialTheme);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -135,8 +139,10 @@ export default function App() {
     setSelectedNoteId(null);
     setDraftTitle('');
     setDraftBody('');
+    setDraftIcon(null);
+    setIconTouched(false);
     setDirty(false);
-    setSaveState('saved');
+    setSaveState('idle');
     setEditorError(null);
     setView('notes');
     await Promise.all([refreshNotes(), refreshDatabases()]);
@@ -202,13 +208,16 @@ export default function App() {
     setSelectedNoteId(id);
     setNoteLoading(true);
     setEditorError(null);
+    setSidebarOpen(false);
     try {
       const { note } = await api.note(id);
       setActiveNote(note);
       setDraftTitle(note.title);
       setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setIconTouched(false);
       setDirty(false);
-      setSaveState('saved');
+      setSaveState('idle');
     } catch (error) {
       setActiveNote(null);
       setEditorError(messageOf(error));
@@ -251,17 +260,22 @@ export default function App() {
               setActiveNote(result.note);
               setDraftTitle(result.note.title);
               setDraftBody(result.note.body);
+              setDraftIcon(result.note.icon);
+              setIconTouched(false);
               setDirty(false);
-              setSaveState('saved');
+              setSaveState('idle');
             }
           } catch (error) {
             if (!cancelled) setEditorError(messageOf(error));
           } finally {
             if (!cancelled) setNoteLoading(false);
           }
+        } else {
+          setNoteLoading(false);
         }
       } else {
         setNotesError(messageOf(notesResult.reason));
+        setNoteLoading(false);
       }
       setNotesLoading(false);
 
@@ -279,12 +293,6 @@ export default function App() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (searchError === null) return;
-    const timer = window.setTimeout(() => setSearchError(null), 5000);
-    return () => window.clearTimeout(timer);
-  }, [searchError]);
 
   useEffect(() => {
     const q = query.trim();
@@ -346,11 +354,14 @@ export default function App() {
       const { note } = await api.createNote({ title: 'Untitled note' });
       setView('notes');
       setQuery('');
+      setSidebarOpen(false);
       await refreshNotes(true);
       setSelectedNoteId(note.id);
       setActiveNote(note);
       setDraftTitle(note.title);
       setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setIconTouched(false);
       setDirty(false);
       setSaveState('saved');
       setEditorError(null);
@@ -370,10 +381,13 @@ export default function App() {
         title: draftTitle,
         body: draftBody,
         baseHash: activeNote.contentHash,
+        ...(iconTouched ? { icon: draftIcon } : {}),
       });
       setActiveNote(note);
       setDraftTitle(note.title);
       setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setIconTouched(false);
       setDirty(false);
       setSaveState('saved');
       await refreshNotes(true);
@@ -397,8 +411,10 @@ export default function App() {
       setActiveNote(note);
       setDraftTitle(note.title);
       setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setIconTouched(false);
       setDirty(false);
-      setSaveState('saved');
+      setSaveState('idle');
     } catch (error) {
       setEditorError(messageOf(error));
     } finally {
@@ -406,8 +422,19 @@ export default function App() {
     }
   }
 
+  function changePageIcon(icon: string | null): void {
+    setDraftIcon(icon);
+    setIconTouched(true);
+    setDirty(true);
+    setSaveState('idle');
+  }
+
   function requestRename(): void {
     if (activeNote === null) return;
+    if (dirty) {
+      const proceed = window.confirm('Discard unsaved changes and rename this page?');
+      if (!proceed) return;
+    }
     setRenameValue(activeNote.path);
     setModalError(null);
     setModal({ type: 'rename', note: activeNote });
@@ -425,6 +452,8 @@ export default function App() {
       setActiveNote(note);
       setDraftTitle(note.title);
       setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setIconTouched(false);
       setDirty(false);
       setSaveState('saved');
       setModal(null);
@@ -447,6 +476,8 @@ export default function App() {
       setSelectedNoteId(null);
       setDraftTitle('');
       setDraftBody('');
+      setDraftIcon(null);
+      setIconTouched(false);
       setDirty(false);
       setSaveState('saved');
       setEditorError(null);
@@ -462,20 +493,25 @@ export default function App() {
     const handler = (event: KeyboardEvent) => {
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
+      if (modal !== null) return;
       const key = event.key.toLowerCase();
       if (key === 'k') {
         event.preventDefault();
-        setCommandOpen(true);
+        if (!commandOpen && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        setCommandOpen((open) => !open);
         return;
       }
+      if (commandOpen) return;
       if (key === 'n') {
         event.preventDefault();
-        if (modal === null) void createNote();
+        void createNote();
         return;
       }
       if (key === 's') {
         event.preventDefault();
-        if (modal === null) void saveNote();
+        void saveNote();
       }
     };
     window.addEventListener('keydown', handler);
@@ -485,7 +521,7 @@ export default function App() {
   if (status === null && statusError !== null) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
-        <div className="mb-4 grid size-11 place-items-center rounded-xl bg-primary text-lg font-bold text-primary-foreground">
+        <div className="mb-4 grid size-10 place-items-center rounded-lg bg-primary text-base font-semibold text-primary-foreground">
           N
         </div>
         <h1 className="text-xl font-semibold tracking-tight">Cannot open the local vault</h1>
@@ -500,28 +536,64 @@ export default function App() {
     );
   }
 
-  const visibleNotes: Array<UiNoteSummary | UiSearchResult> =
-    query.trim() === '' ? notes : searchResults;
-
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
-      <Sidebar
-        view={view}
-        onView={(next) => {
-          setView(next);
-          if (next === 'notes') setQuery('');
-        }}
-        query={query}
-        onQueryChange={setQuery}
-        searchRef={searchRef}
-        onCreate={() => void createNote()}
-        creating={creating}
-        status={status}
-        theme={theme}
-        onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-      />
+    <div
+      className={cn(
+        'flex h-dvh flex-col overflow-hidden bg-background text-foreground md:grid',
+        focusMode ? 'md:grid-cols-1' : 'md:grid-cols-[240px_minmax(0,1fr)]',
+        'md:grid-rows-1',
+      )}
+    >
+      {focusMode ? null : (
+        <Sidebar
+          view={view}
+          onView={(next) => {
+            setView(next);
+          }}
+          query={query}
+          onQueryChange={setQuery}
+          searchRef={searchRef}
+          onCreate={() => void createNote()}
+          creating={creating}
+          status={status}
+          theme={theme}
+          onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          notes={notes}
+          results={searchResults}
+          selectedId={selectedNoteId}
+          loading={notesLoading}
+          searching={searching}
+          searchError={query.trim() === '' ? notesError : searchError}
+          onOpen={(id) => void openNoteById(id)}
+          onClearSearch={() => setQuery('')}
+          onRetry={() => void refreshNotes()}
+          open={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
 
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3 md:hidden">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Open navigation"
+            onClick={() => {
+              setFocusMode(false);
+              setSidebarOpen(true);
+            }}
+          >
+            <Menu />
+          </Button>
+          <div className="min-w-0">
+            <div className="truncate text-xs font-semibold">{activeNote?.title ?? status?.vault.name ?? 'Nodus'}</div>
+            <div className="truncate font-mono text-[9.5px] text-muted-foreground">
+              {activeNote?.path ?? 'Local workspace'}
+            </div>
+          </div>
+        </div>
+
         {statusError !== null ? (
           <div className="flex items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-4 py-1.5 text-xs text-destructive">
             <span className="flex min-w-0 items-center gap-2">
@@ -541,48 +613,40 @@ export default function App() {
         ) : null}
 
         {view === 'notes' ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[320px_minmax(0,1fr)]">
-            <NoteList
-              items={visibleNotes}
-              query={query}
-              selectedId={selectedNoteId}
-              loading={query.trim() === '' ? notesLoading : false}
-              searching={searching}
-              error={query.trim() === '' ? notesError : searchError}
-              onCreate={() => void createNote()}
-              onOpen={(id) => void openNoteById(id)}
-              onClearSearch={() => setQuery('')}
-              onRetry={() => void refreshNotes()}
-            />
-            <Editor
-              note={activeNote}
-              loading={noteLoading}
-              title={draftTitle}
-              body={draftBody}
-              dirty={dirty}
-              saveState={saveState}
-              error={editorError}
-              onTitleChange={(value) => {
-                setDraftTitle(value);
-                setDirty(true);
-                setSaveState('idle');
-              }}
-              onBodyChange={(value) => {
-                setDraftBody(value);
-                setDirty(true);
-                setSaveState('idle');
-              }}
-              onSave={() => void saveNote()}
-              onReload={() => void reloadNote()}
-              onRename={requestRename}
-              onDelete={() => {
-                if (activeNote !== null) {
-                  setModalError(null);
-                  setModal({ type: 'delete', note: activeNote });
-                }
-              }}
-            />
-          </div>
+          <Editor
+            note={activeNote}
+            notes={notes}
+            icon={draftIcon}
+            onIconChange={changePageIcon}
+            loading={noteLoading}
+            title={draftTitle}
+            body={draftBody}
+            dirty={dirty}
+            saveState={saveState}
+            error={editorError}
+            focusMode={focusMode}
+            onToggleFocus={() => setFocusMode((value) => !value)}
+            onTitleChange={(value) => {
+              setDraftTitle(value);
+              setDirty(true);
+              setSaveState('idle');
+            }}
+            onBodyChange={(value) => {
+              setDraftBody(value);
+              setDirty(true);
+              setSaveState('idle');
+            }}
+            onSave={() => void saveNote()}
+            onReload={() => void reloadNote()}
+            onRename={requestRename}
+            onDelete={() => {
+              if (activeNote !== null) {
+                setModalError(null);
+                setModal({ type: 'delete', note: activeNote });
+              }
+            }}
+            onOpenNote={(id) => void openNoteById(id)}
+          />
         ) : null}
 
         {view === 'databases' ? (

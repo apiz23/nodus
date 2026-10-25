@@ -272,6 +272,137 @@ describe('local UI API', () => {
     });
   });
 
+  it('sets, removes, and preserves the page icon through saves', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const original = noteFixture(N1, 'Research note', 'notes/research.md', 'Original\n');
+      await mkdir(join(vaultPath, 'notes'), { recursive: true });
+      await writeFile(join(vaultPath, original.path), serializeNote(original), 'utf8');
+
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: { icon: string | null; metadataKeys: string[]; contentHash: string } }>(
+          started.base,
+          `/api/notes/${N1}`,
+        );
+        expect(opened.body.note.icon).toBeNull();
+
+        const set = await json<{ note: { icon: string | null } }>(started.base, `/api/notes/${N1}`, {
+          method: 'PUT',
+          body: {
+            title: 'Research note',
+            body: 'Edited body\n',
+            baseHash: opened.body.note.contentHash,
+            icon: '📘',
+          },
+        });
+        expect(set.status).toBe(200);
+        expect(set.body.note.icon).toBe('📘');
+
+        const rawWithIcon = await readFile(join(vaultPath, 'notes/research.md'), 'utf8');
+        const reparsedWithIcon = parseNote(rawWithIcon, 'notes/research.md');
+        expect(reparsedWithIcon.extraFrontmatter).toEqual({ project: 'Research', status: 'draft', icon: '📘' });
+
+        const openedAgain = await json<{ note: { contentHash: string } }>(
+          started.base,
+          `/api/notes/${N1}`,
+        );
+        const preserved = await json<{ note: { icon: string | null } }>(
+          started.base,
+          `/api/notes/${N1}`,
+          {
+            method: 'PUT',
+            body: {
+              title: 'Research note',
+              body: 'Edited body again\n',
+              baseHash: openedAgain.body.note.contentHash,
+            },
+          },
+        );
+        expect(preserved.body.note.icon).toBe('📘');
+
+        const openedAfterPreserve = await json<{ note: { contentHash: string } }>(
+          started.base,
+          `/api/notes/${N1}`,
+        );
+        const removed = await json<{ note: { icon: string | null; metadataKeys: string[] } }>(
+          started.base,
+          `/api/notes/${N1}`,
+          {
+            method: 'PUT',
+            body: {
+              title: 'Research note',
+              body: 'Edited body\n',
+              baseHash: openedAfterPreserve.body.note.contentHash,
+              icon: null,
+            },
+          },
+        );
+        expect(removed.body.note.icon).toBeNull();
+        expect(removed.body.note.metadataKeys).toEqual(['project', 'status']);
+
+        const rawAfterRemove = await readFile(join(vaultPath, 'notes/research.md'), 'utf8');
+        const reparsedAfterRemove = parseNote(rawAfterRemove, 'notes/research.md');
+        expect(reparsedAfterRemove.extraFrontmatter).toEqual({ project: 'Research', status: 'draft' });
+
+        const rawWithInvalid = rawAfterRemove.replace('status: draft', 'status: draft\nicon: 123');
+        await writeFile(join(vaultPath, 'notes/research.md'), rawWithInvalid, 'utf8');
+        const openedInvalid = await json<{ note: { icon: string | null; contentHash: string } }>(
+          started.base,
+          `/api/notes/${N1}`,
+        );
+        expect(openedInvalid.body.note.icon).toBeNull();
+        await json(started.base, `/api/notes/${N1}`, {
+          method: 'PUT',
+          body: {
+            title: 'Research note',
+            body: 'Unrelated edit\n',
+            baseHash: openedInvalid.body.note.contentHash,
+          },
+        });
+        const rawPreservedInvalid = await readFile(join(vaultPath, 'notes/research.md'), 'utf8');
+        expect(parseNote(rawPreservedInvalid, 'notes/research.md').extraFrontmatter).toEqual({
+          project: 'Research',
+          status: 'draft',
+          icon: 123,
+        });
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects an invalid icon value', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const created = await json<{ note: { id: string; contentHash: string } }>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'Icon test' },
+        });
+        const saved = await json<{ error: { code: string } }>(
+          started.base,
+          `/api/notes/${created.body.note.id}`,
+          {
+            method: 'PUT',
+            body: {
+              title: 'Icon test',
+              body: 'Body\n',
+              baseHash: created.body.note.contentHash,
+              icon: 'a'.repeat(100),
+            },
+          },
+        );
+        expect(saved.status).toBe(400);
+        expect(saved.body.error.code).toBe('INVALID_INPUT');
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('preserves stable ID and unknown frontmatter through an edit', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

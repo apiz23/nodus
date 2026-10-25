@@ -78,7 +78,7 @@ export function DatabasesView({
             </div>
           ) : databases.length === 0 ? (
             <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center">
-              <div className="mb-4 grid size-11 place-items-center rounded-xl border bg-muted/40 text-muted-foreground">
+              <div className="mb-4 grid size-10 place-items-center rounded-md bg-muted/60 text-muted-foreground">
                 <Database className="size-5" />
               </div>
               <h2 className="text-sm font-semibold">No database definitions</h2>
@@ -89,29 +89,29 @@ export function DatabasesView({
             </div>
           ) : (
             <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:items-start">
-              <aside className="overflow-hidden rounded-lg border bg-card" aria-label="Database definitions">
-                <div className="border-b px-3 py-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+              <aside className="overflow-hidden" aria-label="Database definitions">
+                <div className="border-b px-2 py-2 text-[11px] font-medium text-muted-foreground">
                   {databases.length} {databases.length === 1 ? 'definition' : 'definitions'}
                 </div>
-                <div className="flex gap-1 overflow-x-auto p-1.5 lg:block lg:space-y-0.5 lg:overflow-visible">
+                <div className="flex gap-1 overflow-x-auto py-1 lg:block lg:space-y-0.5 lg:overflow-visible">
                   {databases.map((database) => (
                     <button
                       key={database.id}
                       type="button"
                       className={cn(
-                        'flex min-w-[190px] items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors lg:w-full lg:min-w-0',
-                        'hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                        database.id === selected?.id && 'border-border bg-muted/60',
+                        'flex min-w-[190px] items-center gap-2 rounded-[4px] border border-transparent px-2 py-1.5 text-left transition-colors lg:w-full lg:min-w-0',
+                        'hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
+                        database.id === selected?.id && 'bg-muted/70',
                       )}
                       onClick={() => onSelect(database.id)}
                       aria-current={database.id === selected?.id ? 'true' : undefined}
                     >
-                      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-accent-foreground">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-[4px] bg-muted text-muted-foreground">
                         <Database className="size-3.5" />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium">{database.name}</span>
-                        <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                        <span className="block truncate text-[13px] font-medium">{database.name}</span>
+                        <span className="mt-0.5 block text-[11px] text-muted-foreground">
                           {database.properties.length}{' '}
                           {database.properties.length === 1 ? 'property' : 'properties'}
                         </span>
@@ -123,8 +123,8 @@ export function DatabasesView({
               </aside>
 
               {selected === null ? null : (
-                <article className="min-w-0 overflow-hidden rounded-lg border bg-card">
-                  <header className="flex items-start justify-between gap-3 border-b px-4 py-3.5">
+                <article className="min-w-0 overflow-hidden">
+                  <header className="flex items-start justify-between gap-3 border-b px-1 py-4">
                     <div className="min-w-0">
                       <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
                         {selected.path}
@@ -133,12 +133,12 @@ export function DatabasesView({
                         {selected.name}
                       </h2>
                     </div>
-                    <Badge variant="secondary" className="shrink-0 text-[10px]">
+                    <Badge variant="secondary" className="shrink-0">
                       Schema
                     </Badge>
                   </header>
 
-                  <div className="m-4 flex gap-2.5 rounded-md border bg-muted/40 px-3 py-2.5 text-muted-foreground">
+                  <div className="mx-1 mt-4 flex gap-2.5 rounded-md bg-muted/60 px-3 py-2.5 text-muted-foreground">
                     <Database className="mt-0.5 size-3.5 shrink-0" />
                     <p className="text-[11.5px] leading-relaxed">
                       This is a definition only. Nodus does not have database rows, table views,
@@ -146,7 +146,7 @@ export function DatabasesView({
                     </p>
                   </div>
 
-                  <div className="mx-4 mb-4 overflow-hidden rounded-md border">
+                  <div className="mx-1 my-4 overflow-hidden rounded-md border">
                     <Table>
                       <TableHeader>
                         <TableRow>

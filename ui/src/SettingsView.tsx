@@ -186,7 +186,7 @@ export function SettingsView({
                   {status === null ? (
                     <p className="text-xs text-muted-foreground">Checking the vault…</p>
                   ) : status.health.issues.length === 0 ? (
-                    <div className="flex items-center gap-2 text-xs text-primary">
+                    <div className="flex items-center gap-2 text-xs text-success">
                       <CheckCircle2 className="size-3.5" />
                       No storage issues detected.
                     </div>

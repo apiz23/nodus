@@ -30,6 +30,8 @@ export interface UiNoteSummary {
   title: string;
   path: string;
   updatedAt: string;
+  aliases: string[];
+  icon: string | null;
 }
 
 export interface UiNote extends UiNoteSummary {
@@ -103,6 +105,8 @@ export interface UiSaveNoteInput {
   title: string;
   body: string;
   baseHash: string;
+  /** Omitted preserves the existing icon; `null` removes it; a string sets it. */
+  icon?: string | null;
 }
 
 export interface UiMoveNoteInput {

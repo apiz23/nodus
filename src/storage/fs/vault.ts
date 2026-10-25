@@ -68,6 +68,12 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return parsed.map(({ note }) => summaryOf(note));
   }
 
+  /** Returns the full parsed notes, including extra frontmatter. */
+  async listNoteDetails(): Promise<Note[]> {
+    const parsed = await this.parseNotesStrict();
+    return parsed.map(({ note }) => note);
+  }
+
   async readNote(id: string): Promise<Note> {
     const located = await this.locateNote(id);
     return located.note;

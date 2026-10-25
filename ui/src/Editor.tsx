@@ -1,15 +1,20 @@
 import {
   AlertCircle,
   Check,
+  ChevronRight,
   FileText,
+  ImagePlus,
+  Info,
   Loader2,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   Pencil,
   RefreshCw,
   Save,
   Trash2,
 } from 'lucide-react';
-import type { UiNote } from '../../src/ui-server/dto';
+import type { UiNote, UiNoteSummary } from '../../src/ui-server/dto';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,44 +24,61 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { formatDateTime, shortHash, wordCount } from './format';
+import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
+import { CodeMirrorEditor } from './editor/CodeMirrorEditor';
+import { PageIconPicker } from './PageIconPicker';
 
 interface EditorProps {
   note: UiNote | null;
+  notes: readonly UiNoteSummary[];
+  icon: string | null;
+  onIconChange: (icon: string | null) => void;
   loading: boolean;
   title: string;
   body: string;
   dirty: boolean;
   saveState: SaveState;
   error: string | null;
+  focusMode: boolean;
+  onToggleFocus: () => void;
   onTitleChange: (value: string) => void;
   onBodyChange: (value: string) => void;
   onSave: () => void;
   onReload: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onOpenNote: (id: string) => void;
 }
 
 export function Editor({
   note,
+  notes,
+  icon,
+  onIconChange,
   loading,
   title,
   body,
   dirty,
   saveState,
   error,
+  focusMode,
+  onToggleFocus,
   onTitleChange,
   onBodyChange,
   onSave,
   onReload,
   onRename,
   onDelete,
+  onOpenNote,
 }: EditorProps) {
+  const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+
   if (loading) {
     return (
       <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor" aria-busy="true">
@@ -79,7 +101,7 @@ export function Editor({
     return (
       <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
         <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-          <div className="mb-4 grid size-11 place-items-center rounded-xl border bg-muted/40 text-muted-foreground">
+          <div className="mb-4 grid size-10 place-items-center rounded-md bg-muted/60 text-muted-foreground">
             <FileText className="size-5" />
           </div>
           <h1 className="text-base font-semibold tracking-tight">Open a note to begin</h1>
@@ -110,15 +132,32 @@ export function Editor({
   }
 
   const words = wordCount(body);
+  const pathParts = note.path.split('/').filter(Boolean);
+  if (pathParts[0] === 'notes') pathParts.shift();
+  const fileName = pathParts.pop() ?? '';
+  const folders = pathParts;
+  const pageName = title.trim() === '' ? fileName.replace(/\.md$/, '') : title;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
       <header className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 sm:px-4">
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[10.5px] text-muted-foreground" title={note.path}>
-            {note.path}
-          </div>
-        </div>
+        <nav
+          aria-label="Breadcrumb"
+          title={note.path}
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-muted-foreground"
+        >
+          <span className="shrink-0">Notes</span>
+          {folders.map((segment, index) => (
+            <span key={`${index}-${segment}`} className="flex min-w-0 items-center gap-1">
+              <ChevronRight className="size-3 shrink-0 opacity-60" />
+              <span className="truncate">{segment}</span>
+            </span>
+          ))}
+          <span className="flex min-w-0 items-center gap-1">
+            <ChevronRight className="size-3 shrink-0 opacity-60" />
+            <span className="truncate text-foreground/75">{pageName}</span>
+          </span>
+        </nav>
         <div className="flex shrink-0 items-center gap-1.5">
           <span
             className="inline-flex min-w-20 items-center justify-end gap-1 text-[10.5px] text-muted-foreground"
@@ -132,7 +171,7 @@ export function Editor({
             ) : null}
             {saveState === 'saved' && !dirty ? (
               <>
-                <Check className="size-3 text-primary" />
+                <Check className="size-3 text-muted-foreground" />
                 Saved
               </>
             ) : null}
@@ -144,6 +183,47 @@ export function Editor({
             ) : null}
             {dirty && saveState !== 'saving' && saveState !== 'error' ? 'Unsaved' : null}
           </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Page information"
+                title="Page information"
+              >
+                <Info />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-64 text-[11px]">
+              <div className="font-mono">{note.id}</div>
+              <div className="mt-1">SHA-256 {note.contentHash}</div>
+              {note.metadataKeys.length > 0 ? (
+                <div className="mt-1">Preserved: {note.metadataKeys.join(', ')}</div>
+              ) : null}
+            </TooltipContent>
+          </Tooltip>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="inline-flex h-7 px-2 text-[11px]"
+            onClick={() => setEditorMode((mode) => (mode === 'source' ? 'live' : 'source'))}
+            aria-label={editorMode === 'source' ? 'Switch to live Markdown' : 'Switch to source Markdown'}
+          >
+            {editorMode === 'source' ? 'Live' : 'Source'}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="hidden md:inline-flex"
+            onClick={onToggleFocus}
+            aria-label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
+            title={focusMode ? 'Exit focus mode' : 'Focus mode'}
+          >
+            {focusMode ? <Minimize2 /> : <Maximize2 />}
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -174,8 +254,9 @@ export function Editor({
           </DropdownMenu>
           <Button
             type="button"
+            variant={dirty ? 'secondary' : 'ghost'}
             size="sm"
-            className="gap-1.5"
+            className={dirty ? 'gap-1.5 text-foreground' : 'gap-1.5 text-muted-foreground'}
             onClick={onSave}
             disabled={!dirty || saveState === 'saving'}
             title="Save note (Ctrl/Cmd+S)"
@@ -206,38 +287,49 @@ export function Editor({
       )}
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto w-full max-w-3xl px-6 py-7 sm:px-10 sm:py-9">
+        <div className="mx-auto w-full max-w-[760px] px-6 py-10 sm:px-10 sm:py-14">
+          <div className="mb-2 flex min-h-12 items-center">
+            {icon === null ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground"
+                onClick={() => setIconPickerOpen(true)}
+                aria-label="Add page icon"
+              >
+                <ImagePlus className="size-4" />
+                Add icon
+              </Button>
+            ) : (
+              <button
+                type="button"
+                className="grid size-12 place-items-center rounded-md text-4xl leading-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80"
+                onClick={() => setIconPickerOpen(true)}
+                aria-label="Change page icon"
+                title="Change page icon"
+              >
+                <span aria-hidden="true">{icon}</span>
+              </button>
+            )}
+          </div>
+
           <label className="sr-only" htmlFor="note-title">
             Note title
           </label>
           <input
             id="note-title"
-            className="w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-[-0.025em] outline-none placeholder:text-muted-foreground/60 focus-visible:ring-0 sm:text-[28px]"
+            className="w-full rounded-sm border-0 bg-transparent p-0 text-[32px] leading-[1.2] font-semibold tracking-[-0.02em] outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring sm:text-[40px]"
             value={title}
             onChange={(event) => onTitleChange(event.target.value)}
-            placeholder="Untitled note"
+            placeholder="Untitled page"
             spellCheck={false}
           />
 
-          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-foreground">
+          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
             <span>Updated {formatDateTime(note.updatedAt)}</span>
             <span aria-hidden="true">·</span>
             <span>{words === 1 ? '1 word' : `${words} words`}</span>
-            <span aria-hidden="true">·</span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="cursor-help font-mono" title={`SHA-256 ${note.contentHash}`}>
-                  hash {shortHash(note.contentHash)}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>Raw Markdown SHA-256 used for external-edit detection.</TooltipContent>
-            </Tooltip>
-            {note.metadataKeys.length > 0 ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span>preserved: {note.metadataKeys.join(', ')}</span>
-              </>
-            ) : null}
           </div>
 
           {note.tags.length > 0 || note.aliases.length > 0 ? (
@@ -258,33 +350,25 @@ export function Editor({
           <label className="sr-only" htmlFor="note-body">
             Markdown body
           </label>
-          <Textarea
-            id="note-body"
-            className="mt-6 min-h-[calc(100dvh-20rem)] resize-none field-sizing-fixed border-0 bg-transparent p-0 font-mono text-[13.5px] leading-[1.75] shadow-none focus-visible:border-0 focus-visible:ring-0"
+          <CodeMirrorEditor
+            key={note.id}
             value={body}
-            onChange={(event) => onBodyChange(event.target.value)}
-            placeholder="Start writing in Markdown…"
-            spellCheck={false}
+            onChange={onBodyChange}
+            mode={editorMode}
+            notes={notes}
+            onOpenNote={onOpenNote}
+            className="mt-7 h-[45vh] w-full rounded-sm [&_.cm-editor]:h-full [&_.cm-editor]:outline-none"
+            aria-label="Markdown body"
           />
         </div>
       </ScrollArea>
 
-      <footer className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-1.5 text-[10.5px] text-muted-foreground sm:px-4">
-        <div className="flex items-center gap-3">
-          <span>Markdown body</span>
-          <span className="hidden sm:inline">Frontmatter preserved on save</span>
-        </div>
-        <Button
-          type="button"
-          variant="link"
-          size="xs"
-          className="h-auto p-0 text-[10.5px] text-muted-foreground hover:text-foreground"
-          onClick={onReload}
-        >
-          <RefreshCw data-icon="inline-start" />
-          Reload from disk
-        </Button>
-      </footer>
+      <PageIconPicker
+        open={iconPickerOpen}
+        value={icon}
+        onOpenChange={setIconPickerOpen}
+        onSelect={onIconChange}
+      />
     </section>
   );
 }

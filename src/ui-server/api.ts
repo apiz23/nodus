@@ -22,6 +22,7 @@ import type {
   UiVaultStatus,
 } from './dto.js';
 import { pickFolder } from './folder-picker.js';
+import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_BODY_CHARS = 1_000_000;
@@ -223,13 +224,15 @@ async function buildStatus(vault: FileSystemVault): Promise<UiVaultStatus> {
 }
 
 async function listNoteSummaries(vault: FileSystemVault): Promise<UiNoteSummary[]> {
-  const notes = await vault.listNotes();
+  const notes = await vault.listNoteDetails();
   return notes
     .map((note) => ({
       id: note.id,
       title: note.title,
       path: note.path,
       updatedAt: note.updatedAt,
+      aliases: [...note.aliases],
+      icon: readPageIcon(note.extraFrontmatter),
     }))
     .sort((left, right) => {
       const byTime = right.updatedAt.localeCompare(left.updatedAt);
@@ -285,11 +288,21 @@ async function saveLocalNote(
     );
   }
 
+  let extraFrontmatter = current.extraFrontmatter;
+  if ('icon' in body) {
+    const normalized = normalizePageIcon(body.icon);
+    if (!normalized.ok) {
+      throw new ApiError(400, 'INVALID_INPUT', normalized.message);
+    }
+    extraFrontmatter = applyPageIcon(current.extraFrontmatter, normalized.value);
+  }
+
   const updated: Note = {
     ...current,
     title,
     body: content,
     updatedAt: clock(),
+    extraFrontmatter,
   };
   await vault.replaceNote(updated);
 
@@ -360,6 +373,8 @@ async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<Ui
       title: note.title,
       path: note.path,
       updatedAt: note.updatedAt,
+      aliases: [...note.aliases],
+      icon: readPageIcon(note.extraFrontmatter),
       snippet: makeSnippet(note.title, note.body, rawQuery),
     });
   }
@@ -409,6 +424,7 @@ function toUiNote(note: Note, contentHash: string): UiNote {
     tags: [...note.tags],
     aliases: [...note.aliases],
     metadataKeys: Object.keys(note.extraFrontmatter).sort(),
+    icon: readPageIcon(note.extraFrontmatter),
     contentHash,
   };
 }

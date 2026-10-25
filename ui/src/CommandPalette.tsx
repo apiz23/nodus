@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import type { UiSearchResult } from '../../src/ui-server/dto';
 import { api, ApiError } from './api';
+import { modShortcut } from './format';
+import { PageIcon } from './PageIcon';
 import {
   CommandDialog,
   CommandEmpty,
@@ -102,7 +104,7 @@ export function CommandPalette({
       onOpenChange={onOpenChange}
       title="Command palette"
       description="Search notes or run a workspace command."
-      className="sm:max-w-lg"
+      className="sm:max-w-[560px]"
     >
       <CommandInput
         value={query}
@@ -120,7 +122,7 @@ export function CommandPalette({
               <CommandItem value="new note create" onSelect={() => run(onCreateNote)}>
                 <Plus />
                 New note
-                <CommandShortcut>⌘N</CommandShortcut>
+                <CommandShortcut>{modShortcut('n')}</CommandShortcut>
               </CommandItem>
               <CommandItem value="all notes" onSelect={() => run(() => onView('notes'))}>
                 <FileText />
@@ -148,10 +150,10 @@ export function CommandPalette({
             {results.map((result) => (
               <CommandItem
                 key={result.id}
-                value={`${result.title} ${result.path}`}
+                value={`${result.title} ${result.path} ${result.snippet}`}
                 onSelect={() => run(() => onOpenNote(result.id))}
               >
-                <FileText />
+                <PageIcon icon={result.icon} className="size-4 text-[13px]" />
                 <span className="min-w-0">
                   <span className="block truncate">{result.title}</span>
                   <span className="block truncate font-mono text-[10px] text-muted-foreground">
