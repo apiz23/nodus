@@ -117,3 +117,23 @@ export interface UiMoveNoteInput {
 export interface UiDeleteNoteInput {
   baseHash: string;
 }
+
+export interface UiBacklink {
+  /** Stable UUID of the referencing note. */
+  sourceId: string;
+  /** Current title of the referencing note. */
+  sourceTitle: string;
+  /** Whitespace-compacted context around the first link occurrence. */
+  snippet: string;
+  /** Number of links to the target within the source body. */
+  count: number;
+  /**
+   * True when the source's link is ambiguous across candidate notes that
+   * include this target. Ambiguous mentions are never confirmed backlinks.
+   */
+  ambiguous: boolean;
+}
+
+export interface UiBacklinksResponse {
+  backlinks: UiBacklink[];
+}

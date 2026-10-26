@@ -4,10 +4,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, isAbsolute, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../database/schema.js';
 import { createNote, type Note } from '../domain/note.js';
+import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
 import { FileSystemVault } from '../storage/fs/vault.js';
 import { assertInsideRoot, assertNotSymlink, resolveInsideRoot } from '../storage/fs/safe-path.js';
 import { isStorageError } from '../storage/errors.js';
+import { createBacklinkIndex, type BacklinkIndex } from '../links/backlinks.js';
 import type {
   UiApiErrorBody,
   UiDatabase,
@@ -20,6 +22,7 @@ import type {
   UiSearchResult,
   UiVaultPickResult,
   UiVaultStatus,
+  UiBacklinksResponse,
 } from './dto.js';
 import { pickFolder } from './folder-picker.js';
 import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
@@ -70,6 +73,7 @@ export function createLocalApiMiddleware(
   const clock = options.now ?? NOW;
   const chooseFolder = options.folderPicker ?? pickFolder;
   let vaultPromise: Promise<FileSystemVault> | undefined;
+  const backlinkIndex = createBacklinkIndex();
 
   const getVault = (): Promise<FileSystemVault> => {
     if (vaultPromise === undefined) {
@@ -96,6 +100,7 @@ export function createLocalApiMiddleware(
     const nextVault = await FileSystemVault.open(selectedPath);
     activeVaultPath = nextVault.root;
     vaultPromise = Promise.resolve(nextVault);
+    backlinkIndex.markDirty();
     return buildStatus(nextVault);
   };
 
@@ -142,7 +147,7 @@ export function createLocalApiMiddleware(
 
     if (method === 'POST' && path === '/api/notes') {
       const body = await readJson(req);
-      return sendJson(res, 201, await createLocalNote(await getVault(), body, clock));
+      return sendJson(res, 201, await createLocalNote(await getVault(), body, clock, backlinkIndex));
     }
 
     const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(path);
@@ -153,11 +158,11 @@ export function createLocalApiMiddleware(
       }
       if (method === 'PUT') {
         const body = await readJson(req);
-        return sendJson(res, 200, await saveLocalNote(await getVault(), id, body, clock));
+        return sendJson(res, 200, await saveLocalNote(await getVault(), id, body, clock, backlinkIndex));
       }
       if (method === 'DELETE') {
         const body = await readJson(req);
-        return sendJson(res, 200, await deleteLocalNote(await getVault(), id, body));
+        return sendJson(res, 200, await deleteLocalNote(await getVault(), id, body, backlinkIndex));
       }
     }
 
@@ -165,7 +170,13 @@ export function createLocalApiMiddleware(
     if (method === 'POST' && moveMatch !== null) {
       const id = decodeURIComponent(moveMatch[1] ?? '');
       const body = await readJson(req);
-      return sendJson(res, 200, await moveLocalNote(await getVault(), id, body));
+      return sendJson(res, 200, await moveLocalNote(await getVault(), id, body, backlinkIndex));
+    }
+
+    const backlinksMatch = /^\/api\/notes\/([^/]+)\/backlinks$/.exec(path);
+    if (method === 'GET' && backlinksMatch !== null) {
+      const id = decodeURIComponent(backlinksMatch[1] ?? '');
+      return sendJson(res, 200, await backlinksForNote(await getVault(), id, backlinkIndex));
     }
 
     if (method === 'GET' && path === '/api/search') {
@@ -240,8 +251,7 @@ async function listNoteSummaries(vault: FileSystemVault): Promise<UiNoteSummary[
     });
 }
 
-async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {
-  const note = await vault.readNote(id);
+async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {  const note = await vault.readNote(id);
   const raw = await readRawNote(vault, note);
   return { note: toUiNote(note, raw.hash) };
 }
@@ -250,6 +260,7 @@ async function createLocalNote(
   vault: FileSystemVault,
   body: Record<string, unknown>,
   clock: () => string,
+  backlinkIndex: BacklinkIndex,
 ): Promise<{ note: UiNote }> {
   const title = normalizeTitle(body.title);
   const now = clock();
@@ -258,6 +269,7 @@ async function createLocalNote(
 
   const note = createNote({ id, title, path, body: '', now });
   await vault.createNote(note);
+  backlinkIndex.markDirty();
 
   const stored = await vault.readNote(id);
   const raw = await readRawNote(vault, stored);
@@ -269,6 +281,7 @@ async function saveLocalNote(
   id: string,
   body: Record<string, unknown>,
   clock: () => string,
+  backlinkIndex: BacklinkIndex,
 ): Promise<{ note: UiNote }> {
   const title = normalizeTitle(body.title, false);
   const content = requireString(body.body, 'body');
@@ -305,6 +318,7 @@ async function saveLocalNote(
     extraFrontmatter,
   };
   await vault.replaceNote(updated);
+  backlinkIndex.markDirty();
 
   const stored = await vault.readNote(id);
   const nextRaw = await readRawNote(vault, stored);
@@ -315,6 +329,7 @@ async function moveLocalNote(
   vault: FileSystemVault,
   id: string,
   body: Record<string, unknown>,
+  backlinkIndex: BacklinkIndex,
 ): Promise<{ note: UiNote }> {
   const path = requireString(body.path, 'path');
   const baseHash = requireHash(body.baseHash);
@@ -330,6 +345,7 @@ async function moveLocalNote(
   }
 
   const moved = await vault.moveNote(id, path);
+  backlinkIndex.markDirty();
   const nextRaw = await readRawNote(vault, moved);
   return { note: toUiNote(moved, nextRaw.hash) };
 }
@@ -338,6 +354,7 @@ async function deleteLocalNote(
   vault: FileSystemVault,
   id: string,
   body: Record<string, unknown>,
+  backlinkIndex: BacklinkIndex,
 ): Promise<{ deleted: true }> {
   const baseHash = requireHash(body.baseHash);
   const current = await vault.readNote(id);
@@ -351,7 +368,24 @@ async function deleteLocalNote(
     );
   }
   await vault.deleteNote(id);
+  backlinkIndex.markDirty();
   return { deleted: true };
+}
+
+async function backlinksForNote(
+  vault: FileSystemVault,
+  rawId: string,
+  backlinkIndex: BacklinkIndex,
+): Promise<UiBacklinksResponse> {
+  if (!isUuidV4(rawId)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+  }
+  // Validates the target exists (404 otherwise).
+  await vault.readNote(rawId);
+
+  const notes = await vault.listNoteDetails();
+  const backlinks = backlinkIndex.getBacklinks(rawId, notes);
+  return { backlinks };
 }
 
 async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<UiSearchResult[]> {

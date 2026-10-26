@@ -31,6 +31,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
 import { CodeMirrorEditor } from './editor/CodeMirrorEditor';
+import { BacklinksPanel } from './BacklinksPanel';
 import { PageIconPicker } from './PageIconPicker';
 
 interface EditorProps {
@@ -53,6 +54,7 @@ interface EditorProps {
   onRename: () => void;
   onDelete: () => void;
   onOpenNote: (id: string) => void;
+  backlinksRevision: number;
 }
 
 export function Editor({
@@ -75,6 +77,7 @@ export function Editor({
   onRename,
   onDelete,
   onOpenNote,
+  backlinksRevision,
 }: EditorProps) {
   const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -359,6 +362,12 @@ export function Editor({
             onOpenNote={onOpenNote}
             className="mt-7 h-[45vh] w-full rounded-sm [&_.cm-editor]:h-full [&_.cm-editor]:outline-none"
             aria-label="Markdown body"
+          />
+
+          <BacklinksPanel
+            noteId={note.id}
+            revision={backlinksRevision}
+            onOpenNote={onOpenNote}
           />
         </div>
       </ScrollArea>

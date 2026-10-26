@@ -1,4 +1,5 @@
 import type {
+  UiBacklinksResponse,
   UiCreateNoteInput,
   UiDatabase,
   UiDeleteNoteInput,
@@ -92,6 +93,10 @@ export const api = {
 
   note(id: string): Promise<{ note: UiNote }> {
     return request<{ note: UiNote }>(`/api/notes/${encodeURIComponent(id)}`);
+  },
+
+  backlinks(id: string): Promise<UiBacklinksResponse> {
+    return request<UiBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/backlinks`);
   },
 
   createNote(input: UiCreateNoteInput): Promise<{ note: UiNote }> {

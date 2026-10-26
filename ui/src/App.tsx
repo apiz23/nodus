@@ -13,6 +13,7 @@ import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
 import { Editor } from './Editor';
+import { BacklinksPanel } from './BacklinksPanel';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
 import { Sidebar } from './Sidebar';
@@ -74,6 +75,7 @@ export default function App() {
   const [vaultPathDraft, setVaultPathDraft] = useState('');
 
   const [modal, setModal] = useState<ModalState>(null);
+  const [backlinksRevision, setBacklinksRevision] = useState(0);
   const [renameValue, setRenameValue] = useState('');
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
@@ -391,6 +393,7 @@ export default function App() {
       setDirty(false);
       setSaveState('saved');
       await refreshNotes(true);
+      setBacklinksRevision((value) => value + 1);
     } catch (error) {
       setSaveState('error');
       setEditorError(messageOf(error));
@@ -458,6 +461,7 @@ export default function App() {
       setSaveState('saved');
       setModal(null);
       await refreshNotes(true);
+      setBacklinksRevision((value) => value + 1);
     } catch (error) {
       setModalError(messageOf(error));
     } finally {
@@ -482,6 +486,7 @@ export default function App() {
       setSaveState('saved');
       setEditorError(null);
       await Promise.all([refreshNotes(true), refreshStatus()]);
+      setBacklinksRevision((value) => value + 1);
     } catch (error) {
       setModalError(messageOf(error));
     } finally {
@@ -646,6 +651,7 @@ export default function App() {
               }
             }}
             onOpenNote={(id) => void openNoteById(id)}
+            backlinksRevision={backlinksRevision}
           />
         ) : null}
 
