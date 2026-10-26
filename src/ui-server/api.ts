@@ -63,7 +63,8 @@ class ApiError extends Error {
 
 /**
  * Creates a localhost API middleware. It has no relay routes or relay admin
- * token. Vault switching accepts only absolute, existing directories.
+ * token. Vault switching accepts only absolute, existing directories inside
+ * the `NODUS_VAULT_ROOTS` allow-list.
  */
 export function createLocalApiMiddleware(
   options: LocalApiOptions,

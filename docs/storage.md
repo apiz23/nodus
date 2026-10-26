@@ -34,9 +34,14 @@ interface NoteStore {
   readNote(id: string): Promise<Note>;
   readNoteAtPath(path: string): Promise<Note>;
   createNote(note: Note): Promise<void>;
-  replaceNote(note: Note): Promise<void>;
-  moveNote(id: string, toPath: string): Promise<Note>;
-  deleteNote(id: string): Promise<void>;
+  replaceNote(note: Note, options?: ConditionalWriteOptions): Promise<void>;
+  moveNote(id: string, toPath: string, options?: ConditionalWriteOptions): Promise<Note>;
+  deleteNote(id: string, options?: ConditionalWriteOptions): Promise<void>;
+}
+
+interface ConditionalWriteOptions {
+  // SHA-256 of the raw file bytes, as lowercase hex.
+  expectedHash?: string;
 }
 
 interface DatabaseStore {
@@ -80,6 +85,7 @@ All storage failures are `StorageError`, which is separate from the Phase 1 `Nod
 | `UNSUPPORTED_VERSION` | A note, database, or backup version is newer than this build. |
 | `CORRUPT_BACKUP` | The manifest is missing/invalid, a file is missing, a hash mismatches, or a document is inconsistent. |
 | `PARTIAL_WRITE` | A multi-file operation stopped after some files were written. `details.paths` lists them. |
+| `STALE_WRITE` | A conditional write (`expectedHash`) found different bytes on disk. `details.currentHash` carries the current SHA-256. No write occurred. |
 | `STORAGE_FAILURE` | An I/O operation failed. |
 
 ## Safe writes
@@ -106,18 +112,33 @@ Not guaranteed:
 
 ### Concurrency
 
-Phase 1 has no revision field. Phase 2 does **not** invent one. Consequences:
+Phase 1 has no revision field, and this phase does **not** invent one: no new frontmatter, no `nodus.version` bump. Instead, the revision token is the **SHA-256 of the raw file bytes**.
 
-- `replaceNote` and `replaceDatabase` are last-write-wins.
-- There is no stale-revision detection and no merge.
-- Stale-write detection requires an approved revision/token decision in a future phase. The storage contract is the place to add it; the file formats would not need to change.
-- Import and restore never overwrite by default. They abort with `CONFLICT` before writing unless `{ overwrite: true }` is passed.
+- Without `expectedHash`, `replaceNote` remains last-write-wins, and existing callers and sync code behave exactly as before.
+- With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a per-path in-process mutex. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
+- `FileSystemVault.readNoteWithHash(id)` returns the note, its text, and the hash computed from the same bytes that were parsed, in one read. The local UI passes that hash back as `expectedHash`, replacing its old separate read-compare-write.
+- Two conditional calls on the same path inside one process are serialized by the mutex, so their check-and-write windows cannot interleave.
+
+**Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external writer that modifies the file between our final hash and the `rename` can still lose its edit, and another *process* is outside the mutex entirely. The mitigation narrows the window to the hash-then-rename gap and serializes this process; it does not close it. Closing it would require an OS-level locking scheme (advisory locks, `O_NOFOLLOW`/`renameat2`-style primitives, or a journal), which is a separate, explicitly approved decision.
+
+Import and restore never overwrite by default. They abort with `CONFLICT` before writing unless `{ overwrite: true }` is passed.
 
 ### Deletion and moves
 
 - `deleteNote` and `deleteDatabase` remove the file permanently. There is no trash directory in Phase 2.
 - `moveNote` writes the note at the new path first, then removes the old file. If removal fails, it throws `PARTIAL_WRITE` and leaves both files; `checkHealth` then reports a duplicate ID.
 - Nodes are not rewritten. Phase 1 title links can break on a rename; ID-pinned links survive.
+
+## Vault switching allow-list
+
+`POST /api/vault/open` only accepts directories inside an allow-list of roots:
+
+- `NODUS_VAULT_ROOTS` — a list of root directories separated by the platform path delimiter (`:` on macOS/Linux, `;` on Windows).
+- When unset or empty, the only root is the **parent directory of the current vault**. The user's home directory is **not** allowed by default; add it explicitly if wanted.
+- The target and every root are resolved with `realpath` before the containment check. A symlink that points outside the roots is rejected (symlink escapes), while a symlink that stays inside is accepted.
+- Rejections return HTTP 403 with error code `VAULT_NOT_ALLOWED` and a message naming `NODUS_VAULT_ROOTS`; the Settings UI shows it inline.
+
+This restricts which folders a request (or a local process that can reach the localhost API with an allowed origin) can point the server at. It does not replace OS permissions.
 
 ## Health checks
 
@@ -228,6 +249,6 @@ Do not build a cloud adapter or claim anywhere-access until those exist.
 - Hidden directories are invisible, including notes a user might place there.
 - Symbolic links are unsupported.
 - Paths that collide by case are rejected even on case-sensitive filesystems, to keep vaults portable.
-- No revisions, locks, trash, or distributed transactions.
+- Optional `expectedHash` narrows, but does not eliminate, the check-then-write race: there is still no OS-level compare-and-swap, no cross-process file locking, no trash, and no distributed transactions.
 - Database definitions have no views, relations, rows, or query execution. Those remain deferred.
 - The `databases/` directory is a reserved namespace owned by Nodus.
