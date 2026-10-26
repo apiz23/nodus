@@ -63,7 +63,7 @@ export async function assertNotSymlink(absolute: string, relativePath: string): 
       });
     }
   } catch (error) {
-    if (isMissing(error)) return;
+    if (isMissing(error) || isNotDirectory(error)) return;
     throw error;
   }
 }
@@ -73,7 +73,7 @@ export async function pathExists(absolute: string): Promise<boolean> {
     await lstat(absolute);
     return true;
   } catch (error) {
-    if (isMissing(error)) return false;
+    if (isMissing(error) || isNotDirectory(error)) return false;
     throw error;
   }
 }
@@ -85,7 +85,9 @@ async function nearestExistingAncestor(target: string): Promise<string> {
       await stat(current);
       return current;
     } catch (error) {
-      if (!isMissing(error)) throw error;
+      // ENOTDIR means an ancestor is a plain file, so the target itself
+      // cannot exist either; keep walking toward an existing ancestor.
+      if (!isMissing(error) && !isNotDirectory(error)) throw error;
       const parent = dirname(current);
       if (parent === current) return current;
       current = parent;
@@ -95,4 +97,8 @@ async function nearestExistingAncestor(target: string): Promise<string> {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
+function isNotDirectory(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOTDIR';
 }
