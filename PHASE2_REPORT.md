@@ -1,6 +1,11 @@
 # Nodus — Phase 2 Report: Storage Adapters & Recovery
 
-**Status:** Implemented and verified. Not committed.
+> **Historical snapshot.** This report describes Phase 2 as it stood in the
+> working tree before the repository's first commit; it was never updated for
+> later phases. Git-state claims below are historical, not current — the
+> repository is now tracked on `main`.
+
+**Status:** Implemented and verified. Historical snapshot (see note above).
 
 ## 1. Summary
 
@@ -48,7 +53,7 @@ Phase 2 adds a filesystem-backed vault adapter, portable export/import, and veri
 | `test/helpers.ts` | Added `storageErrorCode` helper. |
 | `tsconfig.json` | Added `"types": ["node"]` so the approved dev typings are used. |
 | `package.json` | Added dev dependency `@types/node@^22.20.5` (authorized); updated description. |
-| `package-lock.json` | Records the authorized dev dependency. |
+| `pnpm-lock.yaml` | Records the authorized dev dependency. (The repository uses pnpm; no `package-lock.json` exists.) |
 | `README.md` | Phase 2 status, storage layout, consistency boundaries, deferrals, privacy, limitations link. |
 
 No Phase 1 source file (`src/domain`, `src/format`, `src/links`, `src/database`) or Phase 1 test was modified in Phase 2.
@@ -139,7 +144,7 @@ Coverage includes CRUD, stable identity across moves, duplicate ID/path handling
 ## 8. Git, dependencies, and network
 
 - No commit, push, publish, deploy, or remote Git change.
-- All 53 files remain untracked; nothing is staged.
+- At Phase 2 completion nothing was committed (all 53 files untracked); the repository has since been committed and pushed on `main`.
 - One dependency change, explicitly authorized: dev-only `@types/node@^22.20.5`. No runtime dependency was added.
 - No network calls in source or tests; no telemetry, analytics, or third-party transfer.
 - `node_modules/` remains git-ignored.

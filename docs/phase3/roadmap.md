@@ -27,7 +27,7 @@
 - Pair command and token storage (credential file with warnings).
 - Outbox, apply ledger, conflict-copy naming.
 - Pull/apply with crash recovery and cursor safety.
-- Startup scan, filesystem watcher, reconciliation.
+- Startup scan. Filesystem watcher and reconciliation: **Not implemented** (no watcher or reconciliation code exists in `src/`).
 - Tests for crash injection and concurrent local edits.
 
 ## Stage 5 — Conflicts and restore safety

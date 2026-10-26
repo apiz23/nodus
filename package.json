@@ -1,7 +1,7 @@
 {
   "name": "nodus",
   "version": "0.1.0",
-  "description": "Local-first, Markdown-native knowledge workspace: portable notes, databases, and local storage.",
+  "description": "Local-first, Markdown-native knowledge workspace: portable notes, databases, local storage, and a local React UI; experimental relay/sync code not wired to any script or bin.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",

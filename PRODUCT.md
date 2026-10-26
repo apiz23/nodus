@@ -72,8 +72,6 @@ Undecided or not yet proven:
 - `ui/src/` — working React UI and shadcn/Tailwind system.
 - `test/` — current behavior and regression coverage.
 
-The repository README is stale in places: it still describes Phase 2 and says the UI is absent, despite the implemented UI. Treat this as documentation drift, not product truth.
-
 ## Product Principles
 
 1. **The vault belongs to the user.** Plain Markdown and portable JSON outrank application convenience.

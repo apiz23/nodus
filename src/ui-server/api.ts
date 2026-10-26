@@ -559,12 +559,28 @@ function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/** Origins the local UI is served from in dev (5173) and preview (4173). */
+const DEFAULT_ALLOWED_ORIGINS = [
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+  'http://127.0.0.1:4173',
+  'http://localhost:4173',
+];
+
+function allowedOrigins(): string[] {
+  const override = process.env.NODUS_ALLOWED_ORIGINS;
+  if (override === undefined || override.trim() === '') return DEFAULT_ALLOWED_ORIGINS;
+  const parsed = override
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+  return parsed.length > 0 ? parsed : DEFAULT_ALLOWED_ORIGINS;
+}
+
 function checkOrigin(req: IncomingMessage): void {
   const origin = req.headers.origin;
   if (origin === undefined) return;
-  if (
-    !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(origin)
-  ) {
+  if (!allowedOrigins().includes(origin)) {
     throw new ApiError(403, 'FORBIDDEN', 'This local API only accepts requests from the local UI');
   }
 }
