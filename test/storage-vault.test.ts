@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DatabaseDefinition } from '../src/database/schema.js';
 import { createNote, type Note } from '../src/domain/note.js';
 import { serializeNote } from '../src/format/note-format.js';
+import { StorageError } from '../src/storage/errors.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { withTempDir } from './tmp.js';
 import { storageErrorCode } from './helpers.js';
@@ -353,6 +355,152 @@ describe('database definition storage', () => {
       expect(
         await storageErrorCode(() => vault.createDatabase(invalid as unknown as DatabaseDefinition)),
       ).toBe('INVALID_INPUT');
+    });
+  });
+});
+
+describe('conditional writes (expectedHash)', () => {
+  const externalBody = 'External edit\n';
+
+  async function externalEdit(vault: FileSystemVault, path: string): Promise<void> {
+    await writeFile(join(vault.root, path), serializeNote({ ...note(N1, path), body: externalBody }), 'utf8');
+  }
+
+  it('readNoteWithHash returns the SHA-256 of the raw file bytes', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await vault.createNote(note(N1, 'notes/a.md'));
+
+      const { note: read, hash, text } = await vault.readNoteWithHash(N1);
+      const raw = await readFile(join(vault.root, 'notes/a.md'));
+
+      expect(read.id).toBe(N1);
+      expect(text).toBe(raw.toString('utf8'));
+      expect(hash).toBe(createHash('sha256').update(raw).digest('hex'));
+      expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  it('rejects a stale replace with STALE_WRITE and keeps the external edit', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      const created = note(N1, 'notes/a.md', { body: 'Original\n' });
+      await vault.createNote(created);
+      const { hash } = await vault.readNoteWithHash(N1);
+
+      await externalEdit(vault, 'notes/a.md');
+      const externalHash = (await vault.readNoteWithHash(N1)).hash;
+
+      let error: StorageError | undefined;
+      try {
+        await vault.replaceNote({ ...created, body: 'New body\n' }, { expectedHash: hash });
+      } catch (caught) {
+        error = caught as StorageError;
+      }
+      expect(error?.code).toBe('STALE_WRITE');
+      expect(error?.details?.currentHash).toBe(externalHash);
+
+      expect(await readFile(join(vault.root, 'notes/a.md'), 'utf8')).toContain(externalBody);
+      expect((await vault.readNote(N1)).body).toBe(externalBody);
+    });
+  });
+
+  it('writes when expectedHash matches the file on disk', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      const created = note(N1, 'notes/a.md', { body: 'Original\n' });
+      await vault.createNote(created);
+      const { hash } = await vault.readNoteWithHash(N1);
+
+      await vault.replaceNote({ ...created, body: 'New body\n', updatedAt: '2026-10-25T11:00:00Z' }, {
+        expectedHash: hash,
+      });
+
+      expect((await vault.readNote(N1)).body).toBe('New body\n');
+    });
+  });
+
+  it('omitting expectedHash behaves exactly as before (last write wins)', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      const created = note(N1, 'notes/a.md', { body: 'Original\n' });
+      await vault.createNote(created);
+      await vault.readNoteWithHash(N1);
+      await externalEdit(vault, 'notes/a.md');
+
+      await vault.replaceNote({ ...created, body: 'New body\n', updatedAt: '2026-10-25T11:00:00Z' });
+
+      expect((await vault.readNote(N1)).body).toBe('New body\n');
+    });
+  });
+
+  it('rejects a stale move and leaves both files untouched', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await vault.createNote(note(N1, 'notes/a.md', { body: 'Original\n' }));
+      const { hash } = await vault.readNoteWithHash(N1);
+      await externalEdit(vault, 'notes/a.md');
+      const externalHash = (await vault.readNoteWithHash(N1)).hash;
+
+      let error: StorageError | undefined;
+      try {
+        await vault.moveNote(N1, 'archive/b.md', { expectedHash: hash });
+      } catch (caught) {
+        error = caught as StorageError;
+      }
+
+      expect(error?.code).toBe('STALE_WRITE');
+      expect(error?.details?.currentHash).toBe(externalHash);
+      expect(await exists(join(vault.root, 'archive/b.md'))).toBe(false);
+      expect(await readFile(join(vault.root, 'notes/a.md'), 'utf8')).toContain(externalBody);
+    });
+  });
+
+  it('rejects a stale delete and keeps the external edit', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await vault.createNote(note(N1, 'notes/a.md', { body: 'Original\n' }));
+      const { hash } = await vault.readNoteWithHash(N1);
+      await externalEdit(vault, 'notes/a.md');
+
+      expect(await storageErrorCode(() => vault.deleteNote(N1, { expectedHash: hash }))).toBe(
+        'STALE_WRITE',
+      );
+      expect(await exists(join(vault.root, 'notes/a.md'))).toBe(true);
+      expect(await readFile(join(vault.root, 'notes/a.md'), 'utf8')).toContain(externalBody);
+    });
+  });
+
+  it('serializes concurrent replaceNote calls on the same path', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      const created = note(N1, 'notes/a.md', { body: 'Original\n' });
+      await vault.createNote(created);
+      const { hash } = await vault.readNoteWithHash(N1);
+
+      const first = vault.replaceNote(
+        { ...created, body: 'First\n', updatedAt: '2026-10-25T11:00:00Z' },
+        { expectedHash: hash },
+      );
+      const second = vault.replaceNote(
+        { ...created, body: 'Second\n', updatedAt: '2026-10-25T12:00:00Z' },
+        { expectedHash: hash },
+      );
+
+      const settled = await Promise.allSettled([first, second]);
+      const codes = settled.map((result) =>
+        result.status === 'fulfilled'
+          ? 'ok'
+          : ((result.reason as StorageError).code ?? 'unknown'),
+      );
+
+      // The mutex guarantees the second check runs after the first write, so
+      // exactly one succeeds and the other reports STALE_WRITE with no interleaving.
+      expect(codes.filter((code) => code === 'ok')).toHaveLength(1);
+      expect(codes.filter((code) => code === 'STALE_WRITE')).toHaveLength(1);
+
+      const finalBody = (await vault.readNote(N1)).body;
+      expect(['First\n', 'Second\n']).toContain(finalBody);
     });
   });
 });
