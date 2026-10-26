@@ -415,12 +415,24 @@ async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<Ui
 
   return results
     .sort((left, right) => {
-      const leftTitle = normalizeSearch(left.title).includes(query) ? 0 : 1;
-      const rightTitle = normalizeSearch(right.title).includes(query) ? 0 : 1;
-      if (leftTitle !== rightTitle) return leftTitle - rightTitle;
+      const leftRank = searchRank(left.title, query);
+      const rightRank = searchRank(right.title, query);
+      if (leftRank !== rightRank) return leftRank - rightRank;
       return left.title.localeCompare(right.title);
     })
     .slice(0, 50);
+}
+
+/**
+ * Deterministic ranking tiers: 0 = exact title, 1 = title starts with the
+ * query, 2 = title contains it, 3 = body-only match. Lower sorts first.
+ */
+function searchRank(title: string, query: string): number {
+  const normalized = normalizeSearch(title);
+  if (normalized === query) return 0;
+  if (normalized.startsWith(query)) return 1;
+  if (normalized.includes(query)) return 2;
+  return 3;
 }
 
 async function listDatabases(vault: FileSystemVault): Promise<UiDatabase[]> {

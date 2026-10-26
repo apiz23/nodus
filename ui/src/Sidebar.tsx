@@ -126,6 +126,19 @@ export function Sidebar({
               if (event.key === 'Escape') {
                 onQueryChange('');
                 event.currentTarget.blur();
+                return;
+              }
+              if (event.key === 'ArrowDown') {
+                // Move focus from the search box into the first result/page.
+                const tree = event.currentTarget
+                  .closest('aside')
+                  ?.querySelector<HTMLElement>(
+                    '[role="treeitem"], [data-search-result="true"]',
+                  );
+                if (tree !== null && tree !== undefined) {
+                  event.preventDefault();
+                  tree.focus();
+                }
               }
             }}
           />

@@ -4,7 +4,6 @@ import {
   FileText,
   Moon,
   Plus,
-  Search,
   Settings,
   Sun,
 } from 'lucide-react';
@@ -14,7 +13,6 @@ import { modShortcut } from './format';
 import { PageIcon } from './PageIcon';
 import {
   CommandDialog,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -105,6 +103,7 @@ export function CommandPalette({
       title="Command palette"
       description="Search notes or run a workspace command."
       className="sm:max-w-[560px]"
+      shouldFilter={false}
     >
       <CommandInput
         value={query}
@@ -112,9 +111,13 @@ export function CommandPalette({
         placeholder="Search notes or type a command…"
       />
       <CommandList className="max-h-[min(420px,60vh)]">
-        <CommandEmpty>
-          {searching ? 'Searching…' : error ?? 'No results.'}
-        </CommandEmpty>
+        {query.trim() === '' ? null : searching && results.length === 0 ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">Searching…</div>
+        ) : error !== null ? (
+          <div className="py-6 text-center text-sm text-destructive">{error}</div>
+        ) : results.length === 0 ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">No results.</div>
+        ) : null}
 
         {query.trim() === '' ? (
           <>
@@ -152,22 +155,17 @@ export function CommandPalette({
                 key={result.id}
                 value={`${result.title} ${result.path} ${result.snippet}`}
                 onSelect={() => run(() => onOpenNote(result.id))}
+                aria-label={`Open ${result.title}`}
               >
                 <PageIcon icon={result.icon} className="size-4 text-[13px]" />
-                <span className="min-w-0">
+                <span className="min-w-0 flex-1">
                   <span className="block truncate">{result.title}</span>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                    {result.path}
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {result.snippet}
                   </span>
                 </span>
               </CommandItem>
             ))}
-            {!searching && results.length === 0 && error === null ? (
-              <CommandItem disabled value="no notes">
-                <Search />
-                No notes match “{query.trim()}”
-              </CommandItem>
-            ) : null}
           </CommandGroup>
         )}
       </CommandList>

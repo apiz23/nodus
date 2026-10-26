@@ -128,6 +128,21 @@ export function PageTree({
 
   const isSearching = query.trim() !== '';
 
+  const handleSearchResultsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const row = target.closest<HTMLElement>('[data-search-result="true"]');
+    if (row === null) return;
+    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-search-result="true"]')];
+    const index = rows.indexOf(row);
+    if (index === -1) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const next = event.key === 'ArrowDown' ? index + 1 : index - 1;
+      rows[Math.min(Math.max(next, 0), rows.length - 1)]?.focus();
+    }
+  };
+
   const handleTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof HTMLElement) || target.getAttribute('role') !== 'treeitem') return;
@@ -198,7 +213,7 @@ export function PageTree({
               </Button>
             </div>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-0.5" onKeyDown={handleSearchResultsKeyDown}>
               {results.map((result) => (
                 <SearchResultRow
                   key={result.id}
@@ -338,6 +353,8 @@ function SearchResultRow({
   return (
     <button
       type="button"
+      data-search-result="true"
+      aria-label={`Open ${result.title}`}
       className={cn(
         'flex w-full flex-col rounded-[4px] px-2 py-1.5 text-left transition-colors',
         'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',

@@ -39,12 +39,15 @@ function CommandDialog({
   children,
   className,
   showCloseButton = false,
+  shouldFilter,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string
   showCloseButton?: boolean
+  /** Opt out of cmdk's client-side filtering when results are pre-ranked. */
+  shouldFilter?: boolean
 }) {
   return (
     <Dialog {...props}>
@@ -59,7 +62,7 @@ function CommandDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        <Command>{children}</Command>
+        <Command shouldFilter={shouldFilter}>{children}</Command>
       </DialogContent>
     </Dialog>
   )
