@@ -2,19 +2,23 @@
 
 Nodus is a local-first, Markdown-native knowledge workspace that combines linked notes with structured databases.
 
-Your notes are plain Markdown files with YAML frontmatter. They work without an account or network connection, and remain usable outside Nodus.
+**Plain Markdown files. Portable database definitions. Local-first sync.**
+
+Your notes are ordinary Markdown files with YAML frontmatter. They work without an account or network connection, and remain usable outside Nodus.
 
 ## Status
 
-**Phase 2: storage adapters and recovery.** The package now provides:
+**Phases 1–2 complete; Phase 3 workspace features implemented.** The package provides:
 
 - Phase 1 domain, format, and migration contracts.
 - A filesystem vault adapter: create, read, update, move, and delete notes and database definitions.
 - Vault-level duplicate ID detection, path containment, and per-file atomic writes.
 - Portable export/import that validates before writing and refuses silent overwrites.
 - Verified backups with SHA-256 manifests, validation, and explicit-overwrite restoration.
+- A local React UI (`ui/`) with a live Markdown editor, task checkboxes, wiki links, page icons, title/body search, backlinks with linked mentions, a command palette (`Ctrl/Cmd+K`), and a read-only database schema view.
+- A relay server, sync client, and conflict handling (`src/relay/`, `src/sync/`) — **experimental**. They are not wired to any npm script, CLI bin, or the UI.
 
-Still absent: UI, editor, search, backlinks index, graph, sync, remote access, authentication, attachments, database rows/views/relations, and query execution. Nodus is **not** accessible from other devices.
+Still absent: database rows/views/relations, query execution, graph view, attachments, and a web/mobile client.
 
 ## Storage
 
@@ -40,18 +44,18 @@ These remain **not implemented** and need a new approval before work starts:
 | Persisted vault entity/metadata | Deferred | The filesystem vault is a directory plus adapter; there is no vault metadata file. |
 | Folder entity | Deferred | Folders are implied by note paths. No explicit folder format is approved. |
 | Attachment metadata | Deferred | Requires a blob storage decision. |
-| Link references (stored records) | Deferred | Links are parsed on demand. No link index exists. |
+| Link references (stored records) | Deferred | Links are parsed on demand; the Phase 3A backlinks index is in-memory and rebuildable, not persisted. |
 | View definitions (table, sorting, filters) | Deferred | Views are rejected, not stored. |
 | Relation properties | Deferred | Target, cardinality, and delete behavior are not defined. |
-| Cross-device sync and remote access | Deferred | No authentication, transport, or synchronization design is approved. |
+| Cross-device sync | **Experimental** | A relay and sync client exist (`src/relay/`, `src/sync/`) but are not wired to any script, bin, or the UI. No multi-device setup is supported. |
 
-Also out of scope: database rows, query execution, formulas, rollups, automations, UI, editor integration, search, backlinks, graph views, accounts, AI, telemetry, and third-party data transfer.
+Also out of scope: database rows, query execution, formulas, rollups, automations, graph views, accounts, AI, telemetry, and third-party data transfer.
 
 ## Consistency boundaries
 
 - Note identity is the UUID v4 in frontmatter, independent of title and path. Moves preserve it.
 - Duplicate note IDs are detected by `FileSystemVault` at the vault boundary (`DUPLICATE_ID`), not by `parseNote`.
-- Phase 1 has no revision field. Phase 2 does not invent one: `replaceNote` is last-write-wins, with no stale-write detection. Adding revisions is a future, explicitly approved decision.
+- Phase 1 has no revision field. Phase 2 does not invent one: `replaceNote` is last-write-wins at the storage layer. The UI adds stale-write detection through raw-file SHA-256 hashes and refuses to overwrite an external edit; the storage layer itself remains hash-free. Adding revisions is a future, explicitly approved decision.
 - Imports and restores fail with `CONFLICT` before writing unless overwrite is explicit.
 - File-level writes are atomic; multi-file operations are not transactions and report `PARTIAL_WRITE` on failure.
 
@@ -70,28 +74,23 @@ Also out of scope: database rows, query execution, formulas, rollups, automation
 - [Wiki-link rules](docs/wiki-links.md)
 - [Database definition format](docs/database-format.md)
 - [Storage, export/import, and backups](docs/storage.md)
+- [Editor behavior](docs/editor.md)
+- [Page icons](docs/page-icons.md)
 
 ## Development
 
-Requires Node.js **24.0.0 or later**, matching the verified built-in SQLite runtime. Node 22.12.0 requires the `--experimental-sqlite` flag and is not supported by the declared engine. This repository uses **pnpm 11.9.0**.
+Requires Node.js **24.0.0 or later**, matching the verified built-in SQLite runtime. Node 22 is unsupported by the declared engine and is not a supported configuration. This repository uses **pnpm 11.9.0**.
 
 ```sh
 pnpm install
 pnpm test
 pnpm typecheck
+pnpm build
 ```
 
 Tests create isolated temporary directories and never touch a real vault. Relay and UI API tests use loopback HTTP only; there is no external network access.
 
-## Privacy
-
-Storage is local and offline. There is no telemetry, analytics, AI call, account, credential handling, or third-party transfer. Backups are written only where the caller asks.
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE).
-
-## Local UI (Phase 3.5)
+## Local UI
 
 The local-only React UI lives in `ui/`. It uses Tailwind CSS v4, shadcn/ui (`radix-nova`), Lucide icons, and Geist. It reads and writes a chosen vault through a small localhost API that reuses `FileSystemVault`; the browser never imports Node, SQLite, or relay code.
 
@@ -117,10 +116,18 @@ pnpm preview
 
 Open `http://127.0.0.1:4173`.
 
-The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, title/body search, command palette (`Ctrl/Cmd+K`), read-only database schemas, light/dark theme, and storage health. It preserves frontmatter fields and stable UUIDs; saving checks the raw file hash and refuses to overwrite an external edit.
+The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, title/body search with deterministic ranking, backlinks and ambiguous linked mentions, command palette (`Ctrl/Cmd+K`), read-only database schemas, light/dark theme, and storage health. It preserves frontmatter fields and stable UUIDs; saving checks the raw file hash and refuses to overwrite an external edit.
 
-The active vault can also be changed from **Settings**: type an absolute folder path and choose **Use folder**, or use **Browse…** for the host OS picker. The path field is sent only to the localhost API, which requires an absolute existing directory and checks the request origin. The change lasts for the current server session; set `NODUS_VAULT` to make it permanent.
+The active vault can also be changed from **Settings**: type an absolute folder path and choose **Use folder**, or use **Browse…** for the host OS picker. **This endpoint accepts arbitrary absolute directory paths** — the localhost API validates that the path exists, is a directory, and that the request origin matches the UI (`NODUS_ALLOWED_ORIGINS` can override the allowed origins), but it deliberately does not restrict which folders can be opened. That is acceptable because the API binds to `127.0.0.1` only and the UI is a local tool, but it means any local process that can reach the API and present an allowed origin can point it at any directory. The change lasts for the current server session; set `NODUS_VAULT` to make it permanent.
 
-**Not implemented:** sync client, outbox, apply ledger, conflict copies, filesystem watcher, relay endpoints, TLS, relay credentials, database rows/views/relations, and any web/mobile client. Sync shows **Not connected / Phase 4**.
+**Not implemented in the UI:** sync connection (the relay/sync code exists but is not wired in), filesystem watcher, database rows/views/relations, and any web/mobile client. Sync status shows **Not connected / Phase 4**.
 
-The vault path is chosen at server startup. The browser cannot request arbitrary filesystem paths, and the local API rejects non-local `Origin` headers. The API binds to `127.0.0.1` only.
+The API binds to `127.0.0.1` only.
+
+## Privacy
+
+Storage is local and offline. There is no telemetry, analytics, AI call, account, credential handling, or third-party transfer. Backups are written only where the caller asks. The experimental relay code is not reachable from the UI or any npm script.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
