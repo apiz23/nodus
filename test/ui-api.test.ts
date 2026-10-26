@@ -685,4 +685,53 @@ describe('local UI API', () => {
       }
     });
   });
+
+  it('allows requests from the UI origin and rejects other localhost ports', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        for (const origin of [
+          'http://127.0.0.1:5173',
+          'http://localhost:5173',
+          'http://127.0.0.1:4173',
+          'http://localhost:4173',
+        ]) {
+          const allowed = await fetch(`${started.base}/api/status`, { headers: { Origin: origin } });
+          expect(allowed.status, `origin ${origin} should be allowed`).toBe(200);
+        }
+
+        const otherPort = await fetch(`${started.base}/api/status`, {
+          headers: { Origin: 'http://127.0.0.1:9999' },
+        });
+        expect(otherPort.status).toBe(403);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('honors the NODUS_ALLOWED_ORIGINS override', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const previous = process.env.NODUS_ALLOWED_ORIGINS;
+      process.env.NODUS_ALLOWED_ORIGINS = 'http://127.0.0.1:9999';
+      const started = await startApi(vaultPath);
+      try {
+        const overrideAllowed = await fetch(`${started.base}/api/status`, {
+          headers: { Origin: 'http://127.0.0.1:9999' },
+        });
+        expect(overrideAllowed.status).toBe(200);
+
+        const defaultRejected = await fetch(`${started.base}/api/status`, {
+          headers: { Origin: 'http://127.0.0.1:5173' },
+        });
+        expect(defaultRejected.status).toBe(403);
+      } finally {
+        if (previous === undefined) delete process.env.NODUS_ALLOWED_ORIGINS;
+        else process.env.NODUS_ALLOWED_ORIGINS = previous;
+        await stopApi(started);
+      }
+    });
+  });
 });
