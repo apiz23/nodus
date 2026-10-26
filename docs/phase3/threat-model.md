@@ -17,7 +17,7 @@
 | Backup symlink/path traversal | `lstat` validation, reject symlinks/junctions/non-regular files, path containment. |
 | Token/credential leakage | Tokens shown once, never logged, never in URLs; logs content-free. |
 | Crash leaves inconsistent local state | Apply ledger, atomic file writes, cursor only after durable apply. |
-| Compromised backup restores old epoch | Restore increments epoch; missing anchor mints new vault identity. |
+| Compromised backup restores old epoch | Restore increments epoch; missing anchor mints new vault identity. **Note:** `bumpEpoch` (`src/relay/identity.ts`) has no production caller — it is exercised only by `test/relay/identity.test.ts`. Restore-epoch protection is planned, not active. |
 
 ## Out of scope
 - Protection against a fully compromised client (client sees vault content).
