@@ -736,6 +736,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   private async readBytesAt(absolute: string, relativePath: string): Promise<Buffer> {
+    // A symlink swapped in after the directory walk would let one read escape
+    // the vault, so assert before reading.
+    await assertNotSymlink(absolute, relativePath);
     try {
       return await readFile(absolute);
     } catch (error) {

@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, isAbsolute, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../database/schema.js';
@@ -7,7 +7,6 @@ import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
 import { FileSystemVault } from '../storage/fs/vault.js';
-import { assertInsideRoot, assertNotSymlink, resolveInsideRoot } from '../storage/fs/safe-path.js';
 import { isStorageError } from '../storage/errors.js';
 import { createBacklinkIndex, type BacklinkIndex } from '../links/backlinks.js';
 import type {
@@ -251,9 +250,9 @@ async function listNoteSummaries(vault: FileSystemVault): Promise<UiNoteSummary[
     });
 }
 
-async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {  const note = await vault.readNote(id);
-  const raw = await readRawNote(vault, note);
-  return { note: toUiNote(note, raw.hash) };
+async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {
+  const { note, hash } = await vault.readNoteWithHash(id);
+  return { note: toUiNote(note, hash) };
 }
 
 async function createLocalNote(
@@ -271,9 +270,8 @@ async function createLocalNote(
   await vault.createNote(note);
   backlinkIndex.markDirty();
 
-  const stored = await vault.readNote(id);
-  const raw = await readRawNote(vault, stored);
-  return { note: toUiNote(stored, raw.hash) };
+  const stored = await vault.readNoteWithHash(id);
+  return { note: toUiNote(stored.note, stored.hash) };
 }
 
 async function saveLocalNote(
@@ -290,39 +288,32 @@ async function saveLocalNote(
   }
   const baseHash = requireHash(body.baseHash);
 
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before saving.',
-      { currentHash: raw.hash },
-    );
-  }
-
-  let extraFrontmatter = current.extraFrontmatter;
+  const current = await vault.readNoteWithHash(id);
+  let extraFrontmatter = current.note.extraFrontmatter;
   if ('icon' in body) {
     const normalized = normalizePageIcon(body.icon);
     if (!normalized.ok) {
       throw new ApiError(400, 'INVALID_INPUT', normalized.message);
     }
-    extraFrontmatter = applyPageIcon(current.extraFrontmatter, normalized.value);
+    extraFrontmatter = applyPageIcon(current.note.extraFrontmatter, normalized.value);
   }
 
   const updated: Note = {
-    ...current,
+    ...current.note,
     title,
     body: content,
     updatedAt: clock(),
     extraFrontmatter,
   };
-  await vault.replaceNote(updated);
+  try {
+    await vault.replaceNote(updated, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'saving');
+  }
   backlinkIndex.markDirty();
 
-  const stored = await vault.readNote(id);
-  const nextRaw = await readRawNote(vault, stored);
-  return { note: toUiNote(stored, nextRaw.hash) };
+  const stored = await vault.readNoteWithHash(id);
+  return { note: toUiNote(stored.note, stored.hash) };
 }
 
 async function moveLocalNote(
@@ -333,21 +324,16 @@ async function moveLocalNote(
 ): Promise<{ note: UiNote }> {
   const path = requireString(body.path, 'path');
   const baseHash = requireHash(body.baseHash);
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before renaming.',
-      { currentHash: raw.hash },
-    );
-  }
 
-  const moved = await vault.moveNote(id, path);
+  let moved: Note;
+  try {
+    moved = await vault.moveNote(id, path, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'renaming');
+  }
   backlinkIndex.markDirty();
-  const nextRaw = await readRawNote(vault, moved);
-  return { note: toUiNote(moved, nextRaw.hash) };
+  const nextRaw = await vault.readNoteWithHash(moved.id);
+  return { note: toUiNote(nextRaw.note, nextRaw.hash) };
 }
 
 async function deleteLocalNote(
@@ -357,19 +343,29 @@ async function deleteLocalNote(
   backlinkIndex: BacklinkIndex,
 ): Promise<{ deleted: true }> {
   const baseHash = requireHash(body.baseHash);
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before deleting.',
-      { currentHash: raw.hash },
-    );
+  try {
+    await vault.deleteNote(id, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'deleting');
   }
-  await vault.deleteNote(id);
   backlinkIndex.markDirty();
   return { deleted: true };
+}
+
+/**
+ * Maps the core `STALE_WRITE` failure onto the unchanged HTTP 409 shape the
+ * UI already understands, including `currentHash`.
+ */
+function toStaleApiError(error: unknown, verb: string): unknown {
+  if (isStorageError(error) && error.code === 'STALE_WRITE') {
+    return new ApiError(
+      409,
+      'STALE_WRITE',
+      `This note changed on disk after you opened it. Reload it before ${verb}.`,
+      { currentHash: error.details?.currentHash },
+    );
+  }
+  return error;
 }
 
 async function backlinksForNote(
@@ -475,17 +471,6 @@ function toUiNote(note: Note, contentHash: string): UiNote {
   };
 }
 
-async function readRawNote(
-  vault: FileSystemVault,
-  note: Note,
-): Promise<{ text: string; hash: string }> {
-  const absolute = resolveInsideRoot(vault.root, note.path);
-  await assertInsideRoot(vault.root, absolute, note.path);
-  await assertNotSymlink(absolute, note.path);
-  const text = await readFile(absolute, 'utf8');
-  return { text, hash: sha256(text) };
-}
-
 async function uniqueNotePath(vault: FileSystemVault, slug: string): Promise<string> {
   const notes = await vault.listNotes();
   const existing = new Set(notes.map((note) => foldPath(note.path)));
@@ -553,10 +538,6 @@ function makeSnippet(title: string, body: string, query: string): string {
 
 function foldPath(path: string): string {
   return path.normalize('NFC').toLowerCase();
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 /** Origins the local UI is served from in dev (5173) and preview (4173). */

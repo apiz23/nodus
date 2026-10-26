@@ -571,6 +571,52 @@ describe('local UI API', () => {
     });
   });
 
+  it('refuses to rename a note changed outside the UI', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const created = await json<{ note: UiNote }>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'Move conflict' },
+        });
+        const opened = await json<{ note: UiNote }>(
+          started.base,
+          `/api/notes/${created.body.note.id}`,
+        );
+
+        await writeFile(
+          join(vaultPath, created.body.note.path),
+          serializeNote(
+            noteFixture(created.body.note.id, 'Move conflict', created.body.note.path, 'Moved externally\n'),
+          ),
+          'utf8',
+        );
+
+        const moved = await json<{ error: { code: string; currentHash?: string } }>(
+          started.base,
+          `/api/notes/${created.body.note.id}/move`,
+          {
+            method: 'POST',
+            body: {
+              path: 'archive/renamed.md',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(moved.status).toBe(409);
+        expect(moved.body.error.code).toBe('STALE_WRITE');
+        expect(moved.body.error.currentHash).toMatch(/^[0-9a-f]{64}$/);
+
+        const raw = await readFile(join(vaultPath, created.body.note.path), 'utf8');
+        expect(raw).toContain('Moved externally');
+        expect(await readFile(join(vaultPath, 'archive/renamed.md'), 'utf8').catch(() => '')).toBe('');
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('deletes only with the current hash', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');
