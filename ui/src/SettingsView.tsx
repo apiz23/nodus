@@ -169,8 +169,19 @@ export function SettingsView({
                   <p className="mt-3 max-w-[62ch] text-[11px] leading-relaxed text-muted-foreground">
                     Path is sent only to the local Nodus server and must be an absolute folder. The
                     choice applies for this server session. Set <code>NODUS_VAULT</code> to make it
-                    permanent.
+                    permanent. Folders outside the allowed roots are rejected; set{' '}
+                    <code>NODUS_VAULT_ROOTS</code> (a <code>PATH</code>-delimited list) to allow
+                    more roots.
                   </p>
+                  {error === null ? null : (
+                    <p
+                      className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
+                      role="alert"
+                    >
+                      <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                      <span>{error}</span>
+                    </p>
+                  )}
                 </Section>
 
                 <Section
