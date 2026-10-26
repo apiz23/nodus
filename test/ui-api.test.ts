@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createNote, type Note } from '../src/domain/note.js';
@@ -182,6 +183,91 @@ describe('local UI API', () => {
         expect(bad.body.error.code).toBe('INVALID_VAULT');
       } finally {
         await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects opening a vault outside the allowed roots by default', async () => {
+    await withTempDir(async (dir) => {
+      const vaultA = join(dir, 'vault-a');
+      const started = await startApi(vaultA);
+      try {
+        // The default root is the current vault's parent (dir), not tmpdir()
+        // and not the user's home directory.
+        const outside = tmpdir();
+        expect(outside.startsWith(dir)).toBe(false);
+
+        const rejected = await json<{ error: { code: string; message: string } }>(
+          started.base,
+          '/api/vault/open',
+          { method: 'POST', body: { path: outside } },
+        );
+        expect(rejected.status).toBe(403);
+        expect(rejected.body.error.code).toBe('VAULT_NOT_ALLOWED');
+        expect(rejected.body.error.message).toContain('NODUS_VAULT_ROOTS');
+
+        const status = await json<UiVaultStatus>(started.base, '/api/status');
+        expect(status.body.vault.path).toBe(
+          await realpath(vaultA).catch(() => vaultA),
+        );
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('accepts a vault inside the default root and rejects symlink escapes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultA = join(dir, 'vault-a');
+      const vaultB = join(dir, 'vault-b');
+      await FileSystemVault.open(vaultB);
+      const outside = await mkdtemp(join(tmpdir(), 'nodus-outside-'));
+      const escapeLink = join(dir, 'escape-link');
+      const insideLink = join(dir, 'inside-link');
+      await symlink(outside, escapeLink, 'dir');
+      await symlink(vaultB, insideLink, 'dir');
+
+      const started = await startApi(vaultA);
+      try {
+        const inside = await json<UiVaultStatus>(started.base, '/api/vault/open', {
+          method: 'POST',
+          body: { path: insideLink },
+        });
+        expect(inside.status).toBe(200);
+        expect(inside.body.vault.path).toBe(await realpath(vaultB));
+
+        const escaped = await json<{ error: { code: string } }>(started.base, '/api/vault/open', {
+          method: 'POST',
+          body: { path: escapeLink },
+        });
+        expect(escaped.status).toBe(403);
+        expect(escaped.body.error.code).toBe('VAULT_NOT_ALLOWED');
+      } finally {
+        await stopApi(started);
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('allows an outside vault when NODUS_VAULT_ROOTS lists its root', async () => {
+    await withTempDir(async (dir) => {
+      const allowed = await mkdtemp(join(tmpdir(), 'nodus-allowed-'));
+      const outsideVault = join(allowed, 'vault-x');
+      await mkdir(outsideVault, { recursive: true });
+      const vaultA = join(dir, 'vault-a');
+      const started = await startApi(vaultA);
+      process.env.NODUS_VAULT_ROOTS = allowed;
+      try {
+        const opened = await json<UiVaultStatus>(started.base, '/api/vault/open', {
+          method: 'POST',
+          body: { path: outsideVault },
+        });
+        expect(opened.status).toBe(200);
+        expect(opened.body.vault.name).toBe('vault-x');
+      } finally {
+        delete process.env.NODUS_VAULT_ROOTS;
+        await stopApi(started);
+        await rm(allowed, { recursive: true, force: true });
       }
     });
   });
@@ -565,6 +651,52 @@ describe('local UI API', () => {
         expect(unsafe.status).toBe(400);
         expect(unsafe.body.error.code).toBe('UNSAFE_PATH');
         await expect(readFile(join(dir, 'outside.md'), 'utf8')).rejects.toThrow();
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('refuses to rename a note changed outside the UI', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const created = await json<{ note: UiNote }>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'Move conflict' },
+        });
+        const opened = await json<{ note: UiNote }>(
+          started.base,
+          `/api/notes/${created.body.note.id}`,
+        );
+
+        await writeFile(
+          join(vaultPath, created.body.note.path),
+          serializeNote(
+            noteFixture(created.body.note.id, 'Move conflict', created.body.note.path, 'Moved externally\n'),
+          ),
+          'utf8',
+        );
+
+        const moved = await json<{ error: { code: string; currentHash?: string } }>(
+          started.base,
+          `/api/notes/${created.body.note.id}/move`,
+          {
+            method: 'POST',
+            body: {
+              path: 'archive/renamed.md',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(moved.status).toBe(409);
+        expect(moved.body.error.code).toBe('STALE_WRITE');
+        expect(moved.body.error.currentHash).toMatch(/^[0-9a-f]{64}$/);
+
+        const raw = await readFile(join(vaultPath, created.body.note.path), 'utf8');
+        expect(raw).toContain('Moved externally');
+        expect(await readFile(join(vaultPath, 'archive/renamed.md'), 'utf8').catch(() => '')).toBe('');
       } finally {
         await stopApi(started);
       }

@@ -43,17 +43,23 @@ export interface VaultEntry {
   text: string;
 }
 
+/** Optional conditional write parameters. */
+export interface ConditionalWriteOptions {
+  /** SHA-256 of raw file bytes. Throws `STALE_WRITE` with current hash if mismatch. */
+  expectedHash?: string;
+}
+
 export interface NoteStore {
   listNotes(): Promise<NoteSummary[]>;
   readNote(id: string): Promise<Note>;
   readNoteAtPath(path: string): Promise<Note>;
   /** Fails with `CONFLICT` if the path exists or `DUPLICATE_ID` if the ID exists. */
   createNote(note: Note): Promise<void>;
-  /** Replaces an existing note; the path may not change. Fails with `NOT_FOUND` or `CONFLICT`. */
-  replaceNote(note: Note): Promise<void>;
-  /** Moves a note to a new relative path, keeping its ID and bytes. */
-  moveNote(id: string, toPath: string): Promise<Note>;
-  deleteNote(id: string): Promise<void>;
+  /** Replaces an existing note; the path may not change. Fails with `NOT_FOUND`, `CONFLICT`, or `STALE_WRITE`. */
+  replaceNote(note: Note, options?: ConditionalWriteOptions): Promise<void>;
+  /** Moves a note to a new relative path, keeping its ID and bytes. Fails with `STALE_WRITE` on source. */
+  moveNote(id: string, toPath: string, options?: ConditionalWriteOptions): Promise<Note>;
+  deleteNote(id: string, options?: ConditionalWriteOptions): Promise<void>;
 }
 
 export interface DatabaseStore {

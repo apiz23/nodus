@@ -10,6 +10,7 @@ export type StorageErrorCode =
   | 'UNSUPPORTED_VERSION'
   | 'CORRUPT_BACKUP'
   | 'PARTIAL_WRITE'
+  | 'STALE_WRITE'
   | 'STORAGE_FAILURE';
 
 export interface StorageErrorDetails {
@@ -19,6 +20,8 @@ export interface StorageErrorDetails {
   ids?: string[];
   /** Human-readable diagnostics, used by import and backup validation. */
   issues?: string[];
+  /** SHA-256 of the file currently on disk when a conditional write fails. */
+  currentHash?: string;
 }
 
 export interface StorageErrorOptions {

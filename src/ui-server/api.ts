@@ -1,13 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { DatabaseDefinition } from '../database/schema.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
 import { FileSystemVault } from '../storage/fs/vault.js';
-import { assertInsideRoot, assertNotSymlink, resolveInsideRoot } from '../storage/fs/safe-path.js';
 import { isStorageError } from '../storage/errors.js';
 import { createBacklinkIndex, type BacklinkIndex } from '../links/backlinks.js';
 import type {
@@ -64,7 +63,8 @@ class ApiError extends Error {
 
 /**
  * Creates a localhost API middleware. It has no relay routes or relay admin
- * token. Vault switching accepts only absolute, existing directories.
+ * token. Vault switching accepts only absolute, existing directories inside
+ * the `NODUS_VAULT_ROOTS` allow-list.
  */
 export function createLocalApiMiddleware(
   options: LocalApiOptions,
@@ -114,6 +114,7 @@ export function createLocalApiMiddleware(
     if (!isAbsolute(selected)) {
       throw new ApiError(400, 'INVALID_VAULT', 'Vault path must be absolute.');
     }
+    await assertVaultAllowed(selected, activeVaultPath);
     return switchVault(selected);
   };
 
@@ -251,9 +252,9 @@ async function listNoteSummaries(vault: FileSystemVault): Promise<UiNoteSummary[
     });
 }
 
-async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {  const note = await vault.readNote(id);
-  const raw = await readRawNote(vault, note);
-  return { note: toUiNote(note, raw.hash) };
+async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {
+  const { note, hash } = await vault.readNoteWithHash(id);
+  return { note: toUiNote(note, hash) };
 }
 
 async function createLocalNote(
@@ -271,9 +272,8 @@ async function createLocalNote(
   await vault.createNote(note);
   backlinkIndex.markDirty();
 
-  const stored = await vault.readNote(id);
-  const raw = await readRawNote(vault, stored);
-  return { note: toUiNote(stored, raw.hash) };
+  const stored = await vault.readNoteWithHash(id);
+  return { note: toUiNote(stored.note, stored.hash) };
 }
 
 async function saveLocalNote(
@@ -290,39 +290,32 @@ async function saveLocalNote(
   }
   const baseHash = requireHash(body.baseHash);
 
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before saving.',
-      { currentHash: raw.hash },
-    );
-  }
-
-  let extraFrontmatter = current.extraFrontmatter;
+  const current = await vault.readNoteWithHash(id);
+  let extraFrontmatter = current.note.extraFrontmatter;
   if ('icon' in body) {
     const normalized = normalizePageIcon(body.icon);
     if (!normalized.ok) {
       throw new ApiError(400, 'INVALID_INPUT', normalized.message);
     }
-    extraFrontmatter = applyPageIcon(current.extraFrontmatter, normalized.value);
+    extraFrontmatter = applyPageIcon(current.note.extraFrontmatter, normalized.value);
   }
 
   const updated: Note = {
-    ...current,
+    ...current.note,
     title,
     body: content,
     updatedAt: clock(),
     extraFrontmatter,
   };
-  await vault.replaceNote(updated);
+  try {
+    await vault.replaceNote(updated, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'saving');
+  }
   backlinkIndex.markDirty();
 
-  const stored = await vault.readNote(id);
-  const nextRaw = await readRawNote(vault, stored);
-  return { note: toUiNote(stored, nextRaw.hash) };
+  const stored = await vault.readNoteWithHash(id);
+  return { note: toUiNote(stored.note, stored.hash) };
 }
 
 async function moveLocalNote(
@@ -333,21 +326,16 @@ async function moveLocalNote(
 ): Promise<{ note: UiNote }> {
   const path = requireString(body.path, 'path');
   const baseHash = requireHash(body.baseHash);
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before renaming.',
-      { currentHash: raw.hash },
-    );
-  }
 
-  const moved = await vault.moveNote(id, path);
+  let moved: Note;
+  try {
+    moved = await vault.moveNote(id, path, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'renaming');
+  }
   backlinkIndex.markDirty();
-  const nextRaw = await readRawNote(vault, moved);
-  return { note: toUiNote(moved, nextRaw.hash) };
+  const nextRaw = await vault.readNoteWithHash(moved.id);
+  return { note: toUiNote(nextRaw.note, nextRaw.hash) };
 }
 
 async function deleteLocalNote(
@@ -357,19 +345,29 @@ async function deleteLocalNote(
   backlinkIndex: BacklinkIndex,
 ): Promise<{ deleted: true }> {
   const baseHash = requireHash(body.baseHash);
-  const current = await vault.readNote(id);
-  const raw = await readRawNote(vault, current);
-  if (raw.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk after you opened it. Reload it before deleting.',
-      { currentHash: raw.hash },
-    );
+  try {
+    await vault.deleteNote(id, { expectedHash: baseHash });
+  } catch (error) {
+    throw toStaleApiError(error, 'deleting');
   }
-  await vault.deleteNote(id);
   backlinkIndex.markDirty();
   return { deleted: true };
+}
+
+/**
+ * Maps the core `STALE_WRITE` failure onto the unchanged HTTP 409 shape the
+ * UI already understands, including `currentHash`.
+ */
+function toStaleApiError(error: unknown, verb: string): unknown {
+  if (isStorageError(error) && error.code === 'STALE_WRITE') {
+    return new ApiError(
+      409,
+      'STALE_WRITE',
+      `This note changed on disk after you opened it. Reload it before ${verb}.`,
+      { currentHash: error.details?.currentHash },
+    );
+  }
+  return error;
 }
 
 async function backlinksForNote(
@@ -475,17 +473,6 @@ function toUiNote(note: Note, contentHash: string): UiNote {
   };
 }
 
-async function readRawNote(
-  vault: FileSystemVault,
-  note: Note,
-): Promise<{ text: string; hash: string }> {
-  const absolute = resolveInsideRoot(vault.root, note.path);
-  await assertInsideRoot(vault.root, absolute, note.path);
-  await assertNotSymlink(absolute, note.path);
-  const text = await readFile(absolute, 'utf8');
-  return { text, hash: sha256(text) };
-}
-
 async function uniqueNotePath(vault: FileSystemVault, slug: string): Promise<string> {
   const notes = await vault.listNotes();
   const existing = new Set(notes.map((note) => foldPath(note.path)));
@@ -555,8 +542,63 @@ function foldPath(path: string): string {
   return path.normalize('NFC').toLowerCase();
 }
 
-function sha256(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+/**
+ * Allowed roots for POST /api/vault/open, from `NODUS_VAULT_ROOTS`
+ * (path-delimiter separated). When unset, the only root is the parent
+ * directory of the current vault; the user's home directory is NOT allowed
+ * unless listed. Roots are resolved with realpath, so symlinks inside the
+ * environment are followed, and symlink escapes are rejected by containment.
+ */
+async function allowedVaultRoots(currentVaultPath: string): Promise<string[]> {
+  const raw = process.env.NODUS_VAULT_ROOTS;
+  const entries =
+    raw === undefined || raw.trim() === ''
+      ? [dirname(currentVaultPath)]
+      : raw
+          .split(delimiter)
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== '');
+
+  const roots: string[] = [];
+  for (const entry of entries) {
+    try {
+      roots.push(await realpath(resolve(entry)));
+    } catch {
+      // A root that no longer exists cannot admit anything; skip it.
+    }
+  }
+  return roots;
+}
+
+function isWithin(root: string, target: string): boolean {
+  const sameCase = process.platform === 'win32';
+  const normalizedRoot = sameCase ? root.toLowerCase() : root;
+  const normalizedTarget = sameCase ? target.toLowerCase() : target;
+  const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(prefix);
+}
+
+/**
+ * Rejects vault paths outside the allow-list. The target is resolved with
+ * realpath first, so a symlink pointing outside the roots cannot pass.
+ */
+async function assertVaultAllowed(selected: string, currentVaultPath: string): Promise<void> {
+  let real: string;
+  try {
+    real = await realpath(resolve(selected));
+  } catch {
+    throw new ApiError(400, 'INVALID_VAULT', 'The selected folder does not exist.');
+  }
+
+  const roots = await allowedVaultRoots(currentVaultPath);
+  if (!roots.some((root) => isWithin(root, real))) {
+    throw new ApiError(
+      403,
+      'VAULT_NOT_ALLOWED',
+      `The folder "${selected}" is outside the allowed vault roots. Set NODUS_VAULT_ROOTS (a path-delimiter separated list) to allow more roots.`,
+      { allowedRoots: roots },
+    );
+  }
 }
 
 /** Origins the local UI is served from in dev (5173) and preview (4173). */
