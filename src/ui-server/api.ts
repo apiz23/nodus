@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { DatabaseDefinition } from '../database/schema.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
@@ -113,6 +113,7 @@ export function createLocalApiMiddleware(
     if (!isAbsolute(selected)) {
       throw new ApiError(400, 'INVALID_VAULT', 'Vault path must be absolute.');
     }
+    await assertVaultAllowed(selected, activeVaultPath);
     return switchVault(selected);
   };
 
@@ -538,6 +539,65 @@ function makeSnippet(title: string, body: string, query: string): string {
 
 function foldPath(path: string): string {
   return path.normalize('NFC').toLowerCase();
+}
+
+/**
+ * Allowed roots for POST /api/vault/open, from `NODUS_VAULT_ROOTS`
+ * (path-delimiter separated). When unset, the only root is the parent
+ * directory of the current vault; the user's home directory is NOT allowed
+ * unless listed. Roots are resolved with realpath, so symlinks inside the
+ * environment are followed, and symlink escapes are rejected by containment.
+ */
+async function allowedVaultRoots(currentVaultPath: string): Promise<string[]> {
+  const raw = process.env.NODUS_VAULT_ROOTS;
+  const entries =
+    raw === undefined || raw.trim() === ''
+      ? [dirname(currentVaultPath)]
+      : raw
+          .split(delimiter)
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== '');
+
+  const roots: string[] = [];
+  for (const entry of entries) {
+    try {
+      roots.push(await realpath(resolve(entry)));
+    } catch {
+      // A root that no longer exists cannot admit anything; skip it.
+    }
+  }
+  return roots;
+}
+
+function isWithin(root: string, target: string): boolean {
+  const sameCase = process.platform === 'win32';
+  const normalizedRoot = sameCase ? root.toLowerCase() : root;
+  const normalizedTarget = sameCase ? target.toLowerCase() : target;
+  const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(prefix);
+}
+
+/**
+ * Rejects vault paths outside the allow-list. The target is resolved with
+ * realpath first, so a symlink pointing outside the roots cannot pass.
+ */
+async function assertVaultAllowed(selected: string, currentVaultPath: string): Promise<void> {
+  let real: string;
+  try {
+    real = await realpath(resolve(selected));
+  } catch {
+    throw new ApiError(400, 'INVALID_VAULT', 'The selected folder does not exist.');
+  }
+
+  const roots = await allowedVaultRoots(currentVaultPath);
+  if (!roots.some((root) => isWithin(root, real))) {
+    throw new ApiError(
+      403,
+      'VAULT_NOT_ALLOWED',
+      `The folder "${selected}" is outside the allowed vault roots. Set NODUS_VAULT_ROOTS (a path-delimiter separated list) to allow more roots.`,
+      { allowedRoots: roots },
+    );
+  }
 }
 
 /** Origins the local UI is served from in dev (5173) and preview (4173). */
