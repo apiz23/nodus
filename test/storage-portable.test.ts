@@ -106,11 +106,27 @@ describe('planImport', () => {
     });
   });
 
+  it('rejects malformed UTF-8 before importing any files', async () => {
+    await withTempDir(async (dir) => {
+      const source = join(dir, 'source');
+      await mkdir(source);
+      await writeFile(join(source, 'a-valid.md'), noteWithExtra, 'utf8');
+      await writeFile(join(source, 'z-invalid.md'), Buffer.from([0x23, 0x20, 0xc3, 0x28]));
+      const target = await FileSystemVault.open(join(dir, 'target'));
+
+      await expect((async () => applyImport(target, await planImport(source)))()).rejects.toMatchObject({
+        code: 'INVALID_CONTENT',
+        path: 'z-invalid.md',
+      });
+      expect(await readdir(target.root)).toEqual([]);
+    });
+  });
+
   it('imports mixed plain Markdown and Nodus notes without changing the source files', async () => {
     await withTempDir(async (dir) => {
       const source = join(dir, 'source');
       await mkdir(join(source, 'daily'), { recursive: true });
-      const plain = '# Internship day\n\nTask notes: Café 🙂\n';
+      const plain = '# Internship day\n\nTask notes: Café 日本語 🙂\n';
       await writeFile(join(source, 'daily/2026-08-03.md'), plain, 'utf8');
       await writeFile(join(source, 'managed.md'), noteWithExtra, 'utf8');
 

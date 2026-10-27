@@ -14,7 +14,7 @@ Nodus stores a vault as ordinary Markdown files and versioned JSON definitions. 
 - **Notes** are stored at their Phase 1 `Note.path`, which is workspace-relative, `/`-separated, and ends in `.md`. The path is not stored in frontmatter.
 - **Database definitions** are stored at `databases/<database-id>.json`, one definition per file. The file name must equal the definition's `id`.
 - The `databases/` tree is reserved. Notes with paths under it are rejected with `INVALID_INPUT`.
-- Files are written as UTF-8 without a byte order mark.
+- Newly created or normally edited files are written as UTF-8 without a byte order mark. Portable imports and backup restores preserve a valid source-file BOM byte for byte; malformed UTF-8 is rejected.
 
 ### Scan rules
 

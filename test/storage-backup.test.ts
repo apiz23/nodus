@@ -590,6 +590,30 @@ describe('backup path and byte validation', () => {
     });
   });
 
+  it('preserves a UTF-8 BOM through backup validation and restore with raw integrity metadata', async () => {
+    await withTempDir(async (dir) => {
+      const sourceRoot = join(dir, 'source');
+      const source = await seedVault(sourceRoot);
+      const sourcePath = join(sourceRoot, 'notes/a.md');
+      const original = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), await readFile(sourcePath)]);
+      await writeFile(sourcePath, original);
+
+      const backup = join(dir, 'backup');
+      await createBackup(source, backup);
+      const manifest = await readManifestJson(backup);
+      const file = manifest.files.find((entry: { kind: string }) => entry.kind === 'note');
+      expect(file.bytes).toBe(original.byteLength);
+      expect(file.sha256).toBe(createHash('sha256').update(original).digest('hex'));
+      expect(manifest.digest).toBe(canonicalDigest(manifest));
+
+      const validation = await validateBackup(backup);
+      expect(validation.entries.find((entry) => entry.kind === 'note')?.text.charCodeAt(0)).toBe(0xfeff);
+      const restored = join(dir, 'restored');
+      await restoreBackup(backup, restored);
+      expect(await readFile(join(restored, 'notes/a.md'))).toEqual(original);
+    });
+  });
+
   it('refuses to create a backup from malformed UTF-8 source bytes', async () => {
     await withTempDir(async (dir) => {
       const sourceRoot = join(dir, 'source');

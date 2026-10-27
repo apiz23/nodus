@@ -144,10 +144,20 @@ function assertNoPathCollision(path: string, seen: Map<string, string>): void {
 }
 
 async function readText(absolute: string, relativePath: string): Promise<string> {
+  let bytes: Buffer;
   try {
-    return await readFile(absolute, 'utf8');
+    bytes = await readFile(absolute);
   } catch (error) {
     throw storageFailure(error, 'Read import file', relativePath);
+  }
+
+  try {
+    // Keep a valid BOM in the planned text so imports preserve source bytes.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new StorageError('INVALID_CONTENT', `File "${relativePath}" is not valid UTF-8 text`, {
+      path: relativePath,
+    });
   }
 }
 

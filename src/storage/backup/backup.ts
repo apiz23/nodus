@@ -584,7 +584,8 @@ function decodeUtf8(
   code: 'CORRUPT_BACKUP' | 'INVALID_CONTENT' = 'CORRUPT_BACKUP',
 ): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Preserve a valid BOM in the text passed to restore; hashes still cover raw bytes.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new StorageError(code, `File "${path}" is not valid UTF-8`, { path });
   }
