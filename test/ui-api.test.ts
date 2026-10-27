@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -353,6 +354,68 @@ describe('local UI API', () => {
         );
         expect(reloaded.body.note.body).toBe('Hello **world**\n');
         expect(reloaded.body.note.id).toBe(created.body.note.id);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects malformed UTF-8 in a valid save request without changing note bytes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const original = noteFixture(N1, 'Existing note', 'notes/existing.md', 'Original body 日本語 🙂\n');
+      await vault.createNote(original);
+      const before = await readFile(join(vaultPath, original.path));
+      const beforeHash = createHash('sha256').update(before).digest('hex');
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const malformedBody = Buffer.concat([
+          Buffer.from(`{\"title\":\"Existing note\",\"body\":\"Changed `),
+          Buffer.from([0xc3, 0x28]),
+          Buffer.from(`\",\"baseHash\":\"${opened.body.note.contentHash}\"}`),
+        ]);
+        const response = await fetch(`${started.base}/api/notes/${N1}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: malformedBody,
+        });
+        const error = (await response.json()) as { error: { code: string; message: string } };
+
+        expect(response.status).toBe(400);
+        expect(error.error).toMatchObject({ code: 'INVALID_JSON' });
+        expect(error.error.message).toContain('valid UTF-8');
+        const after = await readFile(join(vaultPath, original.path));
+        expect(createHash('sha256').update(after).digest('hex')).toBe(beforeHash);
+        expect(after).toEqual(before);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('saves and reloads valid multibyte Unicode, non-English text, and emoji', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const created = await json<{ note: UiNote }>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'Unicode note' },
+        });
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${created.body.note.id}`);
+        const content = 'Café 日本語 مرحبا 🙂\n';
+        const saved = await json<{ note: UiNote }>(started.base, `/api/notes/${created.body.note.id}`, {
+          method: 'PUT',
+          body: { title: 'Unicode note', body: content, baseHash: opened.body.note.contentHash },
+        });
+
+        expect(saved.status).toBe(200);
+        expect(saved.body.note.body).toBe(content);
+        const reloaded = await json<{ note: UiNote }>(started.base, `/api/notes/${created.body.note.id}`);
+        expect(reloaded.body.note.body).toBe(content);
+        expect(await readFile(join(vaultPath, created.body.note.path), 'utf8')).toContain(content);
       } finally {
         await stopApi(started);
       }

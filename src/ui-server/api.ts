@@ -846,7 +846,12 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     chunks.push(buffer);
   }
 
-  const text = Buffer.concat(chunks).toString('utf8');
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+  } catch {
+    throw new ApiError(400, 'INVALID_JSON', 'Request body is not valid UTF-8 text');
+  }
   if (text.length === 0) return {};
   try {
     const parsed: unknown = JSON.parse(text);
