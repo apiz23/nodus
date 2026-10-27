@@ -13,6 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { SidebarToggle } from './SidebarToggle';
 
 interface DatabasesViewProps {
   databases: UiDatabase[];
@@ -21,6 +22,8 @@ interface DatabasesViewProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onRetry: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
 }
 
 export function DatabasesView({
@@ -30,23 +33,28 @@ export function DatabasesView({
   selectedId,
   onSelect,
   onRetry,
+  sidebarCollapsed,
+  onToggleSidebar,
 }: DatabasesViewProps) {
   const selected = databases.find((database) => database.id === selectedId) ?? databases[0] ?? null;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label="Databases">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-4 sm:px-6">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">Databases</h1>
-            <Badge variant="outline" className="text-[10px]">
-              Read-only
-            </Badge>
+        <div className="flex min-w-0 items-start gap-2">
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">Databases</h1>
+              <Badge variant="outline" className="text-[10px]">
+                Read-only
+              </Badge>
+            </div>
+            <p className="mt-1 max-w-[68ch] text-xs leading-relaxed text-muted-foreground">
+              Schema definitions from this vault. Records, views, relations, and query execution are
+              not implemented.
+            </p>
           </div>
-          <p className="mt-1 max-w-[68ch] text-xs leading-relaxed text-muted-foreground">
-            Schema definitions from this vault. Records, views, relations, and query execution are
-            not implemented.
-          </p>
         </div>
       </header>
 

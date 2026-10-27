@@ -1,6 +1,6 @@
 # Nodus Note Format (version 1)
 
-A Nodus note is a Markdown file with a YAML frontmatter block. The body is the source of truth for content. Nodus-owned metadata lives under the `nodus` key.
+A Markdown file is a note whether or not it has YAML frontmatter. When Nodus frontmatter is present, its body is the source of truth for content and Nodus-owned metadata lives under the `nodus` key. Plain files remain plain during ordinary body edits.
 
 ## Example
 
@@ -70,16 +70,17 @@ Canonical input round-trips byte-for-byte. Non-canonical input (for example, a d
 
 ## Parsing
 
-- A UTF-8 byte order mark is removed on read and never written.
-- The frontmatter opens with `---` on the first line and closes at the next line that is exactly `---`. CRLF is accepted for the delimiters.
-- Frontmatter is parsed with the `yaml` package in the `core` schema. Duplicate keys, YAML aliases, anchors, and multi-document input are rejected.
-- The body is kept byte-for-byte, including CRLF line endings, code fences, Unicode, and wiki links. The body is never parsed as Markdown.
+- Nodus frontmatter opens with `---` on the first line, closes at the next line that is exactly `---`, and contains a `nodus` mapping. CRLF is accepted for delimiters.
+- A delimiter-led block without valid Nodus metadata is treated as ordinary Markdown and retained as body. Malformed YAML that declares `nodus` is reported as an error; no metadata is silently removed.
+- Nodus frontmatter is parsed with the `yaml` package in the `core` schema. Duplicate keys, YAML aliases, anchors, and multi-document input are rejected.
+- The body is kept verbatim, including CRLF line endings, code fences, Unicode, and wiki links. The body is never parsed as Markdown. A plain file is saved as its body without Nodus metadata while it keeps its filename-derived title; explicitly changing the title or metadata, or moving the file, writes Nodus frontmatter.
+- For a plain file, the title comes from its filename and its stable synthetic UUID-shaped ID is derived from its vault-relative path. Editing content does not change the ID; moving the file through Nodus writes frontmatter to preserve it. Manually moving a plain file changes its path-derived ID. Internal timestamps use the date in a `YYYY-MM-DD.md` filename when valid, otherwise a fixed placeholder; they are not written into plain files.
 
 ## Errors
 
 | Code | When |
 |---|---|
-| `INVALID_FRONTMATTER` | Missing or unclosed frontmatter, malformed or unsafe YAML, frontmatter that is not a mapping, unknown key under `nodus`. |
+| `INVALID_FRONTMATTER` | Malformed Nodus YAML, unknown key under `nodus`, or an unclosed block that declares Nodus metadata. |
 | `INVALID_FIELD` | Missing required field, wrong type, invalid UUID, invalid or non-UTC timestamp, invalid `nodus.version`. |
 | `UNSUPPORTED_VERSION` | `nodus.version` is greater than `1`. Nothing is parsed further or rewritten. |
 | `UNSAFE_PATH` | The note path fails the rules under "Stable IDs and paths" below. |
@@ -87,7 +88,7 @@ Canonical input round-trips byte-for-byte. Non-canonical input (for example, a d
 
 ## Stable IDs and paths
 
-- **ID:** Supplied once by the caller and passed to `createNote`. Nodus validates it but does not generate it. Titles and paths are never used as identity. An ID must be unique within a vault; that check belongs to the vault/storage layer, because a single note cannot see its siblings.
+- **ID:** For Nodus-format notes, supplied once by the caller and stored in frontmatter. For plain Markdown, deterministically derived from the vault-relative path because there is no stored identity. An ID must be unique within a vault; that check belongs to the vault/storage layer, because a single note cannot see its siblings.
 - **Path:** Workspace-relative, `/`-separated, ends in `.md`. Rejected when:
   - it is empty, absolute, or starts with `/`;
   - it contains a backslash, a colon (drive letters and alternate streams), or a control character;
@@ -135,8 +136,8 @@ Rules for migration authors:
 
 ## Limitations
 
-- Plain Markdown files without frontmatter are rejected, not imported. They have no ID.
 - Frontmatter is rewritten in canonical form on save, so comments and formatting inside the frontmatter block are not preserved. Only the values are.
+- Plain Markdown body saves do not add frontmatter. A title/metadata edit or a Nodus-managed move does add it so those changes and the note ID can be persisted.
 - JavaScript object key order is used for `extraFrontmatter`, so integer-like keys (for example `2024:`) may move ahead of other keys on write.
 - Empty `tags` and `aliases` are omitted on write.
 - Tags and aliases keep their order and are not de-duplicated.

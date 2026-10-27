@@ -1,29 +1,47 @@
 import type {
+  BackupReport,
+  ImportReport,
+  RestorePreview,
   UiBacklinksResponse,
+  UiBackupValidationResult,
+  UiCreateBackupInput,
   UiCreateNoteInput,
   UiDatabase,
   UiDeleteNoteInput,
   UiMoveNoteInput,
   UiNote,
   UiNoteSummary,
+  UiRestoreInput,
   UiSaveNoteInput,
   UiOpenVaultInput,
   UiSearchResult,
+  UiValidateBackupInput,
   UiVaultPickResult,
   UiVaultStatus,
-} from '../../src/ui-server/dto';
+} from '../../src/ui-server/dto.js';
 
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly currentHash?: string;
+  readonly issues?: string[];
+  readonly paths?: string[];
 
-  constructor(status: number, code: string, message: string, currentHash?: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    currentHash?: string,
+    issues?: string[],
+    paths?: string[],
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.currentHash = currentHash;
+    this.issues = issues;
+    this.paths = paths;
   }
 }
 
@@ -54,13 +72,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = body as
-      | { error?: { code?: string; message?: string; currentHash?: string } }
+      | {
+          error?: {
+            code?: string;
+            message?: string;
+            currentHash?: string;
+            paths?: string[];
+            issues?: string[];
+          };
+        }
       | undefined;
     throw new ApiError(
       response.status,
       errorBody?.error?.code ?? 'REQUEST_FAILED',
       errorBody?.error?.message ?? `Request failed with status ${response.status}.`,
       errorBody?.error?.currentHash,
+      errorBody?.error?.issues,
+      errorBody?.error?.paths,
     );
   }
 
@@ -134,5 +162,33 @@ export const api = {
 
   databases(): Promise<{ databases: UiDatabase[] }> {
     return request<{ databases: UiDatabase[] }>('/api/databases');
+  },
+
+  createBackup(input: UiCreateBackupInput): Promise<BackupReport> {
+    return request<BackupReport>('/api/backup', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
+  },
+
+  validateBackup(input: UiValidateBackupInput): Promise<UiBackupValidationResult> {
+    return request<UiBackupValidationResult>('/api/backup/validate', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
+  },
+
+  previewRestore(input: UiValidateBackupInput): Promise<RestorePreview> {
+    return request<RestorePreview>('/api/restore/preview', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
+  },
+
+  restoreBackup(input: UiRestoreInput): Promise<ImportReport> {
+    return request<ImportReport>('/api/restore', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
   },
 };

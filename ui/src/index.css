@@ -6,7 +6,7 @@
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-sans: "Geist Variable", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   --font-mono: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
 
   --color-sidebar-ring: var(--sidebar-ring);
@@ -55,81 +55,81 @@
 
 :root {
   color-scheme: light;
-  --background: #ffffff;
-  --foreground: #37352f;
+  --background: #fbfaf7;
+  --foreground: #2b2a26;
   --card: #ffffff;
-  --card-foreground: #37352f;
+  --card-foreground: #2b2a26;
   --popover: #ffffff;
-  --popover-foreground: #37352f;
-  --primary: #37352f;
-  --primary-foreground: #ffffff;
-  --secondary: #efefed;
-  --secondary-foreground: #37352f;
-  --muted: #efefed;
-  --muted-foreground: #6b6a66;
-  --accent: #efefed;
-  --accent-foreground: #37352f;
+  --popover-foreground: #2b2a26;
+  --primary: #2b2a26;
+  --primary-foreground: #fbfaf7;
+  --secondary: #f0eee9;
+  --secondary-foreground: #2b2a26;
+  --muted: #f1efea;
+  --muted-foreground: #6c675e;
+  --accent: #edeae3;
+  --accent-foreground: #2b2a26;
   --destructive: #c7443e;
   --success: #2f7d63;
-  --border: #e9e9e7;
-  --input: #e3e3e1;
-  --ring: #5f5e5b;
-  --chart-1: #37352f;
-  --chart-2: #787774;
-  --chart-3: #9b9a97;
-  --chart-4: #c9c9c5;
-  --chart-5: #e9e9e7;
-  --radius: 0.5rem;
-  --sidebar: #f7f7f5;
-  --sidebar-foreground: #37352f;
-  --sidebar-primary: #37352f;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #efefed;
-  --sidebar-accent-foreground: #37352f;
-  --sidebar-border: #e9e9e7;
-  --sidebar-ring: #5f5e5b;
-  --selection: #dededc;
-  --tooltip: #37352f;
-  --tooltip-foreground: #ffffff;
+  --border: #e6e2da;
+  --input: #ddd8cf;
+  --ring: #2f7d63;
+  --chart-1: #2b2a26;
+  --chart-2: #6c675e;
+  --chart-3: #979186;
+  --chart-4: #c9c4b9;
+  --chart-5: #e6e2da;
+  --radius: 0.75rem;
+  --sidebar: #f4f2ed;
+  --sidebar-foreground: #2b2a26;
+  --sidebar-primary: #2b2a26;
+  --sidebar-primary-foreground: #fbfaf7;
+  --sidebar-accent: #e9e6de;
+  --sidebar-accent-foreground: #2b2a26;
+  --sidebar-border: #e3dfd6;
+  --sidebar-ring: #2f7d63;
+  --selection: #d5e7de;
+  --tooltip: #2b2a26;
+  --tooltip-foreground: #fbfaf7;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #191919;
-  --foreground: #e6e5e3;
-  --card: #202020;
-  --card-foreground: #e6e5e3;
-  --popover: #252525;
-  --popover-foreground: #e6e5e3;
-  --primary: #e6e5e3;
-  --primary-foreground: #191919;
-  --secondary: #2f2f2f;
-  --secondary-foreground: #e6e5e3;
-  --muted: #2f2f2f;
-  --muted-foreground: #9b9a97;
-  --accent: #2f2f2f;
-  --accent-foreground: #e6e5e3;
+  --background: #1c1b19;
+  --foreground: #e8e5df;
+  --card: #232220;
+  --card-foreground: #e8e5df;
+  --popover: #262523;
+  --popover-foreground: #e8e5df;
+  --primary: #e8e5df;
+  --primary-foreground: #1c1b19;
+  --secondary: #2e2c29;
+  --secondary-foreground: #e8e5df;
+  --muted: #2b2a27;
+  --muted-foreground: #a29c90;
+  --accent: #32302c;
+  --accent-foreground: #e8e5df;
   --destructive: #f0736c;
   --success: #7fbfa6;
-  --border: #2f2f2f;
-  --input: #3a3a3a;
-  --ring: #a5a4a0;
-  --chart-1: #e6e5e3;
-  --chart-2: #9b9a97;
-  --chart-3: #787774;
-  --chart-4: #5a5956;
-  --chart-5: #3a3937;
-  --sidebar: #202020;
-  --sidebar-foreground: #e6e5e3;
-  --sidebar-primary: #e6e5e3;
-  --sidebar-primary-foreground: #191919;
-  --sidebar-accent: #2f2f2f;
-  --sidebar-accent-foreground: #e6e5e3;
-  --sidebar-border: #2f2f2f;
-  --sidebar-ring: #a5a4a0;
-  --selection: #3a3a37;
-  --tooltip: #2f2f2f;
-  --tooltip-foreground: #e6e5e3;
+  --border: #333130;
+  --input: #403d39;
+  --ring: #7fbfa6;
+  --chart-1: #e8e5df;
+  --chart-2: #a29c90;
+  --chart-3: #7d786e;
+  --chart-4: #56534d;
+  --chart-5: #383633;
+  --sidebar: #191817;
+  --sidebar-foreground: #e8e5df;
+  --sidebar-primary: #e8e5df;
+  --sidebar-primary-foreground: #1c1b19;
+  --sidebar-accent: #2e2c29;
+  --sidebar-accent-foreground: #e8e5df;
+  --sidebar-border: #2c2b29;
+  --sidebar-ring: #7fbfa6;
+  --selection: #2f4a41;
+  --tooltip: #2e2c29;
+  --tooltip-foreground: #e8e5df;
 }
 
 @layer base {
@@ -146,6 +146,7 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     margin: 0;
+    caret-color: var(--success);
   }
 
   .lucide {

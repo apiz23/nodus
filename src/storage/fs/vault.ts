@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, realpath, unlink } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type {
   DatabaseStore,
   DatabaseSummary,
@@ -25,6 +25,7 @@ import { StorageError, storageFailure, wrapContentError, wrapInputError } from '
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { writeFileAtomic } from './atomic.js';
 import { databasePath, isReservedNotePath } from './layout.js';
+import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { walkVault, type WalkEntry } from './scan.js';
 
@@ -38,6 +39,7 @@ interface ParsedNote {
 interface ParsedDatabase {
   database: DatabaseDefinition;
   text: string;
+  bytes: Buffer;
 }
 
 const NOTE_NOT_FOUND = (id: string) =>
@@ -60,26 +62,6 @@ export function sha256Hex(bytes: Buffer | string): string {
 }
 
 /**
- * Serializes operations per resolved path within one process. A Promise chain
- * keyed by path: each queued function runs after the previous one finishes,
- * even across awaits, so two calls cannot interleave their check and write.
- */
-class PathMutex {
-  private readonly queues = new Map<string, Promise<unknown>>();
-
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.queues.get(key) ?? Promise.resolve();
-    const next = previous.then(fn, fn);
-    this.queues.set(
-      key,
-      next.catch(() => undefined),
-    );
-    void previous.catch(() => undefined);
-    return next;
-  }
-}
-
-/**
  * Filesystem-backed Markdown vault.
  *
  * Notes live at their Phase 1 relative paths; database definitions live at
@@ -87,7 +69,6 @@ class PathMutex {
  */
 export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   readonly root: string;
-  private readonly mutex = new PathMutex();
 
   private constructor(root: string) {
     this.root = root;
@@ -138,6 +119,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async createNote(note: Note): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     try {
       validateNote(note);
     } catch (error) {
@@ -172,9 +154,11 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     await this.writeDocument(note.path, this.serializeNoteInput(note));
+    });
   }
 
   async replaceNote(note: Note, options: ConditionalWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     try {
       validateNote(note);
     } catch (error) {
@@ -191,9 +175,8 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     const absolute = await this.validateNoteTarget(note.path);
-    await this.mutex.run(lockKey(absolute), async () => {
-      await this.assertUnchanged(absolute, note.path, options.expectedHash);
-      await this.writeDocument(note.path, this.serializeNoteInput(note));
+    await this.assertUnchanged(absolute, note.path, options.expectedHash);
+    await this.writeDocument(note.path, this.serializeNoteInput(note));
     });
   }
 
@@ -202,6 +185,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     toPath: string,
     options: ConditionalWriteOptions = {},
   ): Promise<Note> {
+    return withVaultRootLock(this.root, async () => {
     const current = await this.findNote(id);
     if (toPath === current.note.path) return current.note;
 
@@ -225,38 +209,41 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    await this.mutex.run(lockKey(source), async () => {
-      await this.assertUnchanged(source, current.note.path, options.expectedHash);
-      await this.writeDocument(toPath, current.text);
+    await this.assertUnchanged(source, current.note.path, options.expectedHash);
+    const movedText =
+      current.note.sourceFormat === 'plain-markdown'
+        ? this.serializeNoteInput({ ...current.note, path: toPath, sourceFormat: undefined })
+        : current.text;
+    await this.writeDocument(toPath, movedText);
 
-      try {
-        await unlink(source);
-      } catch (error) {
-        throw new StorageError(
-          'PARTIAL_WRITE',
-          `Note "${id}" was written to "${toPath}" but the old file at "${current.note.path}" could not be removed: ${describe(error)}`,
-          {
-            cause: error,
-            details: { ids: [id], paths: [current.note.path, toPath] },
-          },
-        );
-      }
-    });
+    try {
+      await unlink(source);
+    } catch (error) {
+      throw new StorageError(
+        'PARTIAL_WRITE',
+        `Note "${id}" was written to "${toPath}" but the old file at "${current.note.path}" could not be removed: ${describe(error)}`,
+        {
+          cause: error,
+          details: { ids: [id], paths: [current.note.path, toPath] },
+        },
+      );
+    }
 
     return { ...current.note, path: toPath };
+    });
   }
 
   async deleteNote(id: string, options: ConditionalWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     const current = await this.findNote(id);
     const source = await this.validateReadPath(current.note.path);
-    await this.mutex.run(lockKey(source), async () => {
-      await this.assertUnchanged(source, current.note.path, options.expectedHash);
-      try {
-        await unlink(source);
-      } catch (error) {
-        if (isMissing(error)) throw NOTE_NOT_FOUND(id);
-        throw storageFailure(error, 'Delete note', current.note.path);
-      }
+    await this.assertUnchanged(source, current.note.path, options.expectedHash);
+    try {
+      await unlink(source);
+    } catch (error) {
+      if (isMissing(error)) throw NOTE_NOT_FOUND(id);
+      throw storageFailure(error, 'Delete note', current.note.path);
+    }
     });
   }
 
@@ -292,6 +279,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async createDatabase(database: DatabaseDefinition): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     const text = this.serializeDatabaseInput(database);
     const path = databasePath(database.id);
     const absolute = await this.validateInternalPath(path);
@@ -302,24 +290,31 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       });
     }
     await this.writeDocument(path, text, true);
+    });
   }
 
   async replaceDatabase(database: DatabaseDefinition): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     const text = this.serializeDatabaseInput(database);
     const path = databasePath(database.id);
     const absolute = await this.validateInternalPath(path);
     if (!(await pathExists(absolute))) throw DATABASE_NOT_FOUND(database.id);
     await this.writeDocument(path, text, true);
+    });
   }
 
   async deleteDatabase(id: string): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
     if (!isUuidV4(id)) throw DATABASE_NOT_FOUND(id);
+    await assertNotSymlink(resolveInsideRoot(this.root, 'databases'), 'databases');
+    const absolute = await this.validateInternalPath(databasePath(id));
     try {
-      await unlink(resolveInsideRoot(this.root, databasePath(id)));
+      await unlink(absolute);
     } catch (error) {
       if (isMissing(error)) throw DATABASE_NOT_FOUND(id);
       throw storageFailure(error, 'Delete database', databasePath(id));
     }
+    });
   }
 
   async snapshot(): Promise<VaultEntry[]> {
@@ -327,17 +322,19 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const databases = await this.parseDatabasesStrict();
 
     return [
-      ...notes.map(({ note, text }) => ({
+      ...notes.map(({ note, text, bytes }) => ({
         kind: 'note' as const,
         id: note.id,
         path: note.path,
         text,
+        rawBytes: Buffer.from(bytes),
       })),
-      ...databases.map(({ database, text }) => ({
+      ...databases.map(({ database, text, bytes }) => ({
         kind: 'database' as const,
         id: database.id,
         path: databasePath(database.id),
         text,
+        rawBytes: Buffer.from(bytes),
       })),
     ];
   }
@@ -414,15 +411,21 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
+    return withVaultRootLock(this.root, () => this.applyImportLocked(plan, options));
+  }
+
+  private async applyImportLocked(plan: ImportPlan, options: ImportOptions): Promise<ImportReport> {
     for (const note of plan.notes) {
       try {
         validateNote(note);
+        await this.validateNoteTarget(note.path);
       } catch (error) {
         throw wrapInputError(error, `Invalid imported note "${note.path}"`);
       }
     }
     for (const database of plan.databases) {
       this.serializeDatabaseInput(database);
+      await this.validateInternalPath(databasePath(database.id));
     }
 
     const noteText = new Map<string, string>();
@@ -439,6 +442,39 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const existingNotePaths = new Map(existingNotes.map(({ note }) => [foldPath(note.path), note.path] as const));
     const existingNotePathToId = new Map(existingNotes.map(({ note }) => [foldPath(note.path), note.id] as const));
     const existingDatabaseIds = new Set(existingDatabases.map(({ database }) => database.id));
+    const expectedHashes = new Map<string, string>();
+    for (const { note, bytes } of existingNotes) expectedHashes.set(note.path, sha256Hex(bytes));
+    for (const { database, bytes } of existingDatabases) {
+      expectedHashes.set(databasePath(database.id), sha256Hex(bytes));
+    }
+
+    const plannedPaths = new Set<string>();
+    const plannedNoteIds = new Set<string>();
+    for (const note of plan.notes) {
+      const folded = foldPath(note.path);
+      if (plannedNoteIds.has(note.id)) {
+        throw new StorageError('DUPLICATE_ID', `Import contains duplicate note ID "${note.id}"`, {
+          details: { ids: [note.id] },
+        });
+      }
+      plannedNoteIds.add(note.id);
+      if (plannedPaths.has(folded)) {
+        throw new StorageError('CONFLICT', `Import contains duplicate path "${note.path}"`, {
+          path: note.path,
+          details: { paths: [note.path] },
+        });
+      }
+      plannedPaths.add(folded);
+    }
+    const plannedDatabaseIds = new Set<string>();
+    for (const database of plan.databases) {
+      if (plannedDatabaseIds.has(database.id)) {
+        throw new StorageError('DUPLICATE_ID', `Import contains duplicate database ID "${database.id}"`, {
+          details: { ids: [database.id] },
+        });
+      }
+      plannedDatabaseIds.add(database.id);
+    }
 
     const idConflicts = new Set<string>();
     const pathConflicts = new Set<string>();
@@ -489,7 +525,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    const plannedPaths = new Set(plan.notes.map((note) => foldPath(note.path)));
     const stalePaths = [
       ...new Set(
         plan.notes
@@ -499,13 +534,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     ].filter((path) => !plannedPaths.has(foldPath(path)));
 
     const written: string[] = [];
+    const deleted: string[] = [];
+    let failedPath: string | undefined;
     let notes = 0;
     let databases = 0;
 
     try {
       for (const note of plan.notes) {
         const text = noteText.get(note.id) ?? this.serializeNoteInput(note);
-        await this.writeDocument(note.path, text);
+        failedPath = note.path;
+        await this.writeDocument(note.path, text, false, () =>
+          this.assertImportTargetUnchanged(note.path, expectedHashes.get(note.path)),
+        );
         notes += 1;
         written.push(note.path);
       }
@@ -513,7 +553,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       for (const database of plan.databases) {
         const path = databasePath(database.id);
         const text = databaseText.get(database.id) ?? serializeDatabase(database);
-        await this.writeDocument(path, text, true);
+        failedPath = path;
+        await this.writeDocument(path, text, true, () =>
+          this.assertImportTargetUnchanged(path, expectedHashes.get(path)),
+        );
         databases += 1;
         written.push(path);
       }
@@ -521,20 +564,45 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
-        await unlink(resolveInsideRoot(this.root, stalePath));
+        failedPath = stalePath;
+        await this.removeDocument(stalePath, expectedHashes.get(stalePath));
+        deleted.push(stalePath);
       }
     } catch (error) {
+      if (written.length === 0 && deleted.length === 0) throw error;
+      const paths = [...new Set([...written, ...deleted, ...(failedPath === undefined ? [] : [failedPath])])];
       throw new StorageError(
         'PARTIAL_WRITE',
-        `Import stopped after writing ${written.length} file(s); already written files are valid but the import is incomplete: ${describe(error)}`,
+        `Import stopped after changing ${written.length + deleted.length} path(s); inspect all reported paths before manual recovery: ${describe(error)}`,
         {
           cause: error,
-          details: { paths: written },
+          details: { paths },
         },
       );
     }
 
     return { notes, databases };
+  }
+
+  private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
+    const absolute = await this.validateInternalPath(path);
+    if (!(await pathExists(absolute))) {
+      if (expectedHash !== undefined) throw importTargetChanged(path);
+      return;
+    }
+    if (expectedHash === undefined) throw importTargetChanged(path);
+    const current = await this.readBytesAt(absolute, path);
+    if (sha256Hex(current) !== expectedHash) throw importTargetChanged(path);
+  }
+
+  private async removeDocument(path: string, expectedHash: string | undefined): Promise<void> {
+    const absolute = await this.validateReadPath(path);
+    await this.assertImportTargetUnchanged(path, expectedHash);
+    try {
+      await unlink(absolute);
+    } catch (error) {
+      throw storageFailure(error, 'Remove imported file', path);
+    }
   }
 
   private async parseNotesStrict(): Promise<ParsedNote[]> {
@@ -550,7 +618,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       let bytes: Buffer;
       try {
         bytes = await this.readBytes(entry);
-        text = bytes.toString('utf8');
+        text = decodeVaultText(bytes, entry.path);
         note = parseNote(text, entry.path);
       } catch (error) {
         throw wrapContentError(error, entry.path);
@@ -585,8 +653,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
       let database: DatabaseDefinition;
       let text: string;
+      let bytes: Buffer;
       try {
-        text = await this.readText(entry);
+        bytes = await this.readBytes(entry);
+        text = decodeVaultText(bytes, entry.path);
         database = parseDatabase(text);
       } catch (error) {
         throw wrapContentError(error, entry.path);
@@ -601,7 +671,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         );
       }
 
-      parsed.push({ database, text });
+      parsed.push({ database, text, bytes });
     }
 
     return parsed;
@@ -624,7 +694,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       let bytes: Buffer;
       try {
         bytes = await this.readBytes(entry);
-        text = bytes.toString('utf8');
+        text = decodeVaultText(bytes, entry.path);
         note = parseNote(text, entry.path);
       } catch (error) {
         failures.push(wrapContentError(error, entry.path));
@@ -687,19 +757,30 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   private async validateNoteTarget(path: string): Promise<string> {
     const absolute = await this.validateDocumentPath(path);
-    if (isReservedNotePath(path)) {
+    if (path.split('/').some((segment) => segment.startsWith('.'))) {
+      throw new StorageError('UNSAFE_PATH', `Hidden note path "${path}" is excluded from the vault`, {
+        path,
+      });
+    }
+    if (isReservedNotePath(path.toLowerCase())) {
       throw new StorageError(
         'INVALID_INPUT',
         `Path "${path}" is reserved for database definitions`,
         { path, details: { paths: [path] } },
       );
     }
+    // The scanner excludes directory symlinks even when they stay inside the root.
+    let component = this.root;
+    for (const segment of path.split('/')) {
+      component = join(component, segment);
+      await assertNotSymlink(component, path);
+    }
     return absolute;
   }
 
   /**
-   * Re-hashes the file immediately before a conditional write, while holding
-   * the per-path mutex. No-op when `expectedHash` was not supplied.
+ * Re-hashes the file immediately before a conditional write. No-op when
+ * `expectedHash` was not supplied. Public mutations hold the shared root lock.
    */
   private async assertUnchanged(
     absolute: string,
@@ -712,10 +793,16 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     if (current !== expectedHash) throw staleWrite(path, current);
   }
 
-  private async writeDocument(path: string, text: string, allowReserved = false): Promise<void> {
+  private async writeDocument(
+    path: string,
+    text: string | Uint8Array,
+    allowReserved = false,
+    beforeWrite?: () => Promise<void>,
+  ): Promise<void> {
     const absolute = allowReserved
       ? await this.validateInternalPath(path)
       : await this.validateNoteTarget(path);
+    await beforeWrite?.();
     try {
       await writeFileAtomic(absolute, text);
     } catch (error) {
@@ -732,7 +819,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   private async readTextAt(absolute: string, relativePath: string): Promise<string> {
-    return (await this.readBytesAt(absolute, relativePath)).toString('utf8');
+    return decodeVaultText(await this.readBytesAt(absolute, relativePath), relativePath);
   }
 
   private async readBytesAt(absolute: string, relativePath: string): Promise<Buffer> {
@@ -749,6 +836,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       }
       throw storageFailure(error, 'Read file', relativePath);
     }
+  }
+}
+
+function decodeVaultText(bytes: Uint8Array, path: string): string {
+  try {
+    // Keep a valid BOM in raw text; the Markdown parser handles it separately.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new StorageError('INVALID_CONTENT', `File "${path}" is not valid UTF-8 text`, { path });
   }
 }
 
@@ -774,14 +870,17 @@ function foldPath(path: string): string {
 }
 
 /** Mutex key: absolute path, case-folded so Windows path variants share one lock. */
-function lockKey(absolute: string): string {
-  return foldPath(absolute);
-}
-
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function importTargetChanged(path: string): StorageError {
+  return new StorageError('CONFLICT', `Import target "${path}" changed after preflight; no further write occurred`, {
+    path,
+    details: { paths: [path] },
+  });
 }

@@ -41,6 +41,8 @@ export interface VaultEntry {
   id: string;
   path: string;
   text: string;
+  /** Original file bytes when snapshot comes from filesystem storage. */
+  rawBytes?: Buffer;
 }
 
 /** Optional conditional write parameters. */
@@ -97,13 +99,51 @@ export interface BackupManifestFile {
   id: string;
   path: string;
   sha256: string;
+  /** UTF-8 byte length of the file content. Absent on legacy v1 manifests. */
+  bytes?: number;
+}
+
+/** Application that wrote the backup; optional on legacy v1 manifests. */
+export interface BackupManifestApp {
+  name: string;
+  version: string;
+}
+
+/** Document format versions the writing build understood; optional on legacy v1 manifests. */
+export interface BackupManifestFormats {
+  note: number;
+  database: number;
+  backup: number;
+}
+
+/** File counts by kind; optional on legacy v1 manifests, cross-checked when present. */
+export interface BackupManifestCounts {
+  notes: number;
+  databases: number;
 }
 
 export interface BackupManifest {
   format: 'nodus-backup';
   version: 1;
   createdAt: string;
+  app?: BackupManifestApp;
+  formats?: BackupManifestFormats;
+  counts?: BackupManifestCounts;
   files: BackupManifestFile[];
+  /**
+   * SHA-256 of the canonical serialization of this manifest with `digest`
+   * itself excluded. Optional on legacy v1 manifests; when present it must
+   * match or validation fails with `CORRUPT_BACKUP`.
+   */
+  digest?: string;
+}
+
+/** Read-only result of comparing a validated backup against a live vault. */
+export interface RestorePreview {
+  manifest: BackupManifest;
+  counts: { notes: number; databases: number };
+  /** ID and path conflicts a restore would hit without `overwrite: true`. */
+  conflicts: { ids: string[]; paths: string[] };
 }
 
 export interface BackupReport {

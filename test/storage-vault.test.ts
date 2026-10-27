@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DatabaseDefinition } from '../src/database/schema.js';
 import { createNote, type Note } from '../src/domain/note.js';
-import { serializeNote } from '../src/format/note-format.js';
+import { parseNote, serializeNote } from '../src/format/note-format.js';
 import { StorageError } from '../src/storage/errors.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { withTempDir } from './tmp.js';
@@ -50,6 +50,48 @@ describe('FileSystemVault.open', () => {
 });
 
 describe('note storage', () => {
+  it('scans mixed plain and Nodus Markdown and saves plain content without adding metadata', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      const plain = '# Daily entry\n\nCafé 日本語 🙂\n';
+      await mkdir(join(dir, 'daily'), { recursive: true });
+      await writeFile(join(dir, 'daily/2026-08-03.md'), plain, 'utf8');
+      await vault.createNote(note(N1, 'notes/native.md'));
+
+      const summaries = await vault.listNotes();
+      expect(summaries.map(({ path, title }) => [path, title])).toEqual([
+        ['daily/2026-08-03.md', '2026-08-03'],
+        ['notes/native.md', `Note ${N1.slice(0, 4)}`],
+      ]);
+
+      const loaded = await vault.readNoteWithHash(parseNote(plain, 'daily/2026-08-03.md').id);
+      await vault.replaceNote({
+        ...loaded.note,
+        body: `${loaded.note.body}Edited without conversion.\n`,
+        updatedAt: '2026-10-25T10:00:00Z',
+      }, { expectedHash: loaded.hash });
+
+      expect(await readFile(join(dir, 'daily/2026-08-03.md'), 'utf8')).toBe(
+        `${plain}Edited without conversion.\n`,
+      );
+      expect(await vault.listNotes()).toHaveLength(2);
+    });
+  });
+
+  it('keeps a plain note ID when explicitly moved by adding Nodus metadata', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await writeFile(join(dir, 'daily.md'), 'Plain body\n', 'utf8');
+      const before = await vault.readNoteWithHash(parseNote('Plain body\n', 'daily.md').id);
+
+      const moved = await vault.moveNote(before.note.id, 'archive/daily.md', { expectedHash: before.hash });
+
+      expect(moved.id).toBe(before.note.id);
+      expect((await vault.readNoteWithHash(before.note.id)).note.path).toBe('archive/daily.md');
+      expect(await readFile(join(dir, 'archive/daily.md'), 'utf8')).toContain(`id: ${before.note.id}`);
+    });
+  });
+
   it('writes a note as canonical Markdown at its approved path', async () => {
     await withTempDir(async (dir) => {
       const vault = await FileSystemVault.open(dir);
@@ -233,7 +275,7 @@ describe('note storage', () => {
   it('reports malformed notes through health without throwing', async () => {
     await withTempDir(async (dir) => {
       const vault = await FileSystemVault.open(dir);
-      await writeFile(join(dir, 'broken.md'), '# No frontmatter\n', 'utf8');
+      await writeFile(join(dir, 'broken.md'), '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n', 'utf8');
 
       expect(await storageErrorCode(() => vault.listNotes())).toBe('INVALID_CONTENT');
       const health = await vault.checkHealth();

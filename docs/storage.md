@@ -84,7 +84,7 @@ All storage failures are `StorageError`, which is separate from the Phase 1 `Nod
 | `INVALID_CONTENT` | On-disk content is malformed or does not match the approved format. |
 | `UNSUPPORTED_VERSION` | A note, database, or backup version is newer than this build. |
 | `CORRUPT_BACKUP` | The manifest is missing/invalid, a file is missing, a hash mismatches, or a document is inconsistent. |
-| `PARTIAL_WRITE` | A multi-file operation stopped after some files were written. `details.paths` lists them. |
+| `PARTIAL_WRITE` | A multi-file operation stopped after changing paths. `details.paths` lists completed paths and the path where it stopped. |
 | `STALE_WRITE` | A conditional write (`expectedHash`) found different bytes on disk. `details.currentHash` carries the current SHA-256. No write occurred. |
 | `STORAGE_FAILURE` | An I/O operation failed. |
 
@@ -115,11 +115,11 @@ Not guaranteed:
 Phase 1 has no revision field, and this phase does **not** invent one: no new frontmatter, no `nodus.version` bump. Instead, the revision token is the **SHA-256 of the raw file bytes**.
 
 - Without `expectedHash`, `replaceNote` remains last-write-wins, and existing callers and sync code behave exactly as before.
-- With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a per-path in-process mutex. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
+- With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a shared per-real-root in-process mutation lock. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
 - `FileSystemVault.readNoteWithHash(id)` returns the note, its text, and the hash computed from the same bytes that were parsed, in one read. The local UI passes that hash back as `expectedHash`, replacing its old separate read-compare-write.
 - Two conditional calls on the same path inside one process are serialized by the mutex, so their check-and-write windows cannot interleave.
 
-**Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external writer that modifies the file between our final hash and the `rename` can still lose its edit, and another *process* is outside the mutex entirely. The mitigation narrows the window to the hash-then-rename gap and serializes this process; it does not close it. Closing it would require an OS-level locking scheme (advisory locks, `O_NOFOLLOW`/`renameat2`-style primitives, or a journal), which is a separate, explicitly approved decision.
+**Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external writer can still change a file between our final hash and `rename`. The root lock serializes this process only; it does not protect against another process. The check narrows the window but does not close it. No cross-process lock is implemented.
 
 Import and restore never overwrite by default. They abort with `CONFLICT` before writing unless `{ overwrite: true }` is passed.
 
@@ -175,36 +175,78 @@ Behavior and limits:
 
 - Imported files keep their original bytes, so unknown frontmatter keys and non-canonical formatting survive.
 - Non-Nodus files (for example `README.txt`) are never copied, modified, or deleted.
-- A write failure is reported as `PARTIAL_WRITE` with the paths already written. Re-running the import is the recovery path.
+- If an import changes one or more paths before a later write or deletion fails, it returns `PARTIAL_WRITE`. `details.paths` lists successfully written or deleted paths and the path where the failing operation stopped. No changes are rolled back. A failure before any path changes returns its original error.
+- **Manual recovery:** stop edits to the affected vault, inspect every reported path and check for duplicate note IDs, then create a backup of the current vault before repairing files. Use storage health checks after repair. Validate and preview a new import before applying it. Do not blindly retry: files may have changed since the failed attempt. There is no automatic crash recovery or guaranteed retry.
 - Import is one-way copying. It is not synchronization, does not track history, and does not merge divergent content.
-- With `overwrite: true`, a note at a conflicting path can be replaced by a different ID; that old note is lost. This is why overwrite is never the default.
+- With `overwrite: true`, an exact-path note replacement is allowed only when note IDs match. Same-ID relocation can write a new path and remove the old path after all incoming files are written. A different ID at the same path, or any case-insensitive/NFC path collision, remains blocked. Database definitions can be replaced by matching ID.
 
 ## Backup and recovery
 
-`createBackup(vault, targetDir)` writes the same layout plus a manifest (hash abbreviated here):
+`createBackup(vault, targetDir)` writes a **directory-based** backup: the same `notes/` + `databases/` layout as the vault, plus a `nodus-backup.json` manifest written **last**, atomically (hash abbreviated here):
 
 ```json
 {
   "format": "nodus-backup",
   "version": 1,
-  "createdAt": "2026-10-25T12:00:00.000Z",
+  "createdAt": "2026-10-27T08:00:00.000Z",
+  "app": { "name": "nodus", "version": "0.1.0" },
+  "formats": { "note": 1, "database": 1, "backup": 1 },
+  "counts": { "notes": 12, "databases": 3 },
   "files": [
     {
       "kind": "note",
       "id": "6f1c2a9e-3b7d-4c8e-9f0a-1d2e3f4a5b6c",
       "path": "notes/roadmap.md",
-      "sha256": "..."
+      "sha256": "...",
+      "bytes": 1483
     }
-  ]
+  ],
+  "digest": "..."
 }
 ```
 
-- Files are copied byte for byte. The manifest is written **last**, atomically, so a missing manifest means an interrupted or incomplete backup.
-- The target must be empty and outside the vault.
-- `validateBackup(dir)` checks the manifest shape and version, every hash, every document with the Phase 1 parsers, IDs against the manifest, database filenames, and duplicate IDs/paths. Newer document or manifest versions produce `UNSUPPORTED_VERSION`; other problems produce `CORRUPT_BACKUP` with an issue list.
-- `restoreBackup(backupDir, targetRoot, { overwrite })` validates first, then applies the backup through the normal import path. It never writes to the backup directory. Without `overwrite`, existing IDs or paths abort before any write.
-- A failed validation creates no target directory and leaves the backup untouched.
-- A restoration I/O failure is `PARTIAL_WRITE`; the backup remains unchanged and re-running the restore is the recovery path.
+- Files are copied byte for byte with the same atomic write used for notes. A missing manifest means an interrupted or incomplete backup.
+- The target must be **empty** and outside the vault. A non-empty target fails with `CONFLICT` and is left untouched; a nonexistent target is created.
+- `format` is always `nodus-backup`; manifest `version` is `1`.
+
+### Manifest metadata and digest
+
+- Each `files` entry carries `kind` (`note` | `database`), the document `id`, the vault-relative `path`, the lowercase hex SHA-256 of the UTF-8 content, and `bytes` (UTF-8 byte length).
+- Optional metadata written by current builds: `app` (name/version of the writer, from `package.json`), `formats` (note/database/backup versions the writer understood), and `counts` (cross-checked against the file list during validation).
+- `digest` is the SHA-256 of the manifest serialized canonically: fixed key order (`format`, `version`, `createdAt`, then `app`/`formats`/`counts` when present, then `files` with fixed entry keys), `JSON.stringify` without whitespace, encoded UTF-8. The `digest` field itself is excluded from its own input.
+- **Backward compatibility:** older valid v1 manifests without `app`, `formats`, `counts`, `bytes`, or `digest` still validate. When `digest` is present it must match and every entry must carry `bytes`; a mismatch fails with `CORRUPT_BACKUP`.
+- The hashes and digest are **integrity checks only**: they detect accidental or unauthorized byte changes. They do **not** authenticate the backup or prove who created it — anyone able to edit the backup can recompute them.
+
+### Creating and validating backups
+
+Exposed through the local API (localhost only, origin-checked) and driven by Settings → Backup & restore (typed paths; Nodus has no file picker for backup folders):
+
+- `POST /api/backup` with `{ targetDir }` → 201 `{ targetDir, notes, databases }`.
+- `POST /api/backup/validate` with `{ dir }` → 200 `{ manifest, counts }`; failures are 422 `CORRUPT_BACKUP` (with an `issues` list shown in the UI), 422 `UNSUPPORTED_VERSION`, or 404 for a missing directory.
+
+Destination and source rules (`assertBackupTargetAllowed`), in order:
+
+1. Must be absolute — otherwise 400 `INVALID_INPUT`.
+2. Must be outside the active vault (realpath containment on the nearest existing ancestor) — otherwise 400.
+3. Must be inside a `NODUS_BACKUP_ROOTS` root — otherwise 403 `BACKUP_TARGET_NOT_ALLOWED`.
+4. An existing destination must be a directory — otherwise 400; a path that traverses a file is 400; a **nonexistent** destination is allowed and created by the storage layer.
+
+`NODUS_BACKUP_ROOTS` uses the platform path delimiter (`:` on macOS/Linux, `;` on Windows), like `NODUS_VAULT_ROOTS`. When unset or empty the only allowed root is the **parent directory of the active vault**. Roots are `realpath`-resolved; a root that does not exist is skipped. The same rules gate backup **sources** (validate, preview, restore).
+
+`validateBackup(dir)` reads the manifest (`nodus-backup.json` must exist or the backup is treated as incomplete/`CORRUPT_BACKUP`), verifies schema, version, optional digest, every listed file exists, is a regular non-symlink file, hashes match, every document parses under Phase 1 rules, IDs match the manifest, database filenames equal their IDs, and IDs/paths are unique (paths compared NFC-normalized, case-folded). Newer document or manifest versions produce `UNSUPPORTED_VERSION`; other problems produce `CORRUPT_BACKUP` with an issue list. Validation never writes.
+
+### Restore behavior
+
+- `POST /api/restore/preview` with `{ dir }` returns a **read-only** `RestorePreview`: manifest, counts of the parseable documents (from parsing, not the manifest), and `conflicts` — note IDs against note IDs, database IDs against database IDs, and note paths after NFC normalization + case folding, mirroring the checks `applyImport` runs. Preview writes nothing on either side, but it **cannot guarantee** a later restore will be conflict-free: the vault may change in between.
+- `POST /api/restore` with `{ dir, overwrite? }` always targets the **active vault** — a client-supplied `destination` field is rejected with 400, and the source passes the same allow-list checks. Restore validates the entire backup first, then applies it through the normal import path; the backup directory is only ever read.
+- **Merge semantics:** by default (`overwrite: false`) any existing ID or path aborts with `CONFLICT` (409) *before a single write*. With `overwrite: true`, matching-ID notes at the same exact path and matching-ID databases can be replaced; a matching-ID note can move paths. Different-ID exact-path collisions and case-insensitive/NFC path collisions remain blocked. Unrelated vault content is untouched. Restore **merges into the active vault — it never replaces or clears the vault as a whole**, and never touches files outside it. The Settings UI requires explicit confirmation showing the exact source on every restore; overwrite remains off until user enables it.
+- **Not globally atomic:** each file write is atomic, but merge restore spans files. An I/O failure after changes returns `PARTIAL_WRITE` (500) with `details.paths` listing completed changes and the path of the failed operation. The Settings UI tells the user to inspect the affected vault. The backup itself remains unchanged.
+- Not implemented and not claimed: transactional restore, rollback, encryption, automatic/scheduled backups, durable recovery journal, or automatic crash recovery.
+
+### Backup path checks (security)
+
+- The allow-list and active-vault exclusion above are enforced on the localhost API before any read or write; `realpath` (or the nearest existing ancestor for not-yet-created targets) is used for containment, so a symlinked parent that resolves into the vault or outside the roots is rejected.
+- **Residual race:** containment is checked, then the path is used — POSIX/Windows offer no atomic "create only inside X" primitive, so a symlink swapped into place between check and use can still race (same class as the hash-then-rename window described under Concurrency). The checks restrict what the local API accepts; they do not replace OS permissions.
 
 What a backup protects against:
 
@@ -215,7 +257,7 @@ What it does **not** protect against:
 
 - Disk failure, filesystem corruption, ransomware, or loss of the backup itself.
 - Deletion or modification of both the vault and the backup.
-- Malicious tampering that recomputes the hashes. Hashes detect corruption, not forgery.
+- Malicious tampering that recomputes the hashes. Hashes detect corruption, not forgery; they authenticate nothing.
 - Concurrent writers while the backup is created.
 - Non-Nodus files in the vault (they are not backed up).
 - Attachments, settings, or UI state (not implemented in Phase 1 or 2).
@@ -230,7 +272,7 @@ Store backups on a different device or service for real disaster recovery. Phase
 
 ## Future cross-device access
 
-Phase 2 is local only. Nothing here makes Nodus reachable from another device. A later, separately approved phase would need:
+Phase 2 storage is local only, and the experimental relay/sync implementation (`src/relay/`, `src/sync/`) is not wired into the application, any script, or the UI. Nothing here makes Nodus reachable from another device. A later, separately approved phase would need:
 
 1. **Transport:** HTTPS with modern TLS, or a private overlay network.
 2. **Authentication:** per-device credentials or passkeys, session expiry, and revocation.

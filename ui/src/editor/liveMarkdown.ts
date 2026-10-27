@@ -25,6 +25,7 @@ const hiddenMark = Decoration.mark({ class: 'cm-hidden' });
 const strongMark = Decoration.mark({ class: 'cm-strong' });
 const emphasisMark = Decoration.mark({ class: 'cm-emphasis' });
 const inlineCodeMark = Decoration.mark({ class: 'cm-inline-code' });
+const linkLabelMark = Decoration.mark({ class: 'cm-md-link' });
 
 class BulletWidget extends WidgetType {
   eq(other: BulletWidget): boolean {
@@ -95,6 +96,44 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
         if (name === 'InlineCode') {
           ranges.push(inlineCodeMark.range(node.from, node.to));
+          return;
+        }
+
+        if (name === 'Link') {
+          // Inline links parse as Link > LinkMark("[") text LinkMark("]") …;
+          // style the visible label span between the brackets.
+          const doc = view.state.doc;
+          if (doc.sliceString(node.from, node.from + 1) === '[') {
+            let labelEnd = -1;
+            for (let pos = node.from + 1; pos < node.to; pos += 1) {
+              if (doc.sliceString(pos, pos + 1) === ']') {
+                labelEnd = pos;
+                break;
+              }
+            }
+            if (labelEnd > node.from + 1) {
+              ranges.push(linkLabelMark.range(node.from + 1, labelEnd));
+            }
+          }
+        }
+
+        if (name === 'LinkLabel') {
+          ranges.push(linkLabelMark.range(node.from, node.to));
+        }
+
+        if (name === 'LinkMark') {
+          if (!isSelected(view, node.from, node.to)) {
+            ranges.push(hiddenMark.range(node.from, node.to));
+          }
+          return;
+        }
+
+        if (name === 'URL') {
+          const before =
+            node.from > 0 ? view.state.doc.sliceString(node.from - 1, node.from) : '';
+          if (before === '(' && !isSelected(view, node.from, node.to)) {
+            ranges.push(hiddenMark.range(node.from, node.to));
+          }
           return;
         }
 
@@ -184,36 +223,53 @@ export function liveMarkdown(options: LiveMarkdownOptions = {}): Extension {
     taskList(),
     EditorView.baseTheme({
       '.cm-hidden': { display: 'none' },
-      '.cm-heading': { fontWeight: 600, lineHeight: 1.25 },
-      '.cm-h1': { fontSize: '1.8em' },
-      '.cm-h2': { fontSize: '1.5em' },
-      '.cm-h3': { fontSize: '1.25em' },
-      '.cm-h4': { fontSize: '1.1em' },
-      '.cm-h5': { fontSize: '1em' },
-      '.cm-h6': { fontSize: '0.9em', textTransform: 'uppercase' },
-      '.cm-strong': { fontWeight: 700 },
+      '.cm-heading': { fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.015em' },
+      '.cm-h1': { fontSize: '1.7em', paddingTop: '0.55em' },
+      '.cm-h2': { fontSize: '1.4em', paddingTop: '0.5em' },
+      '.cm-h3': { fontSize: '1.2em', paddingTop: '0.45em' },
+      '.cm-h4': { fontSize: '1.1em', paddingTop: '0.4em' },
+      '.cm-h5': { fontSize: '1em', paddingTop: '0.35em' },
+      '.cm-h6': {
+        fontSize: '0.9em',
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        paddingTop: '0.3em',
+      },
+      '.cm-strong': { fontWeight: 650 },
       '.cm-emphasis': { fontStyle: 'italic' },
+      '.cm-md-link': {
+        color: 'var(--success)',
+        textDecoration: 'underline',
+        textDecorationThickness: '1px',
+        textUnderlineOffset: '0.18em',
+        textDecorationColor: 'color-mix(in oklab, var(--success) 45%, transparent)',
+      },
       '.cm-inline-code': {
         fontFamily: 'var(--font-mono)',
         backgroundColor: 'var(--muted)',
-        padding: '0.1em 0.25em',
-        borderRadius: '0.25rem',
+        padding: '0.1em 0.3em',
+        borderRadius: '0.3rem',
+        fontSize: '0.9em',
       },
       '.cm-list-bullet': {
         display: 'inline-block',
-        width: '1.2em',
-        color: 'var(--muted-foreground)',
+        width: '1.05em',
+        textAlign: 'center',
+        color: 'var(--success)',
+        fontSize: '0.95em',
       },
-      '.cm-list-item': { paddingLeft: '0.25rem' },
+      '.cm-list-item': { paddingLeft: '0.15rem' },
       '.cm-blockquote': {
-        borderLeft: '3px solid var(--border)',
-        paddingLeft: '0.75rem',
+        borderLeft: '2px solid var(--border)',
+        paddingLeft: '0.9rem',
         color: 'var(--muted-foreground)',
+        fontStyle: 'italic',
       },
       '.cm-fenced-code': {
         fontFamily: 'var(--font-mono)',
         backgroundColor: 'var(--muted)',
-        fontSize: '0.9em',
+        fontSize: '0.88em',
+        lineHeight: '1.6',
       },
       '.cm-table-line': {
         fontFamily: 'var(--font-mono)',

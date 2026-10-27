@@ -1,10 +1,11 @@
 import { createServer, type Server } from 'node:http';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createNote, type Note } from '../src/domain/note.js';
 import { parseNote, serializeNote } from '../src/format/note-format.js';
+import { createBackup } from '../src/storage/backup/backup.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import type { UiDatabase, UiNote, UiVaultPickResult, UiVaultStatus } from '../src/ui-server/dto.js';
@@ -780,7 +781,11 @@ describe('local UI API', () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');
       await mkdir(join(vaultPath, 'notes'), { recursive: true });
-      await writeFile(join(vaultPath, 'notes/broken.md'), 'not frontmatter', 'utf8');
+      await writeFile(
+        join(vaultPath, 'notes/broken.md'),
+        '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n',
+        'utf8',
+      );
 
       const started = await startApi(vaultPath);
       try {
@@ -862,6 +867,400 @@ describe('local UI API', () => {
       } finally {
         if (previous === undefined) delete process.env.NODUS_ALLOWED_ORIGINS;
         else process.env.NODUS_ALLOWED_ORIGINS = previous;
+        await stopApi(started);
+      }
+    });
+  });
+});
+
+interface ErrorBody {
+  error: { code: string; message: string; issues?: string[]; paths?: string[] };
+}
+
+describe('backup and restore API routes', () => {
+  const N3 = '55555555-5555-4555-8555-555555555555';
+  const MANIFEST_FILE = 'nodus-backup.json';
+
+  async function seedBackupVault(root: string): Promise<FileSystemVault> {
+    const vault = await FileSystemVault.open(root);
+    await vault.createNote(
+      createNote({ id: N1, title: 'Backup note', path: 'notes/a.md', body: 'Backup body\n', now: NOW }),
+    );
+    await vault.createDatabase({
+      id: DB1,
+      name: 'Reading list',
+      properties: [{ id: PROP1, name: 'Title', type: 'text' }],
+    });
+    return vault;
+  }
+
+  async function pathExists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it('creates a backup and validates it over HTTP', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await seedBackupVault(vaultPath);
+      const started = await startApi(vaultPath);
+      const target = join(dir, 'backup-http');
+      try {
+        const created = await json<{ targetDir: string; notes: number; databases: number }>(
+          started.base,
+          '/api/backup',
+          { method: 'POST', body: { targetDir: target } },
+        );
+        expect(created.status).toBe(201);
+        expect(created.body).toEqual({ targetDir: target, notes: 1, databases: 1 });
+        expect((await stat(join(target, MANIFEST_FILE))).isFile()).toBe(true);
+
+        const validated = await json<{
+          manifest: { format: string; files: Array<{ path: string }> };
+          counts: { notes: number; databases: number };
+        }>(started.base, '/api/backup/validate', { method: 'POST', body: { dir: target } });
+        expect(validated.status).toBe(200);
+        expect(validated.body.manifest.format).toBe('nodus-backup');
+        expect(validated.body.counts).toEqual({ notes: 1, databases: 1 });
+        expect(validated.body.manifest.files.every((file) => !file.path.startsWith('/'))).toBe(true);
+        expect(JSON.stringify(validated.body)).not.toContain(dir);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects invalid backup target fields without writing', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await mkdir(vaultPath, { recursive: true });
+      const started = await startApi(vaultPath);
+      const outside = await mkdtemp(join(tmpdir(), 'nodus-api-outside-'));
+      try {
+        const missing = await json<ErrorBody>(started.base, '/api/backup', {
+          method: 'POST',
+          body: {},
+        });
+        expect(missing.status).toBe(400);
+        expect(missing.body.error.code).toBe('INVALID_INPUT');
+        expect(missing.body.error.message).toContain('targetDir');
+
+        const wrongType = await json<ErrorBody>(started.base, '/api/backup', {
+          method: 'POST',
+          body: { targetDir: 42 },
+        });
+        expect(wrongType.status).toBe(400);
+        expect(wrongType.body.error.code).toBe('INVALID_INPUT');
+
+        const relative = await json<ErrorBody>(started.base, '/api/backup', {
+          method: 'POST',
+          body: { targetDir: 'backups/relative' },
+        });
+        expect(relative.status).toBe(400);
+        expect(relative.body.error.message).toContain('absolute');
+
+        const insideVault = join(vaultPath, 'inside');
+        const inside = await json<ErrorBody>(started.base, '/api/backup', {
+          method: 'POST',
+          body: { targetDir: insideVault },
+        });
+        expect(inside.status).toBe(400);
+        expect(inside.body.error.message).toContain('outside the vault');
+        expect(await pathExists(insideVault)).toBe(false);
+
+        const unlisted = await json<ErrorBody>(started.base, '/api/backup', {
+          method: 'POST',
+          body: { targetDir: join(outside, 'backup') },
+        });
+        expect(unlisted.status).toBe(403);
+        expect(unlisted.body.error.code).toBe('BACKUP_TARGET_NOT_ALLOWED');
+        expect(await pathExists(join(outside, 'backup'))).toBe(false);
+      } finally {
+        await stopApi(started);
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('maps corrupt, unsupported, and missing backups to 422/404', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await seedBackupVault(vaultPath);
+      const started = await startApi(vaultPath);
+      try {
+        const corruptTarget = join(dir, 'backup-corrupt');
+        const unsupportedTarget = join(dir, 'backup-unsupported');
+        expect(
+          (
+            await json(started.base, '/api/backup', {
+              method: 'POST',
+              body: { targetDir: corruptTarget },
+            })
+          ).status,
+        ).toBe(201);
+        expect(
+          (
+            await json(started.base, '/api/backup', {
+              method: 'POST',
+              body: { targetDir: unsupportedTarget },
+            })
+          ).status,
+        ).toBe(201);
+
+        await writeFile(join(corruptTarget, 'notes', 'a.md'), 'tampered', 'utf8');
+        const corrupt = await json<ErrorBody>(started.base, '/api/backup/validate', {
+          method: 'POST',
+          body: { dir: corruptTarget },
+        });
+        expect(corrupt.status).toBe(422);
+        expect(corrupt.body.error.code).toBe('CORRUPT_BACKUP');
+        expect(Array.isArray(corrupt.body.error.issues)).toBe(true);
+        expect((corrupt.body.error.issues ?? []).length).toBeGreaterThan(0);
+
+        const unsupportedRaw = JSON.parse(
+          await readFile(join(unsupportedTarget, MANIFEST_FILE), 'utf8'),
+        ) as { version: number };
+        unsupportedRaw.version = 2;
+        await writeFile(
+          join(unsupportedTarget, MANIFEST_FILE),
+          JSON.stringify(unsupportedRaw),
+          'utf8',
+        );
+        const unsupported = await json<ErrorBody>(started.base, '/api/backup/validate', {
+          method: 'POST',
+          body: { dir: unsupportedTarget },
+        });
+        expect(unsupported.status).toBe(422);
+        expect(unsupported.body.error.code).toBe('UNSUPPORTED_VERSION');
+
+        const absent = await json<ErrorBody>(started.base, '/api/backup/validate', {
+          method: 'POST',
+          body: { dir: join(dir, 'no-such-backup') },
+        });
+        expect(absent.status).toBe(404);
+        expect(absent.body.error.code).toBe('NOT_FOUND');
+
+        const missingField = await json<ErrorBody>(started.base, '/api/backup/validate', {
+          method: 'POST',
+          body: {},
+        });
+        expect(missingField.status).toBe(400);
+        expect(missingField.body.error.message).toContain('dir');
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('previews additions and conflicts without writing', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedBackupVault(join(dir, 'source'));
+      const backupDir = join(dir, 'backup-preview');
+      await createBackup(source, backupDir);
+
+      const vaultPath = join(dir, 'vault');
+      const active = await FileSystemVault.open(vaultPath);
+      await active.createNote(
+        createNote({ id: N2, title: 'Unrelated', path: 'notes/b.md', body: 'B\n', now: NOW }),
+      );
+      const started = await startApi(vaultPath);
+      try {
+        const additions = await json<{
+          counts: { notes: number; databases: number };
+          conflicts: { ids: string[]; paths: string[] };
+          manifest: { digest?: string };
+        }>(started.base, '/api/restore/preview', { method: 'POST', body: { dir: backupDir } });
+        expect(additions.status).toBe(200);
+        expect(additions.body.counts).toEqual({ notes: 1, databases: 1 });
+        expect(additions.body.conflicts).toEqual({ ids: [], paths: [] });
+        expect(additions.body.manifest.digest).toMatch(/^[0-9a-f]{64}$/);
+
+        await active.createNote(
+          createNote({ id: N1, title: 'Id clash', path: 'notes/other.md', body: 'X\n', now: NOW }),
+        );
+        await active.createNote(
+          createNote({ id: N3, title: 'Path clash', path: 'notes/a.md', body: 'Y\n', now: NOW }),
+        );
+
+        const vaultBefore = JSON.stringify(await active.snapshot());
+        const manifestBefore = await readFile(join(backupDir, MANIFEST_FILE), 'utf8');
+
+        const conflicts = await json<{
+          counts: { notes: number; databases: number };
+          conflicts: { ids: string[]; paths: string[] };
+        }>(started.base, '/api/restore/preview', { method: 'POST', body: { dir: backupDir } });
+        expect(conflicts.status).toBe(200);
+        expect(conflicts.body.conflicts.ids).toEqual([N1]);
+        expect(conflicts.body.conflicts.paths).toEqual(['notes/a.md']);
+
+        expect(JSON.stringify(await active.snapshot())).toBe(vaultBefore);
+        expect(await readFile(join(backupDir, MANIFEST_FILE), 'utf8')).toBe(manifestBefore);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('restores into the active vault with merge semantics', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedBackupVault(join(dir, 'source'));
+      const backupDir = join(dir, 'backup-restore');
+      await createBackup(source, backupDir);
+
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const restored = await json<{ notes: number; databases: number }>(
+          started.base,
+          '/api/restore',
+          { method: 'POST', body: { dir: backupDir } },
+        );
+        expect(restored.status).toBe(200);
+        expect(restored.body).toEqual({ notes: 1, databases: 1 });
+
+        const notes = await json<{ notes: Array<{ id: string }> }>(started.base, '/api/notes');
+        expect(notes.body.notes.map((note) => note.id)).toEqual([N1]);
+        const databases = await json<{ databases: Array<{ id: string }> }>(
+          started.base,
+          '/api/databases',
+        );
+        expect(databases.body.databases.map((database) => database.id)).toEqual([DB1]);
+
+        const noteBefore = await readFile(join(vaultPath, 'notes', 'a.md'), 'utf8');
+        const manifestBefore = await readFile(join(backupDir, MANIFEST_FILE), 'utf8');
+        const conflict = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: backupDir },
+        });
+        expect(conflict.status).toBe(409);
+        expect(conflict.body.error.code).toBe('CONFLICT');
+        expect(await readFile(join(vaultPath, 'notes', 'a.md'), 'utf8')).toBe(noteBefore);
+        expect(await readFile(join(backupDir, MANIFEST_FILE), 'utf8')).toBe(manifestBefore);
+
+        const overwritten = await json<{ notes: number; databases: number }>(
+          started.base,
+          '/api/restore',
+          { method: 'POST', body: { dir: backupDir, overwrite: true } },
+        );
+        expect(overwritten.status).toBe(200);
+        expect(overwritten.body).toEqual({ notes: 1, databases: 1 });
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects invalid restore requests without writing anywhere', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedBackupVault(join(dir, 'source'));
+      const backupDir = join(dir, 'backup-guard');
+      await createBackup(source, backupDir);
+
+      const vaultPath = join(dir, 'vault');
+      const active = await FileSystemVault.open(vaultPath);
+      await active.createNote(
+        createNote({ id: N2, title: 'Marker', path: 'notes/b.md', body: 'Marker\n', now: NOW }),
+      );
+      const started = await startApi(vaultPath);
+      const outside = await mkdtemp(join(tmpdir(), 'nodus-restore-outside-'));
+      const fakeDestination = join(dir, 'fake-destination');
+      try {
+        const manifestBefore = await readFile(join(backupDir, MANIFEST_FILE), 'utf8');
+        const vaultBefore = JSON.stringify(await active.snapshot());
+
+        const missingField = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: {},
+        });
+        expect(missingField.status).toBe(400);
+        expect(missingField.body.error.message).toContain('dir');
+
+        const badOverwrite = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: backupDir, overwrite: 'yes' },
+        });
+        expect(badOverwrite.status).toBe(400);
+        expect(badOverwrite.body.error.message).toContain('overwrite must be a boolean');
+
+        const destination = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: backupDir, destination: fakeDestination },
+        });
+        expect(destination.status).toBe(400);
+        expect(destination.body.error.message).toContain('destination is not accepted');
+        expect(await pathExists(fakeDestination)).toBe(false);
+
+        const relative = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: 'backup-relative' },
+        });
+        expect(relative.status).toBe(400);
+        expect(relative.body.error.message).toContain('absolute');
+
+        const insideVault = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: join(vaultPath, 'backup-copy') },
+        });
+        expect(insideVault.status).toBe(400);
+        expect(insideVault.body.error.message).toContain('outside the vault');
+
+        const unlisted = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: join(outside, 'backup') },
+        });
+        expect(unlisted.status).toBe(403);
+        expect(unlisted.body.error.code).toBe('BACKUP_TARGET_NOT_ALLOWED');
+
+        const absent = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: join(dir, 'no-such-backup') },
+        });
+        expect(absent.status).toBe(404);
+        expect(absent.body.error.code).toBe('NOT_FOUND');
+
+        expect(JSON.stringify(await active.snapshot())).toBe(vaultBefore);
+        expect(await readFile(join(backupDir, MANIFEST_FILE), 'utf8')).toBe(manifestBefore);
+      } finally {
+        await stopApi(started);
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('returns PARTIAL_WRITE with completed and failed paths', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedBackupVault(join(dir, 'source'));
+      const backupDir = join(dir, 'backup-partial');
+      await createBackup(source, backupDir);
+
+      const vaultPath = join(dir, 'vault');
+      const active = await FileSystemVault.open(vaultPath);
+      await active.createNote(
+        createNote({ id: N2, title: 'Kept', path: 'notes/b.md', body: 'Kept\n', now: NOW }),
+      );
+      await writeFile(
+        join(vaultPath, 'databases'),
+        'stray file blocking the databases directory',
+        'utf8',
+      );
+
+      const started = await startApi(vaultPath);
+      try {
+        const failed = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: backupDir },
+        });
+        expect(failed.status).toBe(500);
+        expect(failed.body.error.code).toBe('PARTIAL_WRITE');
+        expect(failed.body.error.paths).toEqual(['notes/a.md', `databases/${DB1}.json`]);
+
+        expect(await readFile(join(vaultPath, 'notes', 'a.md'), 'utf8')).toContain('Backup body');
+        expect(await readFile(join(vaultPath, 'databases'), 'utf8')).toContain('stray file');
+      } finally {
         await stopApi(started);
       }
     });

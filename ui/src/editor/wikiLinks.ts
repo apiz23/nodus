@@ -136,9 +136,11 @@ export function wikiLinks(
     ),
     EditorView.baseTheme({
       '.cm-wikilink': {
-        color: 'var(--primary)',
+        color: 'var(--success)',
         textDecoration: 'underline',
-        textUnderlineOffset: '2px',
+        textDecorationThickness: '1px',
+        textUnderlineOffset: '0.18em',
+        textDecorationColor: 'color-mix(in oklab, var(--success) 45%, transparent)',
         cursor: 'pointer',
       },
       '.cm-wikilink-unresolved': {

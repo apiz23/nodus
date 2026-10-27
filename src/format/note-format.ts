@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+import { basename } from 'node:path';
 import { parseDocument, stringify } from 'yaml';
 import { NodusError } from '../domain/errors.js';
+import { isUuidShaped } from '../domain/ids.js';
 import { NOTE_FORMAT_VERSION, type Note, validateNote } from '../domain/note.js';
 import { validateNotePath } from '../domain/paths.js';
 
@@ -8,8 +11,19 @@ const NODUS_KEYS = new Set(['version', 'id', 'createdAt', 'updatedAt']);
 
 export function parseNote(source: string, path: string): Note {
   validateNotePath(path);
-  const { yaml, body } = splitFrontmatter(source);
-  const data = parseFrontmatterYaml(yaml);
+  const frontmatter = splitFrontmatter(source);
+  if (frontmatter === undefined) return parsePlainMarkdown(source, path);
+  let data: Record<string, unknown>;
+  try {
+    data = parseFrontmatterYaml(frontmatter.yaml);
+  } catch (error) {
+    // Markdown horizontal rules and other delimiter-led body text are not
+    // metadata. If it does not declare Nodus metadata, retain it as body.
+    if (!/^\s*nodus\s*:/m.test(frontmatter.yaml)) return parsePlainMarkdown(source, path);
+    throw error;
+  }
+  if (!Object.hasOwn(data, 'nodus')) return parsePlainMarkdown(source, path);
+  const { body } = frontmatter;
 
   const nodus = data.nodus;
   if (!isPlainObject(nodus)) {
@@ -54,6 +68,15 @@ export function parseNote(source: string, path: string): Note {
 
 export function serializeNote(note: Note): string {
   validateNote(note);
+  if (
+    note.sourceFormat === 'plain-markdown' &&
+    note.title === titleFromPath(note.path) &&
+    note.tags.length === 0 &&
+    note.aliases.length === 0 &&
+    Object.keys(note.extraFrontmatter).length === 0
+  ) {
+    return note.body;
+  }
   for (const key of Object.keys(note.extraFrontmatter)) {
     if (KNOWN_TOP_LEVEL_KEYS.has(key)) {
       throw new NodusError('INVALID_FIELD', `extraFrontmatter key "${key}" collides with a Nodus-owned key`);
@@ -76,12 +99,10 @@ export function serializeNote(note: Note): string {
   return `---\n${stringify(frontmatter, { lineWidth: 0 })}---\n${note.body}`;
 }
 
-function splitFrontmatter(source: string): { yaml: string; body: string } {
+function splitFrontmatter(source: string): { yaml: string; body: string } | undefined {
   const text = source.startsWith('\uFEFF') ? source.slice(1) : source;
   const opening = /^---\r?\n/.exec(text);
-  if (!opening) {
-    throw new NodusError('INVALID_FRONTMATTER', 'Note must start with a "---" frontmatter line');
-  }
+  if (!opening) return undefined;
 
   let lineStart = opening[0].length;
   for (;;) {
@@ -97,7 +118,53 @@ function splitFrontmatter(source: string): { yaml: string; body: string } {
     if (newline === -1) break;
     lineStart = newline + 1;
   }
-  throw new NodusError('INVALID_FRONTMATTER', 'Frontmatter is not closed by a "---" line');
+  if (/^\s*nodus\s*:/m.test(text.slice(opening[0].length))) {
+    throw new NodusError('INVALID_FRONTMATTER', 'Nodus frontmatter is not closed by a "---" line');
+  }
+  // Without a closing delimiter there is no frontmatter block to consume.
+  return undefined;
+}
+
+function parsePlainMarkdown(source: string, path: string): Note {
+  const title = titleFromPath(path);
+  // UUID-shaped deterministic IDs remain stable across reads and body edits.
+  // An explicit move upgrades the file to Nodus frontmatter to retain this ID.
+  const digest = createHash('sha256').update(`nodus-plain-markdown\0${path.normalize('NFC')}`).digest();
+  digest[6] = ((digest[6] ?? 0) & 0x0f) | 0x40;
+  digest[8] = ((digest[8] ?? 0) & 0x3f) | 0x80;
+  const hex = digest.subarray(0, 16).toString('hex');
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  const timestamp = timestampFromPath(path);
+  const note: Note = {
+    id,
+    title,
+    path,
+    body: source,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    tags: [],
+    aliases: [],
+    extraFrontmatter: {},
+    sourceFormat: 'plain-markdown',
+  };
+  validateNote(note);
+  return note;
+}
+
+function titleFromPath(path: string): string {
+  const candidate = basename(path).replace(/\.md$/i, '').trim();
+  return candidate === '' || isUuidShaped(candidate) ? `Note ${candidate || 'untitled'}` : candidate;
+}
+
+function timestampFromPath(path: string): string {
+  const candidate = basename(path).match(/^(\d{4})-(\d{2})-(\d{2})\.md$/i);
+  if (candidate?.[1] && candidate[2] && candidate[3]) {
+    const date = new Date(`${candidate[1]}-${candidate[2]}-${candidate[3]}T00:00:00.000Z`);
+    if (!Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === `${candidate[1]}-${candidate[2]}-${candidate[3]}`) {
+      return `${candidate[1]}-${candidate[2]}-${candidate[3]}T00:00:00Z`;
+    }
+  }
+  return '2000-01-01T00:00:00Z';
 }
 
 function parseFrontmatterYaml(yaml: string): Record<string, unknown> {

@@ -4,7 +4,7 @@ Nodus is a local-first, Markdown-native knowledge workspace that combines linked
 
 **Plain Markdown files. Portable database definitions. Local-first sync.**
 
-Your notes are ordinary Markdown files with YAML frontmatter. They work without an account or network connection, and remain usable outside Nodus.
+Your notes are ordinary Markdown files. YAML frontmatter is optional; when present, Nodus preserves its metadata. Notes work without an account or network connection and remain usable outside Nodus.
 
 ## Status
 
@@ -53,7 +53,7 @@ Also out of scope: database rows, query execution, formulas, rollups, automation
 
 ## Consistency boundaries
 
-- Note identity is the UUID v4 in frontmatter, independent of title and path. Moves preserve it.
+- Nodus-format note identity is the UUID v4 in frontmatter, independent of title and path. Plain Markdown uses a stable path-derived ID until it is moved through Nodus, which adds metadata to preserve identity.
 - Duplicate note IDs are detected by `FileSystemVault` at the vault boundary (`DUPLICATE_ID`), not by `parseNote`.
 - Phase 1 has no revision field, and Phase 2 does not invent one: no new frontmatter and no `nodus.version` bump. The revision token is the SHA-256 of the raw file bytes. `replaceNote`, `moveNote`, and `deleteNote` take an optional `expectedHash`; when it no longer matches the file, they throw `STALE_WRITE` (with the current hash in `details.currentHash`) and write nothing. Without the option, behavior is unchanged (last-write-wins). A per-path mutex serializes check-then-write inside one process, and the vault re-hashes immediately before the rename — but the OS offers no atomic compare-and-swap on a path, so the TOCTOU window is narrowed, not eliminated (see [docs/storage.md](docs/storage.md#concurrency)).
 - Imports and restores fail with `CONFLICT` before writing unless overwrite is explicit.

@@ -16,6 +16,8 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { BackupRestoreSection } from './BackupRestoreSection';
+import { SidebarToggle } from './SidebarToggle';
 
 interface SettingsViewProps {
   status: UiVaultStatus | null;
@@ -30,6 +32,10 @@ interface SettingsViewProps {
   openingVault: boolean;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  onRestored: () => void;
+  onVaultWorkChange: (active: boolean) => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
 }
 
 function Section({
@@ -65,15 +71,22 @@ export function SettingsView({
   openingVault,
   theme,
   onToggleTheme,
+  onRestored,
+  onVaultWorkChange,
+  sidebarCollapsed,
+  onToggleSidebar,
 }: SettingsViewProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label="Settings">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-4 sm:px-6">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-          <p className="mt-1 max-w-[66ch] text-xs leading-relaxed text-muted-foreground">
-            Local vault information, storage health, and the honest sync status.
-          </p>
+        <div className="flex min-w-0 items-start gap-2">
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+            <p className="mt-1 max-w-[66ch] text-xs leading-relaxed text-muted-foreground">
+              Local vault information, storage health, and the honest sync status.
+            </p>
+          </div>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
           <RefreshCw className={loading ? 'animate-spin' : undefined} data-icon="inline-start" />
@@ -240,13 +253,16 @@ export function SettingsView({
                     <div>
                       <div className="text-xs font-semibold">{status?.sync.label ?? 'Not connected'}</div>
                       <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                        {status?.sync.detail ?? 'No sync client is available in this build.'}
+                        {status?.sync.detail ??
+                          'Experimental sync exists but is not connected to a relay or wired into this UI. This workspace is local only.'}
                       </p>
                     </div>
                   </div>
                   <p className="mt-3 max-w-[62ch] text-[11px] leading-relaxed text-muted-foreground">
                     This UI does not call relay push/pull endpoints and does not load relay admin
-                    tokens. Cross-device sync waits for the Phase 4 crash-safe client.
+                    tokens. An experimental sync client and relay implementation exist, but they
+                    are not connected to a relay or part of the normal workflow — cross-device sync
+                    is not a user-ready feature.
                   </p>
                 </Section>
 
@@ -274,6 +290,10 @@ export function SettingsView({
                     <span>Localhost only</span>
                   </div>
                 </Section>
+              </div>
+
+              <div className="lg:col-span-2">
+                <BackupRestoreSection onRestored={onRestored} onActivityChange={onVaultWorkChange} />
               </div>
             </div>
           )}

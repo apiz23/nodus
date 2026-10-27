@@ -66,7 +66,7 @@ describe('exportVault', () => {
   it('fails instead of exporting a vault with corrupt notes', async () => {
     await withTempDir(async (dir) => {
       const vault = await FileSystemVault.open(join(dir, 'vault'));
-      await writeFile(join(vault.root, 'broken.md'), '# no frontmatter\n', 'utf8');
+      await writeFile(join(vault.root, 'broken.md'), '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n', 'utf8');
 
       expect(await storageErrorCode(() => exportVault(vault, join(dir, 'export')))).toBe('INVALID_CONTENT');
     });
@@ -100,9 +100,31 @@ describe('planImport', () => {
     await withTempDir(async (dir) => {
       const source = join(dir, 'source');
       await mkdir(source);
-      await writeFile(join(source, 'bad.md'), '# No frontmatter\n', 'utf8');
+      await writeFile(join(source, 'bad.md'), '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n', 'utf8');
 
       expect(await storageErrorCode(() => planImport(source))).toBe('INVALID_CONTENT');
+    });
+  });
+
+  it('imports mixed plain Markdown and Nodus notes without changing the source files', async () => {
+    await withTempDir(async (dir) => {
+      const source = join(dir, 'source');
+      await mkdir(join(source, 'daily'), { recursive: true });
+      const plain = '# Internship day\n\nTask notes: Café 🙂\n';
+      await writeFile(join(source, 'daily/2026-08-03.md'), plain, 'utf8');
+      await writeFile(join(source, 'managed.md'), noteWithExtra, 'utf8');
+
+      const plan = await planImport(source);
+      const plainNote = plan.notes.find(({ path }) => path === 'daily/2026-08-03.md');
+      expect(plainNote?.title).toBe('2026-08-03');
+      expect(plainNote?.body).toBe(plain);
+      expect(plan.notes.find(({ path }) => path === 'managed.md')?.id).toBe(N2);
+      expect(await readFile(join(source, 'daily/2026-08-03.md'), 'utf8')).toBe(plain);
+
+      const target = await FileSystemVault.open(join(dir, 'target'));
+      await applyImport(target, plan);
+      expect((await target.readNote(plainNote!.id)).body).toBe(plain);
+      expect(await readFile(join(target.root, 'daily/2026-08-03.md'), 'utf8')).toBe(plain);
     });
   });
 

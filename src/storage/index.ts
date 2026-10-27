@@ -8,7 +8,10 @@ export {
 
 export type {
   BackupManifest,
+  BackupManifestApp,
+  BackupManifestCounts,
   BackupManifestFile,
+  BackupManifestFormats,
   BackupOptions,
   BackupReport,
   BackupValidation,
@@ -20,6 +23,7 @@ export type {
   ImportReport,
   NoteStore,
   NoteSummary,
+  RestorePreview,
   StorageHealth,
   StorageIssue,
   StorageIssueCode,
@@ -30,4 +34,4 @@ export type {
 export { FileSystemVault } from './fs/vault.js';
 export { exportVault } from './portable/export.js';
 export { applyImport, planImport } from './portable/import.js';
-export { createBackup, restoreBackup, validateBackup } from './backup/backup.js';
+export { createBackup, previewRestore, restoreBackup, validateBackup } from './backup/backup.js';

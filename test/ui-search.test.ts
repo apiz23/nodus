@@ -127,6 +127,24 @@ describe('search ranking', () => {
     });
   });
 
+  it('searches paths and shows a snippet from the field that matched', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await seedRankedVault(vaultPath);
+      const started = await startApi(vaultPath);
+      try {
+        const titleMatch = await search(started.base, 'planning');
+        expect(titleMatch.results[0]?.snippet).toBe('Title: Planning');
+
+        const pathMatch = await search(started.base, 'aaaaaaaa');
+        expect(pathMatch.results.map((result) => result.id)).toEqual([EXACT]);
+        expect(pathMatch.results[0]?.snippet).toBe('Path: notes/aaaaaaaa.md');
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('returns stable IDs independent of the note path', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

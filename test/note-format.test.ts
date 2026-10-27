@@ -72,8 +72,35 @@ describe('parseNote', () => {
     });
   });
 
-  it('rejects a file without frontmatter', () => {
-    expect(errorCode(() => parseNote('# Just markdown\n', 'plain.md'))).toBe('INVALID_FRONTMATTER');
+  it('accepts plain Markdown with a stable path-derived ID and filename title', () => {
+    const source = '# Just markdown\n\nCafé 🙂\n';
+    const first = parseNote(source, 'daily/2026-08-03.md');
+    const second = parseNote(source, 'daily/2026-08-03.md');
+    expect(first.title).toBe('2026-08-03');
+    expect(first.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(first.id).toBe(second.id);
+    expect(first.body).toBe(source);
+    expect(first.sourceFormat).toBe('plain-markdown');
+    expect(serializeNote(first)).toBe(source);
+  });
+
+  it('accepts an empty Markdown file and derives its title from its filename', () => {
+    const note = parseNote('', 'daily/empty.md');
+    expect(note.title).toBe('empty');
+    expect(note.body).toBe('');
+    expect(serializeNote(note)).toBe('');
+  });
+
+  it('keeps a leading horizontal rule as plain Markdown body', () => {
+    const source = '---\n\n# Heading after a rule\n';
+    expect(parseNote(source, 'rule.md').body).toBe(source);
+    const closedLookingRule = '---\n# Heading\n---\nBody\n';
+    expect(parseNote(closedLookingRule, 'rule-closed.md').body).toBe(closedLookingRule);
+  });
+
+  it('reports malformed YAML that declares Nodus metadata', () => {
+    const malformed = '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n';
+    expect(errorCode(() => parseNote(malformed, 'bad.md'))).toBe('INVALID_FRONTMATTER');
   });
 
   it('rejects unclosed frontmatter', () => {
@@ -95,8 +122,9 @@ describe('parseNote', () => {
     expect(errorCode(() => parseNote(source, 'alias.md'))).toBe('INVALID_FRONTMATTER');
   });
 
-  it('rejects frontmatter that is not a mapping', () => {
-    expect(errorCode(() => parseNote('---\n- one\n- two\n---\n', 'list.md'))).toBe('INVALID_FRONTMATTER');
+  it('keeps a delimiter block without Nodus metadata as plain Markdown', () => {
+    const source = '---\n- one\n- two\n---\n';
+    expect(parseNote(source, 'list.md').body).toBe(source);
   });
 
   it('rejects an unknown key under nodus', () => {
@@ -108,8 +136,9 @@ describe('parseNote', () => {
     expect(errorCode(() => parseNote(noIdNote, 'no-id.md'))).toBe('INVALID_FIELD');
   });
 
-  it('rejects a note without a nodus block', () => {
-    expect(errorCode(() => parseNote('---\ntitle: Bare\n---\n', 'bare.md'))).toBe('INVALID_FIELD');
+  it('keeps title-only YAML as ordinary Markdown because it is not Nodus metadata', () => {
+    const source = '---\ntitle: Bare\n---\n';
+    expect(parseNote(source, 'bare.md').body).toBe(source);
   });
 
   it('rejects a missing title', () => {

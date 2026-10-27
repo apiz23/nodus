@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ChevronRight, FileText, Folder, FolderOpen, Plus, Search } from 'lucide-react';
+import { ChevronRight, Copy, FileText, Folder, FolderOpen, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { UiNoteSummary, UiSearchResult } from '../../src/ui-server/dto';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { PageIcon } from './PageIcon';
 
@@ -25,6 +32,8 @@ interface PageTreeProps {
   error: string | null;
   onCreate: () => void;
   onOpen: (id: string) => void;
+  onRenameNote: (id: string) => void;
+  onDeleteNote: (id: string) => void;
   onClearSearch: () => void;
   onRetry: () => void;
 }
@@ -64,6 +73,15 @@ function countNotes(node: FolderNode): number {
   );
 }
 
+function folderForNote(node: FolderNode, id: string): string | null {
+  if (node.notes.some((note) => note.id === id)) return node.path || null;
+  for (const folder of node.folders.values()) {
+    const found = folderForNote(folder, id);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 function readExpanded(): Set<string> | null {
   try {
     const stored = window.localStorage.getItem(EXPANDED_KEY);
@@ -86,6 +104,8 @@ export function PageTree({
   error,
   onCreate,
   onOpen,
+  onRenameNote,
+  onDeleteNote,
   onClearSearch,
   onRetry,
 }: PageTreeProps) {
@@ -94,10 +114,13 @@ export function PageTree({
     for (const note of notes) addNote(root, note);
     return root;
   }, [notes]);
+  const activeFolderPath = selectedId === null ? null : folderForNote(tree, selectedId);
 
   const [expanded, setExpanded] = useState<Set<string>>(
     () => readExpanded() ?? new Set(),
   );
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(activeFolderPath);
+  const [actionAnnouncement, setActionAnnouncement] = useState('');
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -108,6 +131,13 @@ export function PageTree({
       return new Set(folderPaths(tree));
     });
   }, [notes.length, tree]);
+
+  useEffect(() => {
+    setSelectedFolderPath(activeFolderPath);
+    if (activeFolderPath === null) return;
+    const ancestors = activeFolderPath.split('/').map((_, index, parts) => parts.slice(0, index + 1).join('/'));
+    setExpanded((current) => new Set([...current, ...ancestors]));
+  }, [activeFolderPath]);
 
   useEffect(() => {
     try {
@@ -173,8 +203,9 @@ export function PageTree({
         target.click();
         return;
       }
-      const parent = target.closest('[role="group"]')?.previousElementSibling;
-      if (parent instanceof HTMLElement && parent.getAttribute('role') === 'treeitem') parent.focus();
+      const previousFolderRow = target.closest('[role="group"]')?.previousElementSibling;
+      const parent = previousFolderRow?.querySelector<HTMLElement>('[role="treeitem"]');
+      parent?.focus();
     }
   };
 
@@ -243,11 +274,17 @@ export function PageTree({
               depth={0}
               expanded={expanded}
               selectedId={selectedId}
+              selectedFolderPath={selectedFolderPath}
+              onSelectFolder={setSelectedFolderPath}
               onToggle={toggle}
               onOpen={onOpen}
+              onRenameNote={onRenameNote}
+              onDeleteNote={onDeleteNote}
+              onActionAnnouncement={setActionAnnouncement}
             />
           </div>
         )}
+        <span className="sr-only" aria-live="polite">{actionAnnouncement}</span>
       </div>
     </div>
   );
@@ -258,15 +295,25 @@ function TreeLevel({
   depth,
   expanded,
   selectedId,
+  selectedFolderPath,
+  onSelectFolder,
   onToggle,
   onOpen,
+  onRenameNote,
+  onDeleteNote,
+  onActionAnnouncement,
 }: {
   root: FolderNode;
   depth: number;
   expanded: Set<string>;
   selectedId: string | null;
+  selectedFolderPath: string | null;
+  onSelectFolder: (path: string) => void;
   onToggle: (path: string) => void;
   onOpen: (id: string) => void;
+  onRenameNote: (id: string) => void;
+  onDeleteNote: (id: string) => void;
+  onActionAnnouncement: (message: string) => void;
 }) {
   const folders = [...root.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
   const notes = [...root.notes].sort((a, b) => a.title.localeCompare(b.title));
@@ -282,11 +329,15 @@ function TreeLevel({
               type="button"
               role="treeitem"
               aria-expanded={open}
+              aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
               aria-level={depth + 1}
               aria-label={`${folder.name}, ${noteCount} ${noteCount === 1 ? 'page' : 'pages'}`}
-              className="flex h-7 w-full items-center gap-1.5 rounded-[4px] pr-2 text-left text-[13px] text-sidebar-foreground/85 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80"
+              className={cn(
+                'flex h-7 w-full items-center gap-1.5 rounded-[4px] pr-2 text-left text-[13px] text-sidebar-foreground/85 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
+                folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
+              )}
               style={{ paddingLeft: `${6 + depth * 16}px` }}
-              onClick={() => onToggle(folder.path)}
+              onClick={() => { onSelectFolder(folder.path); onToggle(folder.path); }}
             >
               <ChevronRight
                 className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
@@ -305,8 +356,13 @@ function TreeLevel({
                   depth={depth + 1}
                   expanded={expanded}
                   selectedId={selectedId}
+                  selectedFolderPath={selectedFolderPath}
+                  onSelectFolder={onSelectFolder}
                   onToggle={onToggle}
                   onOpen={onOpen}
+                  onRenameNote={onRenameNote}
+                  onDeleteNote={onDeleteNote}
+                  onActionAnnouncement={onActionAnnouncement}
                 />
               </div>
             ) : null}
@@ -315,27 +371,69 @@ function TreeLevel({
       })}
 
       {notes.map((note) => (
-        <button
-          key={note.id}
-          type="button"
-          role="treeitem"
-          aria-selected={note.id === selectedId}
-          aria-level={depth + 1}
-          className={cn(
-            'flex h-7 w-full items-center gap-1.5 rounded-[4px] pr-2 text-left text-[13px] transition-colors',
-            'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
-            note.id === selectedId
-              ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
-              : 'text-sidebar-foreground/85',
-          )}
-          style={{ paddingLeft: `${6 + depth * 16 + 18}px` }}
-          onClick={() => onOpen(note.id)}
-          title={note.path}
-        >
-          <PageIcon icon={note.icon} className="size-4 text-[13px]" />
-          <span className="truncate">{note.title}</span>
-        </button>
+        <div key={note.id} role="none" className="group flex min-w-0 items-center rounded-[4px]">
+          <button
+            type="button"
+            role="treeitem"
+            aria-selected={note.id === selectedId}
+            aria-level={depth + 1}
+            className={cn(
+              'flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[4px] pr-1 text-left text-[13px] transition-colors',
+              'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
+              note.id === selectedId
+                ? 'bg-success/12 font-medium text-sidebar-foreground'
+                : 'text-sidebar-foreground/85',
+            )}
+            style={{ paddingLeft: `${6 + depth * 16 + 18}px` }}
+            onClick={() => onOpen(note.id)}
+            title={note.path}
+          >
+            <PageIcon icon={note.icon} className="size-4 shrink-0 text-[13px]" />
+            <span className="truncate">{note.title}</span>
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 shrink-0 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                aria-label={`Actions for ${note.title}`}
+                title={`Actions for ${note.title}`}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="right" align="start" className="w-48">
+              <DropdownMenuItem onSelect={() => onRenameNote(note.id)}>
+                <Pencil />
+                Rename path
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  if (typeof navigator === 'undefined' || navigator.clipboard?.writeText === undefined) {
+                    onActionAnnouncement('Clipboard access is unavailable.');
+                    return;
+                  }
+                  void navigator.clipboard.writeText(note.path).then(
+                    () => onActionAnnouncement(`Copied path for ${note.title}.`),
+                    () => onActionAnnouncement('Could not copy note path.'),
+                  );
+                }}
+              >
+                <Copy />
+                Copy relative path
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => onDeleteNote(note.id)}>
+                <Trash2 />
+                Delete note
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       ))}
     </>
   );
@@ -359,7 +457,7 @@ function SearchResultRow({
         'flex w-full flex-col rounded-[4px] px-2 py-1.5 text-left transition-colors',
         'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
-        selected && 'bg-sidebar-accent text-sidebar-accent-foreground',
+        selected && 'bg-success/12 text-sidebar-foreground',
       )}
       onClick={() => onOpen(result.id)}
     >

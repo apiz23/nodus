@@ -14,6 +14,8 @@ export interface Note {
   tags: string[];
   aliases: string[];
   extraFrontmatter: Record<string, unknown>;
+  /** Set only for Markdown files that do not contain valid Nodus frontmatter. */
+  sourceFormat?: 'plain-markdown';
 }
 
 export interface CreateNoteInput {

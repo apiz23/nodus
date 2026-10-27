@@ -8,6 +8,17 @@ import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
 import { FileSystemVault } from '../storage/fs/vault.js';
 import { isStorageError } from '../storage/errors.js';
+import { isInsideRoot } from '../storage/fs/safe-path.js';
+import {
+  createBackup,
+  previewRestore,
+  restoreBackup,
+  validateBackup,
+  type BackupManifest,
+  type BackupReport,
+  type ImportReport,
+  type RestorePreview,
+} from '../storage/index.js';
 import { createBacklinkIndex, type BacklinkIndex } from '../links/backlinks.js';
 import type {
   UiApiErrorBody,
@@ -190,6 +201,26 @@ export function createLocalApiMiddleware(
       return sendJson(res, 200, { databases: await listDatabases(await getVault()) });
     }
 
+    if (method === 'POST' && path === '/api/backup') {
+      const body = await readJson(req);
+      return sendJson(res, 201, await createVaultBackup(await getVault(), body));
+    }
+
+    if (method === 'POST' && path === '/api/backup/validate') {
+      const body = await readJson(req);
+      return sendJson(res, 200, await validateVaultBackup(await getVault(), body));
+    }
+
+    if (method === 'POST' && path === '/api/restore/preview') {
+      const body = await readJson(req);
+      return sendJson(res, 200, await previewVaultRestore(await getVault(), body));
+    }
+
+    if (method === 'POST' && path === '/api/restore') {
+      const body = await readJson(req);
+      return sendJson(res, 200, await restoreVaultBackup(await getVault(), body));
+    }
+
     throw new ApiError(404, 'NOT_FOUND', `Unknown route ${method} ${path}`);
   };
 
@@ -230,7 +261,8 @@ async function buildStatus(vault: FileSystemVault): Promise<UiVaultStatus> {
     sync: {
       status: 'not-connected',
       label: 'Not connected',
-      detail: 'Phase 4 sync client is not implemented. This workspace is local only.',
+      detail:
+        'Not connected to a relay. An experimental Phase 4 sync client exists but is not wired into the UI; this workspace is local only.',
     },
   };
 }
@@ -390,15 +422,14 @@ async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<Ui
   const query = normalizeSearch(rawQuery);
   if (query === '') return [];
 
-  const entries = await vault.snapshot();
+  const notes = await vault.listNoteDetails();
   const results: UiSearchResult[] = [];
 
-  for (const entry of entries) {
-    if (entry.kind !== 'note') continue;
-    const note = parseNote(entry.text, entry.path);
+  for (const note of notes) {
     const title = normalizeSearch(note.title);
+    const path = normalizeSearch(note.path);
     const body = normalizeSearch(note.body);
-    if (!title.includes(query) && !body.includes(query)) continue;
+    if (!title.includes(query) && !path.includes(query) && !body.includes(query)) continue;
 
     results.push({
       id: note.id,
@@ -407,23 +438,24 @@ async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<Ui
       updatedAt: note.updatedAt,
       aliases: [...note.aliases],
       icon: readPageIcon(note.extraFrontmatter),
-      snippet: makeSnippet(note.title, note.body, rawQuery),
+      snippet: makeSnippet(note.title, note.path, note.body, rawQuery),
     });
   }
 
   return results
     .sort((left, right) => {
-      const leftRank = searchRank(left.title, query);
-      const rightRank = searchRank(right.title, query);
+      const leftRank = searchResultRank(left, query);
+      const rightRank = searchResultRank(right, query);
       if (leftRank !== rightRank) return leftRank - rightRank;
-      return left.title.localeCompare(right.title);
+      const titleOrder = left.title.localeCompare(right.title);
+      return titleOrder !== 0 ? titleOrder : left.path.localeCompare(right.path);
     })
     .slice(0, 50);
 }
 
 /**
- * Deterministic ranking tiers: 0 = exact title, 1 = title starts with the
- * query, 2 = title contains it, 3 = body-only match. Lower sorts first.
+ * Deterministic ranking tiers: exact title, title prefix, title contains,
+ * path contains, then body-only. Lower sorts first.
  */
 function searchRank(title: string, query: string): number {
   const normalized = normalizeSearch(title);
@@ -431,6 +463,12 @@ function searchRank(title: string, query: string): number {
   if (normalized.startsWith(query)) return 1;
   if (normalized.includes(query)) return 2;
   return 3;
+}
+
+function searchResultRank(result: UiSearchResult, query: string): number {
+  const titleRank = searchRank(result.title, query);
+  if (titleRank < 3) return titleRank;
+  return normalizeSearch(result.path).includes(query) ? 3 : 4;
 }
 
 async function listDatabases(vault: FileSystemVault): Promise<UiDatabase[]> {
@@ -471,6 +509,74 @@ function toUiNote(note: Note, contentHash: string): UiNote {
     icon: readPageIcon(note.extraFrontmatter),
     contentHash,
   };
+}
+
+/**
+ * Resolves a backup source directory: allow-list and vault-exclusion checks
+ * first (`assertBackupTargetAllowed`, no duplicated path logic), then
+ * existence, so a missing directory is a 404 rather than a corruption error.
+ */
+async function requireBackupSource(dir: string, vault: FileSystemVault): Promise<string> {
+  const source = await assertBackupTargetAllowed(dir, vault.root);
+  try {
+    await stat(source);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new ApiError(404, 'NOT_FOUND', 'Backup directory was not found.');
+    }
+    throw error;
+  }
+  return source;
+}
+
+async function createVaultBackup(
+  vault: FileSystemVault,
+  body: Record<string, unknown>,
+): Promise<BackupReport> {
+  const target = await assertBackupTargetAllowed(
+    requireString(body.targetDir, 'targetDir'),
+    vault.root,
+  );
+  return createBackup(vault, target);
+}
+
+async function validateVaultBackup(
+  vault: FileSystemVault,
+  body: Record<string, unknown>,
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number } }> {
+  const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
+  const validation = await validateBackup(source);
+  return {
+    manifest: validation.manifest,
+    counts: { notes: validation.notes.length, databases: validation.databases.length },
+  };
+}
+
+async function previewVaultRestore(
+  vault: FileSystemVault,
+  body: Record<string, unknown>,
+): Promise<RestorePreview> {
+  const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
+  return previewRestore(source, vault);
+}
+
+async function restoreVaultBackup(
+  vault: FileSystemVault,
+  body: Record<string, unknown>,
+): Promise<ImportReport> {
+  if ('destination' in body) {
+    throw new ApiError(
+      400,
+      'INVALID_INPUT',
+      'destination is not accepted; restores target the active vault',
+    );
+  }
+  const overwrite = body.overwrite;
+  if (overwrite !== undefined && typeof overwrite !== 'boolean') {
+    throw new ApiError(400, 'INVALID_INPUT', 'overwrite must be a boolean');
+  }
+  const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
+  return restoreBackup(source, vault.root, { overwrite: overwrite === true });
 }
 
 async function uniqueNotePath(vault: FileSystemVault, slug: string): Promise<string> {
@@ -529,10 +635,14 @@ function normalizeSearch(value: string): string {
   return value.normalize('NFC').trim().toLowerCase();
 }
 
-function makeSnippet(title: string, body: string, query: string): string {
+function makeSnippet(title: string, path: string, body: string, query: string): string {
   const compact = body.replace(/\s+/g, ' ').trim();
   const index = normalizeSearch(compact).indexOf(normalizeSearch(query));
-  if (index === -1) return compact.slice(0, 140) || title;
+  if (index === -1) {
+    if (normalizeSearch(title).includes(normalizeSearch(query))) return `Title: ${title}`;
+    if (normalizeSearch(path).includes(normalizeSearch(query))) return `Path: ${path}`;
+    return compact.slice(0, 140) || title;
+  }
   const start = Math.max(0, index - 45);
   const end = Math.min(compact.length, index + query.length + 90);
   return `${start > 0 ? '…' : ''}${compact.slice(start, end)}${end < compact.length ? '…' : ''}`;
@@ -599,6 +709,98 @@ async function assertVaultAllowed(selected: string, currentVaultPath: string): P
       { allowedRoots: roots },
     );
   }
+}
+
+/**
+ * Allowed roots for backup and export destinations, from `NODUS_BACKUP_ROOTS`
+ * (path-delimiter separated). When unset or empty, the only allowed root is
+ * the parent directory of the current vault — the same default as
+ * `NODUS_VAULT_ROOTS`. Roots are resolved with realpath; a root that no longer
+ * exists cannot admit anything and is skipped.
+ */
+async function allowedBackupRoots(currentVaultPath: string): Promise<string[]> {
+  const raw = process.env.NODUS_BACKUP_ROOTS;
+  const entries =
+    raw === undefined || raw.trim() === ''
+      ? [dirname(resolve(currentVaultPath))]
+      : raw
+          .split(delimiter)
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== '');
+
+  const roots: string[] = [];
+  for (const entry of entries) {
+    try {
+      roots.push(await realpath(resolve(entry)));
+    } catch {
+      continue;
+    }
+  }
+  return roots;
+}
+
+/**
+ * Validates a backup or export destination for the active vault, mirroring
+ * `assertVaultAllowed`. Rules, in order:
+ *
+ * 1. The path must be absolute.
+ * 2. It must be outside the active vault. Containment uses realpath on the
+ *    nearest existing ancestor, so a symlinked parent resolving into the
+ *    vault is rejected.
+ * 3. It must be inside a `NODUS_BACKUP_ROOTS` root (see
+ *    `allowedBackupRoots` for the default), with the same realpath handling,
+ *    so a symlinked parent that escapes the roots cannot admit a new
+ *    directory outside them.
+ * 4. If the destination already exists, it must be a directory.
+ *
+ * Nonexistent destinations are allowed; backups are created by the storage
+ * layer. Returns the resolved destination.
+ */
+export async function assertBackupTargetAllowed(
+  selected: string,
+  activeVaultPath: string,
+): Promise<string> {
+  if (!isAbsolute(selected)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'Backup target must be an absolute path.');
+  }
+  const target = resolve(selected);
+
+  if (await isInsideRoot(activeVaultPath, target)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'Backup target must be outside the vault.');
+  }
+
+  const roots = await allowedBackupRoots(activeVaultPath);
+  let allowed = false;
+  for (const root of roots) {
+    if (await isInsideRoot(root, target)) {
+      allowed = true;
+      break;
+    }
+  }
+  if (!allowed) {
+    throw new ApiError(
+      403,
+      'BACKUP_TARGET_NOT_ALLOWED',
+      'The backup target is outside the allowed backup roots. Set NODUS_BACKUP_ROOTS (a path-delimiter separated list) to allow more roots.',
+      { allowedRoots: roots },
+    );
+  }
+
+  try {
+    const info = await stat(target);
+    if (!info.isDirectory()) {
+      throw new ApiError(400, 'INVALID_INPUT', 'Backup target exists and is not a directory.');
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOTDIR') {
+      throw new ApiError(400, 'INVALID_INPUT', 'Backup target path traverses a file, not a directory.');
+    }
+    if (code !== 'ENOENT') throw error;
+  }
+
+  return target;
 }
 
 /** Origins the local UI is served from in dev (5173) and preview (4173). */
@@ -686,13 +888,7 @@ function sendError(res: ServerResponse, error: unknown): void {
   }
 
   if (isStorageError(error)) {
-    const body: UiApiErrorBody = {
-      error: {
-        code: error.code,
-        message: error.message,
-      },
-    };
-    sendJson(res, storageStatus(error.code), body);
+    sendJson(res, storageStatus(error.code), storageErrorBody(error));
     return;
   }
 
@@ -705,7 +901,33 @@ function sendError(res: ServerResponse, error: unknown): void {
   } satisfies UiApiErrorBody);
 }
 
-function storageStatus(code: string): number {
+/**
+ * Builds the storage-error response body. Exported so the exact wire shape —
+ * `code` and `message` plus additive detail keys, never anything else — is
+ * unit-testable. `PARTIAL_WRITE` carries `details.paths` (files already
+ * written); backup/content validation carries `details.issues`.
+ */
+export function storageErrorBody(error: {
+  code: string;
+  message: string;
+  details?: { paths?: string[]; issues?: string[] };
+}): UiApiErrorBody {
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(error.details?.paths === undefined ? {} : { paths: error.details.paths }),
+      ...(error.details?.issues === undefined ? {} : { issues: error.details.issues }),
+    },
+  };
+}
+
+/**
+ * HTTP status for a storage error code. `CORRUPT_BACKUP` and
+ * `UNSUPPORTED_VERSION` are unprocessable content (422); `PARTIAL_WRITE` is a
+ * failed server-side operation (500) whose body names the written paths.
+ */
+export function storageStatus(code: string): number {
   switch (code) {
     case 'NOT_FOUND':
       return 404;
@@ -717,7 +939,10 @@ function storageStatus(code: string): number {
       return 400;
     case 'INVALID_CONTENT':
     case 'UNSUPPORTED_VERSION':
+    case 'CORRUPT_BACKUP':
       return 422;
+    case 'PARTIAL_WRITE':
+      return 500;
     default:
       return 500;
   }

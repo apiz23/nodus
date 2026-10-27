@@ -11,7 +11,7 @@ import { TEMP_PREFIX } from './layout.js';
  * removed on failure. Not guaranteed: durability of the rename itself, or a
  * vault-wide transaction across several files.
  */
-export async function writeFileAtomic(target: string, text: string): Promise<void> {
+export async function writeFileAtomic(target: string, text: string | Uint8Array): Promise<void> {
   const directory = dirname(target);
   await mkdir(directory, { recursive: true });
 
@@ -20,7 +20,7 @@ export async function writeFileAtomic(target: string, text: string): Promise<voi
 
   try {
     handle = await open(temporary, 'wx');
-    await handle.writeFile(text, 'utf8');
+    await handle.writeFile(text);
     await handle.sync();
     await handle.close();
     handle = undefined;

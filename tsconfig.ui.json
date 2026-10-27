@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["ui/src/**/*.ts", "ui/src/**/*.tsx", "ui/vite.config.ts", "src/ui-server/dto.ts"]
+  "include": ["ui/src/**/*.ts", "ui/src/**/*.tsx", "ui/vite.config.ts", "src/ui-server/dto.ts", "test/ui-sidebar.test.tsx"]
 }

@@ -12,6 +12,7 @@ import {
   Pencil,
   RefreshCw,
   Save,
+  StretchHorizontal,
   Trash2,
 } from 'lucide-react';
 import type { UiNote, UiNoteSummary } from '../../src/ui-server/dto';
@@ -27,12 +28,15 @@ import {
 import { useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
 import { CodeMirrorEditor } from './editor/CodeMirrorEditor';
 import { BacklinksPanel } from './BacklinksPanel';
 import { PageIconPicker } from './PageIconPicker';
+import { SidebarToggle } from './SidebarToggle';
 
 interface EditorProps {
   note: UiNote | null;
@@ -46,6 +50,10 @@ interface EditorProps {
   saveState: SaveState;
   error: string | null;
   focusMode: boolean;
+  fullWidth: boolean;
+  onToggleWidth: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
   onToggleFocus: () => void;
   onTitleChange: (value: string) => void;
   onBodyChange: (value: string) => void;
@@ -69,6 +77,10 @@ export function Editor({
   saveState,
   error,
   focusMode,
+  fullWidth,
+  onToggleWidth,
+  sidebarCollapsed,
+  onToggleSidebar,
   onToggleFocus,
   onTitleChange,
   onBodyChange,
@@ -81,11 +93,13 @@ export function Editor({
 }: EditorProps) {
   const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [titleFocused, setTitleFocused] = useState(false);
 
   if (loading) {
     return (
       <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor" aria-busy="true">
-        <div className="flex h-11 items-center gap-3 border-b px-4">
+        <div className="flex h-11 items-center gap-2 border-b px-3 sm:px-4">
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
           <Skeleton className="h-3 w-40" />
           <Skeleton className="ml-auto h-7 w-24" />
         </div>
@@ -103,7 +117,10 @@ export function Editor({
   if (note === null) {
     return (
       <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
-        <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+        <header className="flex h-11 shrink-0 items-center border-b px-3 sm:px-4">
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
           <div className="mb-4 grid size-10 place-items-center rounded-md bg-muted/60 text-muted-foreground">
             <FileText className="size-5" />
           </div>
@@ -144,10 +161,11 @@ export function Editor({
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
       <header className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 sm:px-4">
+        <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <nav
           aria-label="Breadcrumb"
           title={note.path}
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-muted-foreground"
+          className="hidden min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-muted-foreground sm:flex"
         >
           <span className="shrink-0">Notes</span>
           {folders.map((segment, index) => (
@@ -161,31 +179,51 @@ export function Editor({
             <span className="truncate text-foreground/75">{pageName}</span>
           </span>
         </nav>
+        <div className="min-w-0 flex-1 sm:hidden" aria-hidden="true" />
         <div className="flex shrink-0 items-center gap-1.5">
           <span
-            className="inline-flex min-w-20 items-center justify-end gap-1 text-[10.5px] text-muted-foreground"
+            className="inline-flex min-w-0 items-center justify-end gap-1 text-[11px] font-medium sm:min-w-20"
             aria-live="polite"
           >
             {saveState === 'saving' ? (
               <>
-                <Loader2 className="size-3 animate-spin" />
-                Saving…
+                <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                <span className="text-muted-foreground">Saving…</span>
               </>
             ) : null}
             {saveState === 'saved' && !dirty ? (
               <>
-                <Check className="size-3 text-muted-foreground" />
-                Saved
+                <Check className="size-3 text-success" />
+                <span className="text-success">Saved</span>
               </>
             ) : null}
             {saveState === 'error' ? (
               <>
                 <AlertCircle className="size-3 text-destructive" />
-                Not saved
+                <span className="text-destructive">Not saved</span>
               </>
             ) : null}
-            {dirty && saveState !== 'saving' && saveState !== 'error' ? 'Unsaved' : null}
+            {dirty && saveState !== 'saving' && saveState !== 'error' ? (
+              <span className="text-muted-foreground">Unsaved</span>
+            ) : null}
           </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={fullWidth ? 'Use comfortable editor width' : 'Use full editor width'}
+                aria-pressed={fullWidth}
+                onClick={onToggleWidth}
+              >
+                <StretchHorizontal />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {fullWidth ? 'Use comfortable width' : 'Use full writing width'}
+            </TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -206,16 +244,29 @@ export function Editor({
               ) : null}
             </TooltipContent>
           </Tooltip>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="inline-flex h-7 px-2 text-[11px]"
-            onClick={() => setEditorMode((mode) => (mode === 'source' ? 'live' : 'source'))}
-            aria-label={editorMode === 'source' ? 'Switch to live Markdown' : 'Switch to source Markdown'}
+          <div
+            role="group"
+            aria-label="Markdown rendering mode"
+            className="flex items-center gap-1"
           >
-            {editorMode === 'source' ? 'Live' : 'Source'}
-          </Button>
+            {(['live', 'source'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={editorMode === mode}
+                className={cn(
+                  'h-7 rounded-[5px] border px-2 text-[11px] font-medium transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70',
+                  editorMode === mode
+                    ? 'border-border bg-muted text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                )}
+                onClick={() => setEditorMode(mode)}
+              >
+                {mode === 'live' ? 'Live' : 'Source'}
+              </button>
+            ))}
+          </div>
           <Button
             type="button"
             variant="ghost"
@@ -257,9 +308,14 @@ export function Editor({
           </DropdownMenu>
           <Button
             type="button"
-            variant={dirty ? 'secondary' : 'ghost'}
+            variant="ghost"
             size="sm"
-            className={dirty ? 'gap-1.5 text-foreground' : 'gap-1.5 text-muted-foreground'}
+            className={cn(
+              'gap-1.5',
+              dirty
+                ? 'bg-success text-white shadow-sm hover:bg-success/90 hover:text-white focus-visible:border-success/50 focus-visible:ring-success/30'
+                : 'text-muted-foreground',
+            )}
             onClick={onSave}
             disabled={!dirty || saveState === 'saving'}
             title="Save note (Ctrl/Cmd+S)"
@@ -290,7 +346,12 @@ export function Editor({
       )}
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto w-full max-w-[760px] px-6 py-10 sm:px-10 sm:py-14">
+        <div
+          className={cn(
+            'mx-auto min-w-0 w-full py-12 sm:py-16',
+            fullWidth ? 'max-w-none px-5 sm:px-8 lg:px-12' : 'max-w-[43rem] px-6 sm:px-8',
+          )}
+        >
           <div className="mb-2 flex min-h-12 items-center">
             {icon === null ? (
               <Button
@@ -320,16 +381,35 @@ export function Editor({
           <label className="sr-only" htmlFor="note-title">
             Note title
           </label>
-          <input
-            id="note-title"
-            className="w-full rounded-sm border-0 bg-transparent p-0 text-[32px] leading-[1.2] font-semibold tracking-[-0.02em] outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring sm:text-[40px]"
-            value={title}
-            onChange={(event) => onTitleChange(event.target.value)}
-            placeholder="Untitled page"
-            spellCheck={false}
-          />
+          <div className="relative min-w-0 w-full">
+            <span
+              aria-hidden="true"
+              className={cn(
+                'pointer-events-none absolute inset-0 block truncate text-[34px] leading-[1.15] font-semibold tracking-[-0.025em] text-foreground sm:text-[40px] md:text-[40px]',
+                titleFocused && 'invisible',
+              )}
+            >
+              {title || 'Untitled page'}
+            </span>
+            <Input
+              id="note-title"
+              type="text"
+              className={cn(
+                'h-auto min-h-0 w-full truncate rounded-sm border-0 bg-transparent px-0 py-0 text-[34px] leading-[1.15] font-semibold tracking-[-0.025em] outline-none focus-visible:ring-1 focus-visible:ring-ring/70 sm:text-[40px] md:text-[40px]',
+                titleFocused
+                  ? 'text-foreground caret-success placeholder:text-muted-foreground'
+                  : 'text-transparent caret-transparent placeholder:text-transparent',
+              )}
+              value={title}
+              onChange={(event) => onTitleChange(event.target.value)}
+              onFocus={() => setTitleFocused(true)}
+              onBlur={() => setTitleFocused(false)}
+              placeholder="Untitled page"
+              spellCheck={false}
+            />
+          </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
             <span>Updated {formatDateTime(note.updatedAt)}</span>
             <span aria-hidden="true">·</span>
             <span>{words === 1 ? '1 word' : `${words} words`}</span>
@@ -360,7 +440,7 @@ export function Editor({
             mode={editorMode}
             notes={notes}
             onOpenNote={onOpenNote}
-            className="mt-7 h-[45vh] w-full rounded-sm [&_.cm-editor]:h-full [&_.cm-editor]:outline-none"
+            className="mt-6 w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
             aria-label="Markdown body"
           />
 

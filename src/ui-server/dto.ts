@@ -5,6 +5,15 @@
  * deliberately contain no filesystem, Node, or relay types.
  */
 
+import type { BackupManifest } from '../storage/contracts.js';
+
+export type {
+  BackupManifest,
+  BackupReport,
+  ImportReport,
+  RestorePreview,
+} from '../storage/contracts.js';
+
 export type UiPropertyType =
   | 'text'
   | 'number'
@@ -94,6 +103,32 @@ export interface UiApiErrorBody {
     code: string;
     message: string;
     currentHash?: string;
+    /** Workspace-relative paths already written when an operation stopped early (`PARTIAL_WRITE`). */
+    paths?: string[];
+    /** Per-file diagnostics from backup validation and content checks (`CORRUPT_BACKUP`, `INVALID_CONTENT`). */
+    issues?: string[];
+  };
+}
+
+export interface UiCreateBackupInput {
+  targetDir: string;
+}
+
+export interface UiValidateBackupInput {
+  dir: string;
+}
+
+export interface UiRestoreInput {
+  dir: string;
+  /** Merge only when `true`; the server defaults to `false` (never overwrite). */
+  overwrite?: boolean;
+}
+
+export interface UiBackupValidationResult {
+  manifest: BackupManifest;
+  counts: {
+    notes: number;
+    databases: number;
   };
 }
 
