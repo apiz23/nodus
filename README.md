@@ -84,11 +84,12 @@ Requires Node.js **24.0.0 or later**, matching the verified built-in SQLite runt
 ```sh
 pnpm install
 pnpm test
+pnpm test:browser
 pnpm typecheck
 pnpm build
 ```
 
-Tests create isolated temporary directories and never touch a real vault. Relay and UI API tests use loopback HTTP only; there is no external network access.
+Storage tests create isolated temporary directories and never touch a real vault. Relay and UI API tests use loopback HTTP only; there is no external network access. The optional real-browser workflow and its Chromium requirement are documented in [docs/browser-smoke.md](docs/browser-smoke.md).
 
 ## Local UI
 
