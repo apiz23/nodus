@@ -318,25 +318,27 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async snapshot(): Promise<VaultEntry[]> {
-    const notes = await this.parseNotesStrict();
-    const databases = await this.parseDatabasesStrict();
+    return withVaultRootLock(this.root, async () => {
+      const notes = await this.parseNotesStrict();
+      const databases = await this.parseDatabasesStrict();
 
-    return [
-      ...notes.map(({ note, text, bytes }) => ({
-        kind: 'note' as const,
-        id: note.id,
-        path: note.path,
-        text,
-        rawBytes: Buffer.from(bytes),
-      })),
-      ...databases.map(({ database, text, bytes }) => ({
-        kind: 'database' as const,
-        id: database.id,
-        path: databasePath(database.id),
-        text,
-        rawBytes: Buffer.from(bytes),
-      })),
-    ];
+      return [
+        ...notes.map(({ note, text, bytes }) => ({
+          kind: 'note' as const,
+          id: note.id,
+          path: note.path,
+          text,
+          rawBytes: Buffer.from(bytes),
+        })),
+        ...databases.map(({ database, text, bytes }) => ({
+          kind: 'database' as const,
+          id: database.id,
+          path: databasePath(database.id),
+          text,
+          rawBytes: Buffer.from(bytes),
+        })),
+      ];
+    });
   }
 
   async checkHealth(): Promise<StorageHealth> {

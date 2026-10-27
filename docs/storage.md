@@ -107,19 +107,19 @@ Not guaranteed:
 
 - Atomicity across several files. There is no vault-wide transaction.
 - Durability against power loss beyond what the OS/filesystem guarantees.
-- Protection from another process editing the same file concurrently.
-- File locking.
+- Protection from external processes that do not use Nodus's vault lock.
 
 ### Concurrency
 
 Phase 1 has no revision field, and this phase does **not** invent one: no new frontmatter, no `nodus.version` bump. Instead, the revision token is the **SHA-256 of the raw file bytes**.
 
 - Without `expectedHash`, `replaceNote` remains last-write-wins, and existing callers and sync code behave exactly as before.
-- With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a shared per-real-root in-process mutation lock. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
+- With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a shared per-real-root mutation lock within the process and an exclusive cross-process lock for Nodus writers. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
 - `FileSystemVault.readNoteWithHash(id)` returns the note, its text, and the hash computed from the same bytes that were parsed, in one read. The local UI passes that hash back as `expectedHash`, replacing its old separate read-compare-write.
-- Two conditional calls on the same path inside one process are serialized by the mutex, so their check-and-write windows cannot interleave.
+- Two Nodus server processes using the same vault cannot interleave mutations: one holds `.nodus-vault-write.lock`; another receives `CONFLICT` and may retry after the lock is released. Creates, saves, moves, deletes, imports, restores, and vault snapshots used for backup/export share this lock.
+- The root-level `.nodus-vault-write.lock` name is reserved for Nodus. Lock files are created with exclusive-create semantics. If a process crashes, writes and snapshots that need the lock fail with `CONFLICT`; ordinary reads remain available. Stop every Nodus server using the vault, inspect the lock owner metadata if needed, remove the exact lock file, then retry. Nodus does not automatically reclaim stale locks because breaking a lock while its owner is paused could permit concurrent writes.
 
-**Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external writer can still change a file between our final hash and `rename`. The root lock serializes this process only; it does not protect against another process. The check narrows the window but does not close it. No cross-process lock is implemented.
+**Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external editor or process that does not honor `.nodus-vault-write.lock` can still change a file between our final hash and `rename`. This lock coordinates Nodus processes on a local filesystem; it does not coordinate other programs, other machines, or network/synchronized filesystem clients. The hash check narrows but does not eliminate the external-writer race.
 
 Import and restore never overwrite by default. They abort with `CONFLICT` before writing unless `{ overwrite: true }` is passed.
 
