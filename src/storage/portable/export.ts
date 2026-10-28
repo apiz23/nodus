@@ -42,16 +42,18 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
 
   let notes = 0;
   let databases = 0;
+  let databaseViews = 0;
 
   try {
     for (const entry of entries) {
       await writeFileAtomic(resolveInsideRoot(target, entry.path), entry.text);
       if (entry.kind === 'note') notes += 1;
-      else databases += 1;
+      else if (entry.kind === 'database') databases += 1;
+      else databaseViews += 1;
     }
   } catch (error) {
     throw storageFailure(error, 'Write export', targetDir);
   }
 
-  return { targetDir: target, notes, databases };
+  return { targetDir: target, notes, databases, databaseViews };
 }

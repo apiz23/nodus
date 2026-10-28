@@ -2,11 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, delimiter, dirname, isAbsolute, resolve, sep } from 'node:path';
-import type { DatabaseDefinition } from '../database/schema.js';
+import {
+  DATABASE_FORMAT,
+  DATABASE_FORMAT_VERSION,
+  parseDatabase,
+  type DatabaseDefinition,
+} from '../database/schema.js';
+import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, parseDatabaseView, validateViewReferences } from '../database/database-view.js';
+import {
+  projectNoteProperties,
+  setNotePropertyValue,
+  type StructuredDataIssue,
+} from '../database/note-properties.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
-import { FileSystemVault } from '../storage/fs/vault.js';
+import { FileSystemVault, sha256Hex } from '../storage/fs/vault.js';
 import { isStorageError } from '../storage/errors.js';
 import { isInsideRoot } from '../storage/fs/safe-path.js';
 import {
@@ -19,17 +30,24 @@ import {
   type ImportReport,
   type RestorePreview,
 } from '../storage/index.js';
-import { createBacklinkIndex, type BacklinkIndex } from '../links/backlinks.js';
+import { backlinksByTarget } from '../links/backlinks.js';
+import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
+import { createSnapshotCache } from '../indexing/snapshot-cache.js';
+import { buildSearchIndex, normalizeSearch, searchIndex } from '../search/search-index.js';
+type BacklinkIndex = { markDirty(): void };
 import type {
   UiApiErrorBody,
   UiDatabase,
+  UiDatabaseRowsResponse,
+  UiDatabaseView,
+  UiDatabaseViewsResponse,
   UiDeleteNoteInput,
   UiHealthIssue,
   UiMoveNoteInput,
   UiNote,
   UiNoteSummary,
+  UiNotePropertiesResponse,
   UiSaveNoteInput,
-  UiSearchResult,
   UiVaultPickResult,
   UiVaultStatus,
   UiBacklinksResponse,
@@ -84,7 +102,14 @@ export function createLocalApiMiddleware(
   const clock = options.now ?? NOW;
   const chooseFolder = options.folderPicker ?? pickFolder;
   let vaultPromise: Promise<FileSystemVault> | undefined;
-  const backlinkIndex = createBacklinkIndex();
+  const buildKnowledgeIndex = (notes: Note[]) => ({ links: buildLinkIndex(notes), search: buildSearchIndex(notes) });
+  const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<ReturnType<typeof buildKnowledgeIndex>>>>();
+  const indexFor = (vault: FileSystemVault) => {
+    let index = indexes.get(vault);
+    if (!index) { index = createSnapshotCache(() => vault.snapshotNotes(), buildKnowledgeIndex); indexes.set(vault, index); }
+    return index;
+  };
+  const backlinkIndex = { markDirty() { for (const index of indexes.values()) index.markDirty(); } };
 
   const getVault = (): Promise<FileSystemVault> => {
     if (vaultPromise === undefined) {
@@ -111,7 +136,7 @@ export function createLocalApiMiddleware(
     const nextVault = await FileSystemVault.open(selectedPath);
     activeVaultPath = nextVault.root;
     vaultPromise = Promise.resolve(nextVault);
-    backlinkIndex.markDirty();
+    indexes.clear();
     return buildStatus(nextVault);
   };
 
@@ -162,6 +187,27 @@ export function createLocalApiMiddleware(
       return sendJson(res, 201, await createLocalNote(await getVault(), body, clock, backlinkIndex));
     }
 
+    if (method === 'GET' && path === '/api/discovery') {
+      const { links: index } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, {
+        unresolved: index.links.filter((link) => link.resolution.status === 'unresolved'),
+        ambiguous: index.links.filter((link) => link.resolution.status === 'ambiguous'),
+        orphans: index.orphanNotes,
+      });
+    }
+    if (method === 'POST' && path === '/api/discovery/create') {
+      const body = await readJson(req);
+      const target = requireString(body.target, 'target').trim();
+      if (!target || /[\[\]|\r\n]/.test(target)) throw new ApiError(400, 'INVALID_INPUT', 'Invalid wiki-link target.');
+      const vault = await getVault();
+      const title = normalizeTitle(isUuidV4(target) ? 'Recovered note' : target, false);
+      const candidate = createNote({ id: isUuidV4(target) ? target : randomUUID(), title,
+        path: await uniqueNotePath(vault, slugify(title)), body: '', now: clock() });
+      const note = await vault.createNoteForLink(target, candidate);
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, await readLocalNote(vault, note.id));
+    }
+
     const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(path);
     if (noteMatch !== null) {
       const id = decodeURIComponent(noteMatch[1] ?? '');
@@ -178,6 +224,20 @@ export function createLocalApiMiddleware(
       }
     }
 
+    const notePropertiesMatch = /^\/api\/notes\/([^/]+)\/properties$/.exec(path);
+    if (notePropertiesMatch !== null) {
+      const id = decodeURIComponent(notePropertiesMatch[1] ?? '');
+      if (method === 'GET') {
+        return sendJson(res, 200, await readLocalNoteProperties(await getVault(), id));
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        const result = await setLocalNoteProperty(await getVault(), id, body, clock);
+        backlinkIndex.markDirty();
+        return sendJson(res, 200, result);
+      }
+    }
+
     const moveMatch = /^\/api\/notes\/([^/]+)\/move$/.exec(path);
     if (method === 'POST' && moveMatch !== null) {
       const id = decodeURIComponent(moveMatch[1] ?? '');
@@ -188,17 +248,90 @@ export function createLocalApiMiddleware(
     const backlinksMatch = /^\/api\/notes\/([^/]+)\/backlinks$/.exec(path);
     if (method === 'GET' && backlinksMatch !== null) {
       const id = decodeURIComponent(backlinksMatch[1] ?? '');
-      return sendJson(res, 200, await backlinksForNote(await getVault(), id, backlinkIndex));
+      if (!isUuidV4(id)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+      const cache = indexFor(await getVault());
+      const refresh = url.searchParams.get('refresh') === 'true';
+      let snapshot = await cache.get(refresh);
+      // A note opened from disk may have been added externally since this snapshot.
+      // Recheck a missing target once before reporting a real 404.
+      if (!refresh && !snapshot.links.notes.some((note) => note.id === id)) snapshot = await cache.get(true);
+      return sendJson(res, 200, await backlinksForNote(id, snapshot.links));
     }
 
     if (method === 'GET' && path === '/api/search') {
       return sendJson(res, 200, {
-        results: await searchNotes(await getVault(), url.searchParams.get('q') ?? ''),
+        results: normalizeSearch(url.searchParams.get('q') ?? '') === '' ? [] : searchIndex(
+          (await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true')).search, url.searchParams.get('q') ?? ''),
       });
     }
 
     if (method === 'GET' && path === '/api/databases') {
       return sendJson(res, 200, { databases: await listDatabases(await getVault()) });
+    }
+
+    if (method === 'POST' && path === '/api/databases') {
+      const body = await readJson(req);
+      return sendJson(res, 201, await createLocalDatabase(await getVault(), body));
+    }
+
+    const databaseMatch = /^\/api\/databases\/([^/]+)$/.exec(path);
+    if (method === 'PUT' && databaseMatch !== null) {
+      const id = decodeURIComponent(databaseMatch[1] ?? '');
+      const body = await readJson(req);
+      return sendJson(res, 200, await replaceLocalDatabase(await getVault(), id, body));
+    }
+
+    const databaseRowsMatch = /^\/api\/databases\/([^/]+)\/rows$/.exec(path);
+    if (method === 'GET' && databaseRowsMatch !== null) {
+      const expectedSchemaHash = url.searchParams.get('schemaHash') ?? undefined;
+      return sendJson(
+        res,
+        200,
+        await listDatabaseRows(await getVault(), decodeURIComponent(databaseRowsMatch[1] ?? ''), expectedSchemaHash),
+      );
+    }
+
+    const databaseViewsMatch = /^\/api\/databases\/([^/]+)\/views$/.exec(path);
+    if (databaseViewsMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(databaseViewsMatch[1] ?? ''), 'database ID');
+      if (method === 'GET') return sendJson(res, 200, await listDatabaseViews(await getVault(), databaseId));
+      if (method === 'POST') {
+        const body = await readJson(req);
+        return sendJson(res, 201, await createLocalDatabaseView(await getVault(), databaseId, body));
+      }
+    }
+
+    const duplicateViewMatch = /^\/api\/databases\/([^/]+)\/views\/([^/]+)\/duplicate$/.exec(path);
+    if (method === 'POST' && duplicateViewMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(duplicateViewMatch[1] ?? ''), 'database ID');
+      const viewId = requireUuid(decodeURIComponent(duplicateViewMatch[2] ?? ''), 'view ID');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['id', 'name', 'baseHash'], 'request');
+      const id = requireUuid(body.id, 'new view ID');
+      const vault = await getVault();
+      try { await vault.duplicateDatabaseView(databaseId, viewId, id, requireString(body.name, 'name'), { expectedHash: requireHash(body.baseHash) }); }
+      catch (error) { throw toViewStaleApiError(error); }
+      const saved = (await listDatabaseViews(vault, databaseId)).views.find((item) => item.view.id === id);
+      return sendJson(res, 201, { view: saved });
+    }
+
+    const databaseViewMatch = /^\/api\/databases\/([^/]+)\/views\/([^/]+)$/.exec(path);
+    if (databaseViewMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(databaseViewMatch[1] ?? ''), 'database ID');
+      const viewId = requireUuid(decodeURIComponent(databaseViewMatch[2] ?? ''), 'view ID');
+      if (method === 'GET') {
+        const view = (await listDatabaseViews(await getVault(), databaseId)).views.find((item) => item.view.id === viewId);
+        if (!view) throw new ApiError(404, 'NOT_FOUND', 'Saved view was not found.');
+        return sendJson(res, 200, { view });
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        return sendJson(res, 200, await replaceLocalDatabaseView(await getVault(), databaseId, viewId, body));
+      }
+      if (method === 'DELETE') {
+        const body = await readJson(req);
+        return sendJson(res, 200, await deleteLocalDatabaseView(await getVault(), databaseId, viewId, body));
+      }
     }
 
     if (method === 'POST' && path === '/api/backup') {
@@ -218,7 +351,8 @@ export function createLocalApiMiddleware(
 
     if (method === 'POST' && path === '/api/restore') {
       const body = await readJson(req);
-      return sendJson(res, 200, await restoreVaultBackup(await getVault(), body));
+      try { return sendJson(res, 200, await restoreVaultBackup(await getVault(), body)); }
+      finally { backlinkIndex.markDirty(); }
     }
 
     throw new ApiError(404, 'NOT_FOUND', `Unknown route ${method} ${path}`);
@@ -287,6 +421,150 @@ async function listNoteSummaries(vault: FileSystemVault): Promise<UiNoteSummary[
 async function readLocalNote(vault: FileSystemVault, id: string): Promise<{ note: UiNote }> {
   const { note, hash } = await vault.readNoteWithHash(id);
   return { note: toUiNote(note, hash) };
+}
+
+async function readLocalNoteProperties(
+  vault: FileSystemVault,
+  id: string,
+): Promise<UiNotePropertiesResponse> {
+  const { note, hash } = await vault.readNoteWithHash(id);
+  const projection = projectNoteProperties(note, await readDatabaseDefinitions(vault));
+  return {
+    noteId: note.id,
+    path: note.path,
+    contentHash: hash,
+    ...projection,
+  };
+}
+
+async function setLocalNoteProperty(
+  vault: FileSystemVault,
+  id: string,
+  body: Record<string, unknown>,
+  clock: () => string,
+): Promise<UiNotePropertiesResponse> {
+  const databaseId = requireUuid(body.databaseId, 'databaseId');
+  const propertyId = requireUuid(body.propertyId, 'propertyId');
+  const baseHash = requireHash(body.baseHash);
+  if (body.remove !== undefined && body.remove !== true) throw new ApiError(400, 'INVALID_INPUT', 'remove must be true when clearing a property');
+  if (body.remove === true && Object.hasOwn(body, 'value')) throw new ApiError(400, 'INVALID_INPUT', 'Send either value or remove: true, not both');
+  if (body.confirmCreate !== undefined && typeof body.confirmCreate !== 'boolean') {
+    throw new ApiError(400, 'INVALID_INPUT', 'confirmCreate must be a boolean');
+  }
+
+  const current = await vault.readNoteWithHash(id);
+  if (current.hash !== baseHash) {
+    throw new ApiError(
+      409,
+      'STALE_WRITE',
+      'This note changed on disk. Reload it before updating structured data.',
+      { currentHash: current.hash },
+    );
+  }
+
+  const schemas = await readDatabaseDefinitions(vault);
+  const result = setNotePropertyValue(current.note, schemas, {
+    databaseId,
+    propertyId,
+    value: body.value,
+    ...(body.remove === true ? { remove: true } : {}),
+    ...(body.confirmCreate === undefined ? {} : { confirmCreate: body.confirmCreate }),
+  });
+  if (!result.ok) {
+    if ('confirmationRequired' in result) {
+      throw new ApiError(
+        409,
+        'CONFIRMATION_REQUIRED',
+        'Adding this note to a database creates structured metadata. Retry with confirmCreate: true to confirm.',
+      );
+    }
+    throw new ApiError(
+      422,
+      'STRUCTURED_DATA_INVALID',
+      'Structured data was not changed because the note or requested value has validation issues.',
+      { structuredDataIssues: result.issues },
+    );
+  }
+
+  try {
+    await vault.replaceNote(
+      {
+        ...current.note,
+        updatedAt: clock(),
+        extraFrontmatter: result.extraFrontmatter,
+      },
+      { expectedHash: baseHash },
+    );
+  } catch (error) {
+    throw toStaleApiError(error, 'updating structured data');
+  }
+
+  const stored = await vault.readNoteWithHash(id);
+  const projection = projectNoteProperties(stored.note, schemas);
+  return {
+    noteId: stored.note.id,
+    path: stored.note.path,
+    contentHash: stored.hash,
+    ...projection,
+  };
+}
+
+async function readDatabaseDefinitions(
+  vault: FileSystemVault,
+): Promise<Map<string, DatabaseDefinition>> {
+  const summaries = await vault.listDatabases();
+  const definitions = await Promise.all(summaries.map(({ id }) => vault.readDatabase(id)));
+  return new Map(definitions.map((definition) => [definition.id, definition]));
+}
+
+async function listDatabaseRows(
+  vault: FileSystemVault,
+  databaseId: string,
+  expectedSchemaHash?: string,
+): Promise<UiDatabaseRowsResponse> {
+  if (!isUuidV4(databaseId)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
+  }
+
+  // One root-locked snapshot gives membership, property values, and hashes from
+  // the same vault revision without a client-side request per note.
+  const entries = await vault.snapshot();
+  const schemaEntry = entries.find((entry) => entry.kind === 'database' && entry.id === databaseId);
+  if (schemaEntry === undefined) throw new ApiError(404, 'NOT_FOUND', 'Database was not found.');
+  const schemaHash = sha256Hex(schemaEntry.rawBytes ?? Buffer.from(schemaEntry.text, 'utf8'));
+  if (expectedSchemaHash !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(expectedSchemaHash)) {
+      throw new ApiError(400, 'INVALID_INPUT', 'Schema hash must be a lowercase SHA-256 value.');
+    }
+    if (expectedSchemaHash !== schemaHash) {
+      throw new ApiError(409, 'SCHEMA_CHANGED', 'Database schema changed before rows could be loaded.', { currentHash: schemaHash });
+    }
+  }
+
+  const schemas = new Map<string, DatabaseDefinition>();
+  for (const entry of entries) {
+    if (entry.kind === 'database') schemas.set(entry.id, parseDatabase(entry.text));
+  }
+
+  const rows: UiDatabaseRowsResponse['rows'] = [];
+  const diagnostics: StructuredDataIssue[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== 'note') continue;
+    const note = parseNote(entry.text, entry.path);
+    const projection = projectNoteProperties(note, schemas);
+    diagnostics.push(...projection.issues);
+    const projected = projection.rows.find((row) => row.databaseId === databaseId);
+    if (projected === undefined) continue;
+    rows.push({
+      ...projected,
+      title: note.title,
+      updatedAt: note.updatedAt,
+      contentHash: sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8')),
+      issues: projection.issues,
+    });
+  }
+
+  return { databaseId, schemaHash, rows, diagnostics };
 }
 
 async function createLocalNote(
@@ -402,88 +680,164 @@ function toStaleApiError(error: unknown, verb: string): unknown {
   return error;
 }
 
-async function backlinksForNote(
-  vault: FileSystemVault,
-  rawId: string,
-  backlinkIndex: BacklinkIndex,
-): Promise<UiBacklinksResponse> {
-  if (!isUuidV4(rawId)) {
-    throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
-  }
-  // Validates the target exists (404 otherwise).
-  await vault.readNote(rawId);
-
-  const notes = await vault.listNoteDetails();
-  const backlinks = backlinkIndex.getBacklinks(rawId, notes);
-  return { backlinks };
-}
-
-async function searchNotes(vault: FileSystemVault, rawQuery: string): Promise<UiSearchResult[]> {
-  const query = normalizeSearch(rawQuery);
-  if (query === '') return [];
-
-  const notes = await vault.listNoteDetails();
-  const results: UiSearchResult[] = [];
-
-  for (const note of notes) {
-    const title = normalizeSearch(note.title);
-    const path = normalizeSearch(note.path);
-    const body = normalizeSearch(note.body);
-    if (!title.includes(query) && !path.includes(query) && !body.includes(query)) continue;
-
-    results.push({
-      id: note.id,
-      title: note.title,
-      path: note.path,
-      updatedAt: note.updatedAt,
-      aliases: [...note.aliases],
-      icon: readPageIcon(note.extraFrontmatter),
-      snippet: makeSnippet(note.title, note.path, note.body, rawQuery),
-    });
-  }
-
-  return results
-    .sort((left, right) => {
-      const leftRank = searchResultRank(left, query);
-      const rightRank = searchResultRank(right, query);
-      if (leftRank !== rightRank) return leftRank - rightRank;
-      const titleOrder = left.title.localeCompare(right.title);
-      return titleOrder !== 0 ? titleOrder : left.path.localeCompare(right.path);
-    })
-    .slice(0, 50);
-}
-
-/**
- * Deterministic ranking tiers: exact title, title prefix, title contains,
- * path contains, then body-only. Lower sorts first.
- */
-function searchRank(title: string, query: string): number {
-  const normalized = normalizeSearch(title);
-  if (normalized === query) return 0;
-  if (normalized.startsWith(query)) return 1;
-  if (normalized.includes(query)) return 2;
-  return 3;
-}
-
-function searchResultRank(result: UiSearchResult, query: string): number {
-  const titleRank = searchRank(result.title, query);
-  if (titleRank < 3) return titleRank;
-  return normalizeSearch(result.path).includes(query) ? 3 : 4;
+async function backlinksForNote(rawId: string, index: LinkIndex): Promise<UiBacklinksResponse> {
+  if (!isUuidV4(rawId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+  if (!index.notes.some((note) => note.id === rawId)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
+  return { backlinks: backlinksByTarget(index).get(rawId) ?? [] };
 }
 
 async function listDatabases(vault: FileSystemVault): Promise<UiDatabase[]> {
   const summaries = await vault.listDatabases();
-  const databases = await Promise.all(summaries.map((summary) => vault.readDatabase(summary.id)));
+  const databases = await Promise.all(summaries.map((summary) => vault.readDatabaseWithHash(summary.id)));
   return databases
-    .map(toUiDatabase)
+    .map(({ database, hash }) => toUiDatabase(database, hash))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function toUiDatabase(database: DatabaseDefinition): UiDatabase {
+async function createLocalDatabase(
+  vault: FileSystemVault,
+  body: Record<string, unknown>,
+): Promise<{ database: UiDatabase }> {
+  const database = requireDatabaseInput(body.database);
+  await vault.createDatabase(database);
+  const saved = await vault.readDatabaseWithHash(database.id);
+  return { database: toUiDatabase(saved.database, saved.hash) };
+}
+
+async function replaceLocalDatabase(
+  vault: FileSystemVault,
+  rawId: string,
+  body: Record<string, unknown>,
+): Promise<{ database: UiDatabase }> {
+  const id = requireUuid(rawId, 'database ID');
+  const database = requireDatabaseInput(body.database);
+  if (database.id !== id) throw new ApiError(400, 'INVALID_INPUT', 'Database ID must match the URL.');
+  const baseHash = requireHash(body.baseHash);
+  try {
+    await vault.replaceDatabase(database, { expectedHash: baseHash });
+  } catch (error) {
+    throw toDatabaseStaleApiError(error);
+  }
+  const saved = await vault.readDatabaseWithHash(id);
+  return { database: toUiDatabase(saved.database, saved.hash) };
+}
+
+async function listDatabaseViews(vault: FileSystemVault, databaseId: string): Promise<UiDatabaseViewsResponse> {
+  let database: DatabaseDefinition | undefined;
+  let schemaHash: string | undefined;
+  const entries = await vault.snapshot();
+  const schemaEntry = entries.find((entry) => entry.kind === 'database' && entry.id === databaseId);
+  if (schemaEntry !== undefined) {
+    database = parseDatabase(schemaEntry.text);
+    schemaHash = sha256Hex(schemaEntry.rawBytes ?? Buffer.from(schemaEntry.text, 'utf8'));
+  }
+  const views = entries.filter((entry) => entry.kind === 'database-view').flatMap((entry) => {
+    const view = parseDatabaseView(entry.text);
+    return view.databaseId === databaseId ? [{ view, path: entry.path, hash: sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8')) }] : [];
+  });
+  return {
+    databaseId,
+    ...(schemaHash === undefined ? {} : { schemaHash }),
+    views: views.map(({ view, path, hash }) => ({ view, path, contentHash: hash, diagnostics: diagnoseDatabaseView(view, database) })),
+  };
+}
+
+async function createLocalDatabaseView(vault: FileSystemVault, databaseId: string, body: Record<string, unknown>): Promise<{ view: UiDatabaseView }> {
+  requireAllowedKeys(body, ['view'], 'request');
+  const view = requireDatabaseViewInput(body.view);
+  if (view.databaseId !== databaseId) throw new ApiError(400, 'INVALID_INPUT', 'Saved view databaseId must match the URL.');
+  const schema = await vault.readDatabaseWithHash(databaseId);
+  try { validateViewReferences(view, schema.database); }
+  catch (error) { throw new ApiError(422, 'INVALID_VIEW_REFERENCES', error instanceof Error ? error.message : 'Saved view references are invalid.'); }
+  try { await vault.createDatabaseView(view, { expectedDatabaseHash: schema.hash }); }
+  catch (error) { throw toViewStaleApiError(error); }
+  const saved = (await vault.listDatabaseViews(databaseId)).find((item) => item.view.id === view.id);
+  if (!saved) throw new ApiError(500, 'INTERNAL_ERROR', 'Saved view was written but could not be read back.');
+  return { view: { view: saved.view, path: saved.path, contentHash: saved.hash, diagnostics: [] } };
+}
+
+async function replaceLocalDatabaseView(vault: FileSystemVault, databaseId: string, viewId: string, body: Record<string, unknown>): Promise<{ view: UiDatabaseView }> {
+  requireAllowedKeys(body, ['view', 'baseHash'], 'request');
+  const view = requireDatabaseViewInput(body.view);
+  if (view.databaseId !== databaseId || view.id !== viewId) throw new ApiError(400, 'INVALID_INPUT', 'Saved view IDs must match the URL.');
+  const baseHash = requireHash(body.baseHash);
+  const schema = await vault.readDatabaseWithHash(databaseId);
+  try { validateViewReferences(view, schema.database); }
+  catch (error) { throw new ApiError(422, 'INVALID_VIEW_REFERENCES', error instanceof Error ? error.message : 'Saved view references are invalid.'); }
+  try { await vault.replaceDatabaseView(view, { expectedHash: baseHash, expectedDatabaseHash: schema.hash }); }
+  catch (error) { throw toViewStaleApiError(error); }
+  const saved = (await vault.listDatabaseViews(databaseId)).find((item) => item.view.id === view.id);
+  if (!saved) throw new ApiError(500, 'INTERNAL_ERROR', 'Saved view was written but could not be read back.');
+  return { view: { view: saved.view, path: saved.path, contentHash: saved.hash, diagnostics: [] } };
+}
+
+async function deleteLocalDatabaseView(vault: FileSystemVault, databaseId: string, viewId: string, body: Record<string, unknown>): Promise<{ deleted: true }> {
+  requireAllowedKeys(body, ['baseHash'], 'request');
+  const baseHash = requireHash(body.baseHash);
+  try { await vault.deleteDatabaseView(databaseId, viewId, { expectedHash: baseHash }); }
+  catch (error) { throw toViewStaleApiError(error); }
+  return { deleted: true };
+}
+
+function requireAllowedKeys(value: Record<string, unknown>, allowed: string[], where: string): void {
+  const extra = Object.keys(value).find((key) => !allowed.includes(key));
+  if (extra !== undefined) throw new ApiError(400, 'INVALID_INPUT', `Unknown field "${extra}" in ${where}.`);
+}
+
+function requireDatabaseViewInput(value: unknown) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'view must be an object.');
+  try { return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version: ('type' in value || 'settings' in value) ? DATABASE_VIEW_VERSION : 1, ...value })); }
+  catch (error) { throw new ApiError(400, 'INVALID_INPUT', error instanceof Error ? error.message : 'view is invalid.'); }
+}
+
+function toViewStaleApiError(error: unknown): unknown {
+  if (isStorageError(error) && error.code === 'STALE_WRITE') {
+    return new ApiError(409, 'STALE_WRITE', 'The saved view or its database schema changed on disk. Reload before saving.', { currentHash: error.details?.currentHash });
+  }
+  return error;
+}
+
+function requireDatabaseInput(value: unknown): DatabaseDefinition {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'database must be an object.');
+  }
+  try {
+    // The API has historically accepted the definition without the on-disk
+    // envelope. Validate it as a complete v1 schema before the storage
+    // serializer can project it into its canonical representation. Explicit
+    // envelope fields are accepted only when they describe the supported v1.
+    return parseDatabase(JSON.stringify({
+      format: DATABASE_FORMAT,
+      version: DATABASE_FORMAT_VERSION,
+      ...value,
+    }));
+  } catch (error) {
+    throw new ApiError(
+      400,
+      'INVALID_INPUT',
+      error instanceof Error ? error.message : 'database is not a valid version 1 schema.',
+    );
+  }
+}
+
+function toDatabaseStaleApiError(error: unknown): unknown {
+  if (isStorageError(error) && error.code === 'STALE_WRITE') {
+    return new ApiError(
+      409,
+      'STALE_WRITE',
+      'This database schema changed on disk after you opened it. Reload it before saving.',
+      { currentHash: error.details?.currentHash },
+    );
+  }
+  return error;
+}
+
+function toUiDatabase(database: DatabaseDefinition, hash: string): UiDatabase {
   return {
     id: database.id,
     name: database.name,
     path: `databases/${database.id}.json`,
+    contentHash: hash,
     properties: database.properties.map((property) => ({
       id: property.id,
       name: property.name,
@@ -543,12 +897,12 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
     manifest: validation.manifest,
-    counts: { notes: validation.notes.length, databases: validation.databases.length },
+    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length },
   };
 }
 
@@ -613,6 +967,13 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
+function requireUuid(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !isUuidV4(value)) {
+    throw new ApiError(400, 'INVALID_INPUT', `${field} must be a lowercase UUID v4`);
+  }
+  return value;
+}
+
 function requireHash(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
     throw new ApiError(400, 'INVALID_INPUT', 'baseHash must be a lowercase SHA-256 hex digest');
@@ -629,23 +990,6 @@ function slugify(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
   return slug || 'note';
-}
-
-function normalizeSearch(value: string): string {
-  return value.normalize('NFC').trim().toLowerCase();
-}
-
-function makeSnippet(title: string, path: string, body: string, query: string): string {
-  const compact = body.replace(/\s+/g, ' ').trim();
-  const index = normalizeSearch(compact).indexOf(normalizeSearch(query));
-  if (index === -1) {
-    if (normalizeSearch(title).includes(normalizeSearch(query))) return `Title: ${title}`;
-    if (normalizeSearch(path).includes(normalizeSearch(query))) return `Path: ${path}`;
-    return compact.slice(0, 140) || title;
-  }
-  const start = Math.max(0, index - 45);
-  const end = Math.min(compact.length, index + query.length + 90);
-  return `${start > 0 ? '…' : ''}${compact.slice(start, end)}${end < compact.length ? '…' : ''}`;
 }
 
 function foldPath(path: string): string {
@@ -885,6 +1229,12 @@ function sendError(res: ServerResponse, error: unknown): void {
         message: error.message,
         ...(typeof error.details?.currentHash === 'string'
           ? { currentHash: error.details.currentHash }
+          : {}),
+        ...(Array.isArray(error.details?.structuredDataIssues)
+          ? {
+              structuredDataIssues:
+                error.details.structuredDataIssues as UiApiErrorBody['error']['structuredDataIssues'],
+            }
           : {}),
       },
     };

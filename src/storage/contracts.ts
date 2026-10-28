@@ -1,4 +1,5 @@
 import type { DatabaseDefinition } from '../database/schema.js';
+import type { DatabaseView } from '../database/database-view.js';
 import type { Note } from '../domain/note.js';
 
 export interface NoteSummary {
@@ -32,12 +33,13 @@ export interface StorageIssue {
 export interface StorageHealth {
   notes: NoteSummary[];
   databases: DatabaseSummary[];
+  databaseViews: DatabaseViewSummary[];
   issues: StorageIssue[];
 }
 
 /** One serialized document, as stored or about to be stored. */
 export interface VaultEntry {
-  kind: 'note' | 'database';
+  kind: 'note' | 'database' | 'database-view';
   id: string;
   path: string;
   text: string;
@@ -68,8 +70,29 @@ export interface DatabaseStore {
   listDatabases(): Promise<DatabaseSummary[]>;
   readDatabase(id: string): Promise<DatabaseDefinition>;
   createDatabase(database: DatabaseDefinition): Promise<void>;
-  replaceDatabase(database: DatabaseDefinition): Promise<void>;
+  replaceDatabase(database: DatabaseDefinition, options?: ConditionalWriteOptions): Promise<void>;
   deleteDatabase(id: string): Promise<void>;
+}
+
+export interface DatabaseViewSummary {
+  view: DatabaseView;
+  path: string;
+  /** SHA-256 of raw view JSON bytes for conditional replacement/deletion. */
+  hash: string;
+}
+
+export interface DatabaseViewStore {
+  listDatabaseViews(databaseId?: string): Promise<DatabaseViewSummary[]>;
+  readDatabaseView(databaseId: string, viewId: string): Promise<DatabaseViewSummary>;
+  duplicateDatabaseView(databaseId: string, viewId: string, newId: string, name: string, options: Required<ConditionalWriteOptions>): Promise<void>;
+  createDatabaseView(view: DatabaseView, options?: DatabaseViewWriteOptions): Promise<void>;
+  replaceDatabaseView(view: DatabaseView, options?: DatabaseViewWriteOptions): Promise<void>;
+  deleteDatabaseView(databaseId: string, viewId: string, options?: ConditionalWriteOptions): Promise<void>;
+}
+
+export interface DatabaseViewWriteOptions extends ConditionalWriteOptions {
+  /** Raw schema hash used while validating property/option references. */
+  expectedDatabaseHash?: string;
 }
 
 export interface ImportOptions {
@@ -80,22 +103,25 @@ export interface ImportOptions {
 export interface ImportReport {
   notes: number;
   databases: number;
+  databaseViews: number;
 }
 
 export interface ImportPlan {
   entries: VaultEntry[];
   notes: Note[];
   databases: DatabaseDefinition[];
+  databaseViews?: DatabaseView[];
 }
 
 export interface ExportReport {
   targetDir: string;
   notes: number;
   databases: number;
+  databaseViews: number;
 }
 
 export interface BackupManifestFile {
-  kind: 'note' | 'database';
+  kind: 'note' | 'database' | 'database-view';
   id: string;
   path: string;
   sha256: string;
@@ -114,17 +140,19 @@ export interface BackupManifestFormats {
   note: number;
   database: number;
   backup: number;
+  databaseView?: number;
 }
 
 /** File counts by kind; optional on legacy v1 manifests, cross-checked when present. */
 export interface BackupManifestCounts {
   notes: number;
   databases: number;
+  databaseViews?: number;
 }
 
 export interface BackupManifest {
   format: 'nodus-backup';
-  version: 1;
+  version: 1 | 2;
   createdAt: string;
   app?: BackupManifestApp;
   formats?: BackupManifestFormats;
@@ -141,7 +169,7 @@ export interface BackupManifest {
 /** Read-only result of comparing a validated backup against a live vault. */
 export interface RestorePreview {
   manifest: BackupManifest;
-  counts: { notes: number; databases: number };
+  counts: { notes: number; databases: number; databaseViews: number };
   /** ID and path conflicts a restore would hit without `overwrite: true`. */
   conflicts: { ids: string[]; paths: string[] };
 }
@@ -150,6 +178,7 @@ export interface BackupReport {
   targetDir: string;
   notes: number;
   databases: number;
+  databaseViews: number;
 }
 
 export interface BackupValidation {
@@ -157,6 +186,7 @@ export interface BackupValidation {
   entries: VaultEntry[];
   notes: Note[];
   databases: DatabaseDefinition[];
+  databaseViews: DatabaseView[];
 }
 
 export interface BackupOptions {
@@ -169,7 +199,7 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore {
   readonly root: string;
   /** All valid documents as raw text, notes first, each group sorted by path. */
   snapshot(): Promise<VaultEntry[]>;

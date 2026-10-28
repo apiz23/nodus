@@ -47,7 +47,7 @@ export default defineConfig({
         // Preserve Vite's default secret-file exclusions when adding our own.
         '.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**',
         // Apply regardless of where a vault or backup is placed, including in a source directory.
-        '**/*.md', '**/databases/**', '**/nodus-backup.json', '**/.nodus-tmp-*',
+        '**/*.md', '**/databases/**', '**/database-views/**', '**/nodus-backup.json', '**/.nodus-tmp-*',
       ],
     },
   },

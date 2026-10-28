@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import type {
   DatabaseStore,
   DatabaseSummary,
+  DatabaseViewWriteOptions,
   ImportOptions,
   ImportPlan,
   ImportReport,
@@ -16,6 +17,8 @@ import type {
 } from '../contracts.js';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase, serializeDatabase } from '../../database/schema.js';
+import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
+import { resolveLink } from '../../links/wikilink.js';
 import { isUuidV4 } from '../../domain/ids.js';
 import type { Note } from '../../domain/note.js';
 import { validateNote } from '../../domain/note.js';
@@ -24,7 +27,7 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { writeFileAtomic } from './atomic.js';
-import { databasePath, isReservedNotePath } from './layout.js';
+import { databasePath, databaseViewPath, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { walkVault, type WalkEntry } from './scan.js';
@@ -41,6 +44,8 @@ interface ParsedDatabase {
   text: string;
   bytes: Buffer;
 }
+
+interface ParsedDatabaseView { view: DatabaseView; text: string; bytes: Buffer; path: string }
 
 const NOTE_NOT_FOUND = (id: string) =>
   new StorageError('NOT_FOUND', `Note "${id}" was not found`, { details: { ids: [id] } });
@@ -119,7 +124,29 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async createNote(note: Note): Promise<void> {
+    return withVaultRootLock(this.root, () => this.createNoteUnlocked(note));
+  }
+
+  /** Consistent note-only snapshot for derived discovery indexes. */
+  async snapshotNotes(): Promise<Note[]> {
+    return withVaultRootLock(this.root, () => this.listNoteDetails());
+  }
+
+  /** Recheck resolution and create atomically with respect to all Nodus writers. */
+  async createNoteForLink(target: string, candidate: Note): Promise<Note> {
     return withVaultRootLock(this.root, async () => {
+      const notes = await this.listNoteDetails();
+      const resolution = resolveLink(target, notes);
+      if (resolution.status === 'resolved') return notes.find((note) => note.id === resolution.noteId)!;
+      if (resolution.status === 'ambiguous') throw new StorageError('CONFLICT', 'The link now matches multiple notes. Choose a destination instead.');
+      const intended = resolveLink(target, [candidate]);
+      if (intended.status !== 'resolved') throw new StorageError('INVALID_INPUT', 'The new note must resolve the intended link.');
+      await this.createNoteUnlocked(candidate);
+      return candidate;
+    });
+  }
+
+  private async createNoteUnlocked(note: Note): Promise<void> {
     try {
       validateNote(note);
     } catch (error) {
@@ -154,7 +181,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     await this.writeDocument(note.path, this.serializeNoteInput(note));
-    });
   }
 
   async replaceNote(note: Note, options: ConditionalWriteOptions = {}): Promise<void> {
@@ -258,10 +284,16 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async readDatabase(id: string): Promise<DatabaseDefinition> {
+    return (await this.readDatabaseWithHash(id)).database;
+  }
+
+  /** Reads a database definition and its raw-byte revision token from one read. */
+  async readDatabaseWithHash(id: string): Promise<{ database: DatabaseDefinition; hash: string }> {
     if (!isUuidV4(id)) throw DATABASE_NOT_FOUND(id);
     const path = databasePath(id);
     const absolute = await this.validateInternalPath(path);
-    const text = await this.readTextAt(absolute, path);
+    const bytes = await this.readBytesAt(absolute, path);
+    const text = decodeVaultText(bytes, path);
 
     let database: DatabaseDefinition;
     try {
@@ -275,7 +307,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         details: { ids: [database.id, id], paths: [path] },
       });
     }
-    return database;
+    return { database, hash: sha256Hex(bytes) };
   }
 
   async createDatabase(database: DatabaseDefinition): Promise<void> {
@@ -293,12 +325,30 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
-  async replaceDatabase(database: DatabaseDefinition): Promise<void> {
+  async replaceDatabase(database: DatabaseDefinition, options: ConditionalWriteOptions = {}): Promise<void> {
     return withVaultRootLock(this.root, async () => {
     const text = this.serializeDatabaseInput(database);
     const path = databasePath(database.id);
     const absolute = await this.validateInternalPath(path);
     if (!(await pathExists(absolute))) throw DATABASE_NOT_FOUND(database.id);
+    const existingBytes = await this.readBytesAt(absolute, path);
+    const existingText = decodeVaultText(existingBytes, path);
+    let existing: DatabaseDefinition;
+    try {
+      existing = parseDatabase(existingText);
+    } catch (error) {
+      throw wrapContentError(error, path);
+    }
+    if (existing.id !== database.id) {
+      throw new StorageError('INVALID_CONTENT', `Database file "${path}" contains ID "${existing.id}"`, {
+        path,
+        details: { ids: [existing.id, database.id], paths: [path] },
+      });
+    }
+    if (options.expectedHash !== undefined) {
+      const currentHash = sha256Hex(existingBytes);
+      if (currentHash !== options.expectedHash) throw staleWrite(path, currentHash);
+    }
     await this.writeDocument(path, text, true);
     });
   }
@@ -317,10 +367,85 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
+  async listDatabaseViews(databaseId?: string) {
+    if (databaseId !== undefined && !isUuidV4(databaseId)) throw new StorageError('INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
+    return withVaultRootLock(this.root, async () => {
+      const parsed = await this.parseDatabaseViewsStrict();
+      return parsed.filter(({ view }) => databaseId === undefined || view.databaseId === databaseId)
+        .map(({ view, bytes, path }) => ({ view, path, hash: sha256Hex(bytes) }));
+    });
+  }
+
+  async createDatabaseView(view: DatabaseView, options: DatabaseViewWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      const text = this.serializeDatabaseViewInput(view);
+      await this.validateDatabaseViewSchema(view, options.expectedDatabaseHash);
+      const path = databaseViewPath(view.databaseId, view.id);
+      const absolute = await this.validateInternalPath(path);
+      if (await pathExists(absolute)) throw new StorageError('CONFLICT', `A saved view already exists at "${path}"`, { path, details: { paths: [path] } });
+      const existing = await this.parseDatabaseViewsStrict();
+      if (existing.some(({ view: candidate }) => candidate.id === view.id)) throw new StorageError('DUPLICATE_ID', `Saved view ID "${view.id}" already exists`, { details: { ids: [view.id] } });
+      await this.writeDocument(path, text, true);
+    });
+  }
+
+  async readDatabaseView(databaseId: string, viewId: string) {
+    if (!isUuidV4(databaseId) || !isUuidV4(viewId)) throw new StorageError('INVALID_INPUT', 'Saved view IDs must be lowercase UUID v4');
+    return withVaultRootLock(this.root, async () => {
+      const stored = (await this.parseDatabaseViewsStrict()).find(({ view }) => view.databaseId === databaseId && view.id === viewId);
+      if (!stored) throw new StorageError('NOT_FOUND', 'Saved view was not found');
+      return { view: stored.view, path: stored.path, hash: sha256Hex(stored.bytes) };
+    });
+  }
+
+  async duplicateDatabaseView(databaseId: string, viewId: string, newId: string, name: string, options: Required<ConditionalWriteOptions>): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      const stored = await this.parseDatabaseViewsStrict();
+      const source = stored.find(({ view }) => view.databaseId === databaseId && view.id === viewId);
+      if (!source) throw new StorageError('NOT_FOUND', 'Saved view was not found');
+      if (sha256Hex(source.bytes) !== options.expectedHash) throw staleWrite(source.path, sha256Hex(source.bytes));
+      const duplicate = { ...source.view, id: newId, name };
+      const text = this.serializeDatabaseViewInput(duplicate);
+      await this.validateDatabaseViewSchema(duplicate);
+      const path = databaseViewPath(databaseId, newId);
+      const absolute = await this.validateInternalPath(path);
+      if (stored.some(({ view }) => view.id === newId) || await pathExists(absolute)) throw new StorageError('CONFLICT', 'The duplicate saved view ID already exists', { path });
+      await this.writeDocument(path, text, true);
+    });
+  }
+
+  async replaceDatabaseView(view: DatabaseView, options: DatabaseViewWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      const text = this.serializeDatabaseViewInput(view);
+      await this.validateDatabaseViewSchema(view, options.expectedDatabaseHash);
+      const path = databaseViewPath(view.databaseId, view.id);
+      const absolute = await this.validateInternalPath(path);
+      const bytes = await this.readBytesAt(absolute, path);
+      let current: DatabaseView;
+      try { current = parseDatabaseView(decodeVaultText(bytes, path)); } catch (error) { throw wrapContentError(error, path); }
+      if (current.id !== view.id || current.databaseId !== view.databaseId) throw new StorageError('INVALID_CONTENT', `Saved view at "${path}" does not match its path`, { path });
+      if (options.expectedHash !== undefined && sha256Hex(bytes) !== options.expectedHash) throw staleWrite(path, sha256Hex(bytes));
+      await this.writeDocument(path, text, true);
+    });
+  }
+
+  async deleteDatabaseView(databaseId: string, viewId: string, options: ConditionalWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      if (!isUuidV4(databaseId) || !isUuidV4(viewId)) throw new StorageError('NOT_FOUND', 'Saved view was not found');
+      const path = databaseViewPath(databaseId, viewId);
+      const absolute = await this.validateInternalPath(path);
+      const bytes = await this.readBytesAt(absolute, path);
+      const currentHash = sha256Hex(bytes);
+      if (options.expectedHash !== undefined && currentHash !== options.expectedHash) throw staleWrite(path, currentHash);
+      try { await unlink(absolute); } catch (error) { if (isMissing(error)) throw new StorageError('NOT_FOUND', `Saved view "${viewId}" was not found`, { path }); throw storageFailure(error, 'Delete saved view', path); }
+    });
+  }
+
   async snapshot(): Promise<VaultEntry[]> {
     return withVaultRootLock(this.root, async () => {
       const notes = await this.parseNotesStrict();
       const databases = await this.parseDatabasesStrict();
+      const views = await this.parseDatabaseViewsStrict();
 
       return [
         ...notes.map(({ note, text, bytes }) => ({
@@ -337,6 +462,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
           text,
           rawBytes: Buffer.from(bytes),
         })),
+        ...views.map(({ view, text, bytes, path }) => ({ kind: 'database-view' as const, id: view.id, path, text, rawBytes: Buffer.from(bytes) })),
       ];
     });
   }
@@ -345,6 +471,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const { entries, issues } = await walkVault(this.root);
     const notes: NoteSummary[] = [];
     const databases: DatabaseSummary[] = [];
+    const databaseViews: import('../contracts.js').DatabaseViewSummary[] = [];
     const notePathsById = new Map<string, string[]>();
 
     for (const entry of entries) {
@@ -372,6 +499,13 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
       try {
         const text = await this.readText(entry);
+        if (entry.kind === 'database-view') {
+          const view = parseDatabaseView(text);
+          if (entry.path !== databaseViewPath(view.databaseId, view.id)) throw new StorageError('INVALID_CONTENT', 'Saved view ID must match its path', { path: entry.path });
+          const bytes = await this.readBytes(entry);
+          databaseViews.push({ view, path: entry.path, hash: sha256Hex(bytes) });
+          continue;
+        }
         const database = parseDatabase(text);
         if (entry.path !== databasePath(database.id)) {
           throw new StorageError(
@@ -406,6 +540,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return {
       notes: sortByPath(notes),
       databases: sortByPath(databases),
+      databaseViews: sortByPath(databaseViews),
       issues: issues.sort((left, right) =>
         left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
       ),
@@ -429,16 +564,36 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       this.serializeDatabaseInput(database);
       await this.validateInternalPath(databasePath(database.id));
     }
+    const incomingViews = plan.databaseViews ?? [];
+    for (const view of incomingViews) {
+      this.serializeDatabaseViewInput(view);
+      await this.validateInternalPath(databaseViewPath(view.databaseId, view.id));
+    }
+    const viewEntries = plan.entries.filter((entry) => entry.kind === 'database-view');
+    if (viewEntries.length !== incomingViews.length) throw new StorageError('INVALID_CONTENT', 'Import plan saved-view entries do not match its validated saved views');
+    const parsedEntryPaths = new Set<string>();
+    for (const entry of viewEntries) {
+      let parsed: DatabaseView;
+      try { parsed = parseDatabaseView(entry.text); } catch (error) { throw wrapContentError(error, entry.path); }
+      const expectedPath = databaseViewPath(parsed.databaseId, parsed.id);
+      if (entry.path !== expectedPath || entry.id !== parsed.id || !incomingViews.some((view) => view.id === parsed.id && view.databaseId === parsed.databaseId)) {
+        throw new StorageError('INVALID_CONTENT', `Import saved-view entry "${entry.path}" does not match its validated view`, { path: entry.path });
+      }
+      const key = foldPath(entry.path);
+      if (parsedEntryPaths.has(key)) throw new StorageError('CONFLICT', `Import contains duplicate saved-view path "${entry.path}"`, { path: entry.path });
+      parsedEntryPaths.add(key);
+    }
 
     const noteText = new Map<string, string>();
     const databaseText = new Map<string, string>();
     for (const entry of plan.entries) {
       if (entry.kind === 'note') noteText.set(entry.id, entry.text);
-      else databaseText.set(entry.id, entry.text);
+      else if (entry.kind === 'database') databaseText.set(entry.id, entry.text);
     }
 
     const existingNotes = await this.parseNotesStrict();
     const existingDatabases = await this.parseDatabasesStrict();
+    const existingViews = await this.parseDatabaseViewsStrict();
 
     const existingNoteIds = new Map(existingNotes.map(({ note }) => [note.id, note.path] as const));
     const existingNotePaths = new Map(existingNotes.map(({ note }) => [foldPath(note.path), note.path] as const));
@@ -449,6 +604,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     for (const { database, bytes } of existingDatabases) {
       expectedHashes.set(databasePath(database.id), sha256Hex(bytes));
     }
+    for (const { path, bytes } of existingViews) expectedHashes.set(path, sha256Hex(bytes));
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -477,6 +633,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       }
       plannedDatabaseIds.add(database.id);
     }
+    const plannedViewPaths = new Set<string>();
+    for (const view of incomingViews) {
+      const path = databaseViewPath(view.databaseId, view.id);
+      const folded = foldPath(path);
+      if (plannedViewPaths.has(folded)) throw new StorageError('CONFLICT', `Import contains duplicate saved-view path "${path}"`, { path, details: { paths: [path] } });
+      if (incomingViews.some((candidate) => candidate.id === view.id && candidate !== view)) throw new StorageError('DUPLICATE_ID', `Import contains saved view ID "${view.id}" more than once`, { details: { ids: [view.id] } });
+      plannedViewPaths.add(folded);
+    }
 
     const idConflicts = new Set<string>();
     const pathConflicts = new Set<string>();
@@ -488,6 +652,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
     for (const database of plan.databases) {
       if (existingDatabaseIds.has(database.id)) idConflicts.add(database.id);
+    }
+    for (const view of incomingViews) {
+      const path = databaseViewPath(view.databaseId, view.id);
+      const existingById = existingViews.find((candidate) => candidate.view.id === view.id);
+      if (existingById !== undefined && existingById.path !== path) {
+        throw new StorageError('CONFLICT', `Saved view ID "${view.id}" already belongs to "${existingById.path}" and cannot be moved by import`, { path, details: { ids: [view.id], paths: [existingById.path, path] } });
+      }
+      const existingPath = existingViews.find((candidate) => foldPath(candidate.path) === foldPath(path));
+      if (existingPath !== undefined) {
+        if (existingPath.path !== path) pathConflicts.add(path);
+        idConflicts.add(view.id);
+      }
     }
 
     if (options.overwrite !== true && (idConflicts.size > 0 || pathConflicts.size > 0)) {
@@ -540,6 +716,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let failedPath: string | undefined;
     let notes = 0;
     let databases = 0;
+    let databaseViews = 0;
 
     try {
       for (const note of plan.notes) {
@@ -563,6 +740,17 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         written.push(path);
       }
 
+      for (const view of incomingViews) {
+        const path = databaseViewPath(view.databaseId, view.id);
+        const entry = plan.entries.find((item) => item.kind === 'database-view' && item.id === view.id && item.path === path);
+        failedPath = path;
+        await this.writeDocument(path, entry?.text ?? this.serializeDatabaseViewInput(view), true, () =>
+          this.assertImportTargetUnchanged(path, expectedHashes.get(path)),
+        );
+        databaseViews += 1;
+        written.push(path);
+      }
+
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
@@ -583,7 +771,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases };
+    return { notes, databases, databaseViews };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
@@ -679,6 +867,27 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return parsed;
   }
 
+  private async parseDatabaseViewsStrict(): Promise<ParsedDatabaseView[]> {
+    const { entries, issues } = await walkVault(this.root);
+    const issue = issues.find((item) => item.path === 'database-views' || item.path.startsWith('database-views/'));
+    if (issue) throw new StorageError('INVALID_CONTENT', issue.message, { path: issue.path });
+    const parsed: ParsedDatabaseView[] = [];
+    const ids = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.kind !== 'database-view') continue;
+      let view: DatabaseView; let text: string; let bytes: Buffer;
+      try { bytes = await this.readBytes(entry); text = decodeVaultText(bytes, entry.path); view = parseDatabaseView(text); }
+      catch (error) { throw wrapContentError(error, entry.path); }
+      const expected = databaseViewPath(view.databaseId, view.id);
+      if (entry.path !== expected) throw new StorageError('INVALID_CONTENT', `Saved view must be stored at "${expected}", found "${entry.path}"`, { path: entry.path, details: { ids: [view.databaseId, view.id], paths: [entry.path, expected] } });
+      const previous = ids.get(view.id);
+      if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Saved view ID "${view.id}" is used by both "${previous}" and "${entry.path}"`, { details: { ids: [view.id], paths: [previous, entry.path] } });
+      ids.set(view.id, entry.path);
+      parsed.push({ view, text, bytes, path: entry.path });
+    }
+    return parsed;
+  }
+
   private async findNote(id: string): Promise<ParsedNote> {
     return this.locateNote(id);
   }
@@ -727,6 +936,19 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
   }
 
+  private serializeDatabaseViewInput(view: DatabaseView): string {
+    try { return serializeDatabaseView(view); } catch (error) { throw wrapInputError(error, 'Invalid saved view'); }
+  }
+
+  private async validateDatabaseViewSchema(view: DatabaseView, expectedHash?: string): Promise<void> {
+    let stored: { database: DatabaseDefinition; hash: string };
+    try { stored = await this.readDatabaseWithHash(view.databaseId); }
+    catch (error) { throw wrapInputError(error, 'Saved view database is unavailable'); }
+    if (expectedHash !== undefined && expectedHash !== stored.hash) throw staleWrite(databasePath(view.databaseId), stored.hash);
+    try { validateViewReferences(view, stored.database); }
+    catch (error) { throw wrapInputError(error, 'Invalid saved view references'); }
+  }
+
   private serializeNoteInput(note: Note): string {
     try {
       return serializeNote(note);
@@ -772,7 +994,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     if (isReservedNotePath(path.toLowerCase())) {
       throw new StorageError(
         'INVALID_INPUT',
-        `Path "${path}" is reserved for database definitions`,
+        `Path "${path}" is reserved for Nodus database metadata`,
         { path, details: { paths: [path] } },
       );
     }

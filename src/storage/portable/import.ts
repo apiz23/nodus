@@ -3,11 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase } from '../../database/schema.js';
+import { parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
 import type { Note } from '../../domain/note.js';
 import { parseNote } from '../../format/note-format.js';
 import type { ImportOptions, ImportPlan, ImportReport, VaultEntry, VaultStorage } from '../contracts.js';
 import { StorageError, storageFailure, wrapContentError } from '../errors.js';
-import { databasePath } from '../fs/layout.js';
+import { databasePath, databaseViewPath } from '../fs/layout.js';
 import { walkVault } from '../fs/scan.js';
 
 /**
@@ -52,9 +53,11 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
 
   const notes: Note[] = [];
   const databases: DatabaseDefinition[] = [];
+  const databaseViews: DatabaseView[] = [];
   const entries: VaultEntry[] = [];
   const noteIds = new Map<string, string>();
   const databaseIds = new Map<string, string>();
+  const viewIds = new Map<string, string>();
   const foldedPaths = new Map<string, string>();
 
   for (const entry of walk.entries) {
@@ -118,7 +121,22 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     entries.push({ kind: 'database', id: database.id, path: entry.path, text });
   }
 
-  return { entries, notes, databases };
+  for (const entry of walk.entries) {
+    if (entry.kind !== 'database-view') continue;
+    const text = await readText(entry.absolute, entry.path);
+    let view: DatabaseView;
+    try { view = parseDatabaseView(text); } catch (error) { throw wrapContentError(error, entry.path); }
+    const expected = databaseViewPath(view.databaseId, view.id);
+    if (entry.path !== expected) throw new StorageError('INVALID_CONTENT', `Import file "${entry.path}" does not match saved view ID and database ID; expected "${expected}"`, { path: entry.path, details: { ids: [view.databaseId, view.id], paths: [entry.path, expected] } });
+    const previous = viewIds.get(view.id);
+    if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Import contains saved view ID "${view.id}" more than once`, { details: { ids: [view.id], paths: [previous, entry.path] } });
+    viewIds.set(view.id, entry.path);
+    assertNoPathCollision(entry.path, foldedPaths);
+    databaseViews.push(view);
+    entries.push({ kind: 'database-view', id: view.id, path: entry.path, text });
+  }
+
+  return { entries, notes, databases, databaseViews };
 }
 
 /** Applies a previously validated plan. Conflicts are checked before writing. */

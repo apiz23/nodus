@@ -12,6 +12,7 @@ describe('Vite development file policy', () => {
         'vault/notes/a.md', 'backup/databases/example.json', '.impeccable/review/example.png',
         'ui/private/a.md', 'ui/private/A.MD', 'src/private/a.md',
         'ui/recovery/databases/example.json', 'ui/recovery/DATABASES/example.json',
+        'ui/recovery/database-views/db/view.json', 'src/private/DATABASE-VIEWS/db/view.json',
         'ui/recovery/nodus-backup.json', 'src/private/.nodus-tmp-example',
         'ui/.env', 'ui/.env.local', 'ui/private.key', 'ui/.git/config',
       ]) {

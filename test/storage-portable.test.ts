@@ -25,6 +25,17 @@ const database: DatabaseDefinition = {
   properties: [{ id: PROP1, name: 'Title', type: 'text' }],
 };
 
+const futureNodusData = {
+  format: 'nodus-note-properties',
+  version: 7,
+  databases: {
+    [DB1]: {
+      [PROP1]: { nested: ['opaque', 3, { keep: true }] },
+    },
+  },
+  futureEnvelope: { vendor: 'example', flags: [true, 'preserve'] },
+};
+
 const noteWithExtra = `---\ntitle: Portable\ntags:\n  - keep\nproject: Research\nnodus:\n  version: 1\n  id: ${N2}\n  createdAt: ${NOW}\n  updatedAt: ${NOW}\n---\nCafé 日本語 🙂\n\n\`\`\`ts\nconst link = "[[Target]]";\n\`\`\`\n`;
 
 describe('exportVault', () => {
@@ -37,9 +48,37 @@ describe('exportVault', () => {
       const target = join(dir, 'export');
       const report = await exportVault(vault, target);
 
-      expect(report).toEqual({ targetDir: target, notes: 1, databases: 1 });
+      expect(report).toEqual({ targetDir: target, notes: 1, databases: 1, databaseViews: 0 });
       expect(await readFile(join(target, 'notes/a.md'), 'utf8')).toBe(await readFile(join(vault.root, 'notes/a.md'), 'utf8'));
       expect(await readFile(join(target, 'databases', `${DB1}.json`), 'utf8')).toBe(serializeDatabase(database));
+    });
+  });
+
+  it('preserves nested and future nodus_data through export and import', async () => {
+    await withTempDir(async (dir) => {
+      const source = await FileSystemVault.open(join(dir, 'source-vault'));
+      const structured = note(N1, 'notes/structured.md');
+      structured.extraFrontmatter = {
+        external: { keep: ['unknown', { nested: true }] },
+        nodus_data: futureNodusData,
+      };
+      await source.createNote(structured);
+      const originalBytes = await readFile(join(source.root, structured.path));
+
+      const exportPath = join(dir, 'export');
+      await exportVault(source, exportPath);
+      expect(await readFile(join(exportPath, structured.path))).toEqual(originalBytes);
+
+      const plan = await planImport(exportPath);
+      const restored = await FileSystemVault.open(join(dir, 'imported-vault'));
+      await applyImport(restored, plan);
+
+      expect(await readFile(join(restored.root, structured.path))).toEqual(originalBytes);
+      const parsed = await restored.readNote(N1);
+      expect(parsed.extraFrontmatter).toEqual({
+        external: { keep: ['unknown', { nested: true }] },
+        nodus_data: futureNodusData,
+      });
     });
   });
 
@@ -217,7 +256,7 @@ describe('applyImport', () => {
       const plan = await planImport(source);
       const report = await applyImport(target, plan);
 
-      expect(report).toEqual({ notes: 1, databases: 1 });
+      expect(report).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
       expect(await target.readNote(N1)).toMatchObject({ path: 'notes/a.md', body: 'Café 日本語\n' });
       expect(await target.readDatabase(DB1)).toEqual(database);
     });

@@ -61,11 +61,11 @@ describe('restore confirmation flow', () => {
 
     const done = restoreFlowReducer(retry, {
       type: 'succeed',
-      report: { notes: 2, databases: 1 },
+      report: { notes: 2, databases: 1, databaseViews: 0 },
     });
     expect(done.phase).toBe('done');
     expect(done.overwrite).toBe(false);
-    expect(done.report).toEqual({ notes: 2, databases: 1 });
+    expect(done.report).toEqual({ notes: 2, databases: 1, databaseViews: 0 });
   });
 
   it('re-confirmation starts a fresh cycle with overwrite reset', () => {
@@ -103,7 +103,7 @@ describe('restore confirmation flow', () => {
   it('ignores stray succeed or fail events outside a run', () => {
     const pending = confirming();
     expect(
-      restoreFlowReducer(pending, { type: 'succeed', report: { notes: 0, databases: 0 } }),
+      restoreFlowReducer(pending, { type: 'succeed', report: { notes: 0, databases: 0, databaseViews: 0 } }),
     ).toBe(pending);
     const editing = withSource('/backups/one');
     expect(restoreFlowReducer(editing, { type: 'fail', error: new Error('x') })).toBe(editing);
@@ -187,7 +187,7 @@ describe('preview conflict detection', () => {
       createdAt: '2026-10-27T08:00:00Z',
       files: [],
     },
-    counts: { notes: 1, databases: 0 },
+    counts: { notes: 1, databases: 0, databaseViews: 0 },
   };
 
   it('reports a clean preview when no ids or paths conflict', () => {

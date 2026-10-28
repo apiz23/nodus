@@ -32,12 +32,12 @@ describe('backup request freshness', () => {
 describe('backup and restore API client', () => {
   it('posts the target directory to /api/backup and returns the report', async () => {
     const mock = stubFetch(async () =>
-      jsonResponse({ targetDir: '/backups/one', notes: 3, databases: 1 }, 201),
+      jsonResponse({ targetDir: '/backups/one', notes: 3, databases: 1, databaseViews: 0 }, 201),
     );
 
     const report = await api.createBackup({ targetDir: '/backups/one' });
 
-    expect(report).toEqual({ targetDir: '/backups/one', notes: 3, databases: 1 });
+    expect(report).toEqual({ targetDir: '/backups/one', notes: 3, databases: 1, databaseViews: 0 });
     expect(mock).toHaveBeenCalledTimes(1);
     const call = mock.mock.calls[0]!;
     expect(call[0]).toBe('/api/backup');
@@ -78,12 +78,12 @@ describe('backup and restore API client', () => {
       files: [{ kind: 'note', id: 'n1', path: 'notes/a.md', sha256: 'abc' }],
     };
     const mock = stubFetch(async () =>
-      jsonResponse({ manifest, counts: { notes: 2, databases: 1 } }),
+      jsonResponse({ manifest, counts: { notes: 2, databases: 1, databaseViews: 0 } }),
     );
 
     const result = await api.validateBackup({ dir: '/backups/one' });
 
-    expect(result.counts).toEqual({ notes: 2, databases: 1 });
+    expect(result.counts).toEqual({ notes: 2, databases: 1, databaseViews: 0 });
     expect(result.manifest.files).toHaveLength(1);
     expect(mock.mock.calls[0]![0]).toBe('/api/backup/validate');
     expect(mock.mock.calls[0]![1]?.body).toBe('{"dir":"/backups/one"}');
@@ -111,7 +111,7 @@ describe('backup and restore API client', () => {
   it('posts the directory to /api/restore/preview and keeps the conflict structure', async () => {
     const preview = {
       manifest: { format: 'nodus-backup', version: 1, createdAt: '2026-10-27T08:00:00Z', files: [] },
-      counts: { notes: 4, databases: 0 },
+      counts: { notes: 4, databases: 0, databaseViews: 0 },
       conflicts: { ids: ['n1'], paths: ['notes/a.md'] },
     };
     const mock = stubFetch(async () => jsonResponse(preview));
@@ -119,13 +119,13 @@ describe('backup and restore API client', () => {
     const result = await api.previewRestore({ dir: '/backups/one' });
 
     expect(result.conflicts).toEqual({ ids: ['n1'], paths: ['notes/a.md'] });
-    expect(result.counts).toEqual({ notes: 4, databases: 0 });
+    expect(result.counts).toEqual({ notes: 4, databases: 0, databaseViews: 0 });
     expect(mock.mock.calls[0]![0]).toBe('/api/restore/preview');
     expect(mock.mock.calls[0]![1]?.body).toBe('{"dir":"/backups/one"}');
   });
 
   it('sends overwrite as explicit false and never sends a destination field', async () => {
-    const mock = stubFetch(async () => jsonResponse({ notes: 1, databases: 0 }));
+    const mock = stubFetch(async () => jsonResponse({ notes: 1, databases: 0, databaseViews: 0 }));
 
     await api.restoreBackup({ dir: '/backups/one', overwrite: false });
 
@@ -135,7 +135,7 @@ describe('backup and restore API client', () => {
   });
 
   it('omits overwrite from the payload when the caller leaves it unset', async () => {
-    const mock = stubFetch(async () => jsonResponse({ notes: 0, databases: 0 }));
+    const mock = stubFetch(async () => jsonResponse({ notes: 0, databases: 0, databaseViews: 0 }));
 
     await api.restoreBackup({ dir: '/backups/one' });
 

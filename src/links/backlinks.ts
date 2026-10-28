@@ -1,5 +1,5 @@
 import type { Note } from '../domain/note.js';
-import { parseWikiLinks, resolveLink } from './wikilink.js';
+import { buildLinkIndex, type LinkIndex } from './link-index.js';
 
 export interface BacklinkSource {
   sourceId: string;
@@ -18,8 +18,8 @@ export interface BacklinkSource {
  * the editor exactly.
  *
  * Invalidation model: mark dirty on any mutation and rebuild lazily on the
- * next lookup. A full rebuild is O(N bodies + total links × N notes); see
- * the Phase 3A plan for the incremental-update follow-up path.
+ * next lookup. A rebuild uses the shared link index with precomputed title/alias candidates.
+ * The local API shares a bounded snapshot across discovery and backlink readers.
  */
 export interface BacklinkIndex {
   /** Replaces the whole index from authoritative notes. */
@@ -64,8 +64,12 @@ export function createBacklinkIndex(): BacklinkIndex {
 }
 
 function buildIndex(notes: readonly Note[]): Map<string, MutableEntry[]> {
+  return backlinksByTarget(buildLinkIndex(notes));
+}
+
+export function backlinksByTarget(index: LinkIndex): Map<string, BacklinkSource[]> {
   const byTarget = new Map<string, MutableEntry[]>();
-  if (notes.length === 0) return byTarget;
+
 
   const add = (
     targetId: string,
@@ -90,51 +94,17 @@ function buildIndex(notes: readonly Note[]): Map<string, MutableEntry[]> {
     existing.ambiguous = existing.ambiguous || ambiguous;
   };
 
-  for (const source of notes) {
-    // parseWikiLinks returns source offsets into the body; code spans and
-    // fenced blocks are already excluded by its masking.
-    for (const link of parseWikiLinks(source.body)) {
-      const resolution = resolveLink(link.target, notes);
-      if (resolution.status === 'unresolved') continue;
-
-      const targetIds =
-        resolution.status === 'resolved' ? [resolution.noteId] : [...resolution.noteIds];
-      const snippet = snippetAround(source.body, link.start, link.end);
-      for (const targetId of targetIds) {
-        if (targetId === source.id) continue; // a note does not backlink itself
-        add(targetId, source.id, source.title, snippet, resolution.status === 'ambiguous');
-      }
+  for (const link of index.links) {
+    const resolution = link.resolution;
+    if (resolution.status === 'unresolved') continue;
+    const targetIds = resolution.status === 'resolved' ? [resolution.noteId] : resolution.noteIds;
+    for (const targetId of targetIds) {
+      if (targetId === link.sourceId) continue;
+      add(targetId, link.sourceId, link.sourceTitle, link.snippet, resolution.status === 'ambiguous');
     }
   }
 
   return byTarget;
 }
 
-const SNIPPET_CONTEXT = 45;
-
-/** Whitespace-compacted context around the first link occurrence. */
-export function snippetAround(body: string, linkStart: number, linkEnd: number): string {
-  const compact = body.replace(/\s+/g, ' ');
-  // Map the link's original offset to its offset in the compacted string.
-  let anchor = 0;
-  let compactIndex = 0;
-  let previousWasWhitespace = false;
-  for (let index = 0; index < body.length && index <= linkStart; index += 1) {
-    const isWhitespace = /\s/.test(body[index] ?? '');
-    if (index === linkStart) {
-      anchor = compactIndex;
-      break;
-    }
-    if (isWhitespace) {
-      if (!previousWasWhitespace) compactIndex += 1;
-    } else {
-      compactIndex += 1;
-    }
-    previousWasWhitespace = isWhitespace;
-  }
-  const anchorEnd = anchor + (linkEnd - linkStart);
-  const start = Math.max(0, anchor - SNIPPET_CONTEXT);
-  const end = Math.min(compact.length, anchorEnd + SNIPPET_CONTEXT);
-  const slice = compact.slice(start, end);
-  return `${start > 0 ? '…' : ''}${slice}${end < compact.length ? '…' : ''}`;
-}
+export { snippetAround } from './link-index.js';

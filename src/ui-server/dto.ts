@@ -6,6 +6,12 @@
  */
 
 import type { BackupManifest } from '../storage/contracts.js';
+import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
+import type {
+  NoteDatabaseRow,
+  NotePropertyValue,
+  StructuredDataIssue,
+} from '../database/note-properties.js';
 
 export type {
   BackupManifest,
@@ -57,11 +63,48 @@ export interface UiDatabase {
   id: string;
   name: string;
   path: string;
+  /** SHA-256 of raw schema bytes; required to prevent stale schema replacement. */
+  contentHash: string;
   properties: UiProperty[];
+}
+
+export type UiDatabaseDefinition = Pick<UiDatabase, 'id' | 'name' | 'properties'>;
+
+export interface UiDatabaseRow extends NoteDatabaseRow {
+  title: string;
+  updatedAt: string;
+  /** Raw note hash used as the conditional property-update revision. */
+  contentHash: string;
+  /** Any issue blocks edits because the structured setter preserves source data by refusing normalization. */
+  issues: StructuredDataIssue[];
+}
+
+export interface UiDatabaseRowsResponse {
+  databaseId: string;
+  /** Raw schema hash from the same root-locked snapshot as the projected rows. */
+  schemaHash: string;
+  rows: UiDatabaseRow[];
+  /** Includes opaque/future namespaces that cannot safely be assigned to this database. */
+  diagnostics: StructuredDataIssue[];
+}
+
+export interface UiDatabaseView {
+  view: DatabaseView;
+  path: string;
+  contentHash: string;
+  diagnostics: DatabaseViewDiagnostic[];
+}
+
+export interface UiDatabaseViewsResponse {
+  databaseId: string;
+  schemaHash?: string;
+  views: UiDatabaseView[];
 }
 
 export interface UiSearchResult extends UiNoteSummary {
   snippet: string;
+  /** Structured context and offsets for accessible, text-only match highlighting. */
+  match?: import('../search/search-index.js').SearchMatch;
 }
 
 export interface UiHealthIssue {
@@ -107,7 +150,30 @@ export interface UiApiErrorBody {
     paths?: string[];
     /** Per-file diagnostics from backup validation and content checks (`CORRUPT_BACKUP`, `INVALID_CONTENT`). */
     issues?: string[];
+    /** Structured-property validation diagnostics; source values remain in Markdown. */
+    structuredDataIssues?: StructuredDataIssue[];
   };
+}
+
+export interface UiNotePropertiesResponse {
+  noteId: string;
+  path: string;
+  /** SHA-256 of raw Markdown bytes; required by the explicit update operation. */
+  contentHash: string;
+  rows: NoteDatabaseRow[];
+  issues: StructuredDataIssue[];
+}
+
+/** Explicitly updates one schema-validated property in Markdown frontmatter. */
+export interface UiSetNotePropertyInput {
+  databaseId: string;
+  propertyId: string;
+  value?: NotePropertyValue;
+  /** Clear one value while retaining database membership. Cannot accompany value. */
+  remove?: true;
+  baseHash: string;
+  /** Must be true to create nodus_data or add database membership to this note. */
+  confirmCreate?: boolean;
 }
 
 export interface UiCreateBackupInput {
@@ -129,6 +195,7 @@ export interface UiBackupValidationResult {
   counts: {
     notes: number;
     databases: number;
+    databaseViews: number;
   };
 }
 
@@ -171,4 +238,11 @@ export interface UiBacklink {
 
 export interface UiBacklinksResponse {
   backlinks: UiBacklink[];
+}
+
+/** Discovery results share the core index's stable source IDs and body locations. */
+export interface UiDiscoveryResponse {
+  unresolved: import('../links/link-index.js').IndexedLink[];
+  ambiguous: import('../links/link-index.js').IndexedLink[];
+  orphans: import('../links/link-index.js').IndexedNote[];
 }

@@ -43,25 +43,28 @@ export function parseWikiLinks(body: string): WikiLink[] {
 }
 
 export function resolveLink(target: string, notes: readonly LinkableNote[]): LinkResolution {
-  const trimmed = target.trim();
+  return createLinkResolver(notes)(target);
+}
 
-  if (isUuidV4(trimmed)) {
-    const match = notes.find((note) => note.id === trimmed);
-    return match ? { status: 'resolved', noteId: match.id } : { status: 'unresolved' };
-  }
-
-  const key = normalizeKey(trimmed);
-  const matches = new Set<string>();
+/** Precompute title/alias candidates once for a whole vault snapshot. */
+export function createLinkResolver(notes: readonly LinkableNote[]): (target: string) => LinkResolution {
+  const ids = new Set(notes.map((note) => note.id));
+  const keys = new Map<string, Set<string>>();
   for (const note of notes) {
-    if (normalizeKey(note.title) === key || note.aliases.some((alias) => normalizeKey(alias) === key)) {
-      matches.add(note.id);
+    for (const value of [note.title, ...note.aliases]) {
+      const key = normalizeKey(value);
+      if (!keys.has(key)) keys.set(key, new Set());
+      keys.get(key)!.add(note.id);
     }
   }
-
-  const [first, ...rest] = [...matches];
-  if (first === undefined) return { status: 'unresolved' };
-  if (rest.length === 0) return { status: 'resolved', noteId: first };
-  return { status: 'ambiguous', noteIds: [first, ...rest] };
+  return (target) => {
+    const trimmed = target.trim();
+    if (isUuidV4(trimmed)) return ids.has(trimmed) ? { status: 'resolved', noteId: trimmed } : { status: 'unresolved' };
+    const matches = [...(keys.get(normalizeKey(trimmed)) ?? [])];
+    const first = matches[0];
+    if (first === undefined) return { status: 'unresolved' };
+    return matches.length === 1 ? { status: 'resolved', noteId: first } : { status: 'ambiguous', noteIds: matches };
+  };
 }
 
 function normalizeKey(value: string): string {

@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { NOTE_PROPERTIES_FORMAT } from '../src/database/note-properties.js';
+import type { DatabaseDefinition } from '../src/database/schema.js';
 import { createNote, type Note } from '../src/domain/note.js';
 import { parseNote, serializeNote } from '../src/format/note-format.js';
 import { createBackup } from '../src/storage/backup/backup.js';
@@ -16,7 +18,35 @@ const NOW = '2026-10-25T12:00:00Z';
 const N1 = '11111111-1111-4111-8111-111111111111';
 const N2 = '22222222-2222-4222-8222-222222222222';
 const DB1 = '33333333-3333-4333-8333-333333333333';
+const DB2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PROP1 = '44444444-4444-4444-8444-444444444444';
+const PROP2 = '55555555-5555-4555-8555-555555555555';
+const OPTION1 = '66666666-6666-4666-8666-666666666666';
+const VIEW1 = '77777777-7777-4777-8777-777777777777';
+const FILTER1 = '88888888-8888-4888-8888-888888888888';
+
+const propertyDatabase: DatabaseDefinition = {
+  id: DB1,
+  name: 'Research',
+  properties: [
+    { id: PROP1, name: 'Status', type: 'text' },
+    {
+      id: PROP2,
+      name: 'Category',
+      type: 'select',
+      options: [{ id: OPTION1, name: 'Reading' }],
+    },
+  ],
+};
+
+function propertiesNamespace(databases: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return {
+    format: NOTE_PROPERTIES_FORMAT,
+    version: 1,
+    databases,
+    ...extra,
+  };
+}
 
 interface StartedApi {
   server: Server;
@@ -313,7 +343,7 @@ describe('local UI API', () => {
           method: 'POST',
           body: { title: 'My first note' },
         });
-        expect(created.status).toBe(201);
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
         expect(created.body.note.id).toMatch(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
         );
@@ -417,6 +447,498 @@ describe('local UI API', () => {
         expect(reloaded.body.note.body).toBe(content);
         expect(await readFile(join(vaultPath, created.body.note.path), 'utf8')).toContain(content);
       } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('projects structured values and diagnostics through the note properties API', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const note = noteFixture(N1, 'Research note', 'notes/research.md', 'Body\n');
+      note.extraFrontmatter.nodus_data = propertiesNamespace({
+        [DB1]: {
+          [PROP1]: 'In progress',
+          [PROP2]: '77777777-7777-4777-8777-777777777777',
+          '88888888-8888-4888-8888-888888888888': { retained: true },
+        },
+        ['99999999-9999-4999-8999-999999999999']: { [PROP1]: 'Orphaned' },
+      });
+      await vault.createNote(note);
+
+      const started = await startApi(vaultPath);
+      try {
+        const result = await json<{
+          noteId: string;
+          path: string;
+          contentHash: string;
+          rows: Array<{ databaseId: string; values: Record<string, unknown> }>;
+          issues: Array<{ code: string }>;
+        }>(started.base, `/api/notes/${N1}/properties`);
+        expect(result.status).toBe(200);
+        expect(result.body.noteId).toBe(N1);
+        expect(result.body.path).toBe(note.path);
+        expect(result.body.contentHash).toMatch(/^[0-9a-f]{64}$/);
+        expect(result.body.rows).toEqual([
+          { noteId: N1, path: note.path, databaseId: DB1, values: { [PROP1]: 'In progress' } },
+        ]);
+        expect(result.body.issues.map(({ code }) => code)).toEqual([
+          'MISSING_OPTION',
+          'MISSING_PROPERTY',
+          'MISSING_DATABASE',
+        ]);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('discovers database members from one projection route and exposes opaque diagnostics', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      await vault.createDatabase({ ...propertyDatabase, id: DB2, name: 'Empty database' });
+      const member = noteFixture(N1, 'Member note', 'notes/member.md', 'Member body\n');
+      member.extraFrontmatter.nodus_data = propertiesNamespace({ [DB1]: { [PROP1]: 'Ready' } });
+      await vault.createNote(member);
+      await vault.createNote(noteFixture(N2, 'Plain note', 'notes/plain.md', 'No membership\n'));
+      const future = noteFixture('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Future note', 'notes/future.md', 'Opaque body\n');
+      future.extraFrontmatter.nodus_data = {
+        format: NOTE_PROPERTIES_FORMAT,
+        version: 2,
+        databases: { [DB1]: { [PROP1]: 'future' } },
+      };
+      await vault.createNote(future);
+
+      const started = await startApi(vaultPath);
+      try {
+        const result = await json<{
+          databaseId: string;
+          schemaHash: string;
+          rows: Array<{ noteId: string; title: string; contentHash: string; values: Record<string, unknown>; issues: unknown[] }>;
+          diagnostics: Array<{ noteId: string; code: string }>;
+        }>(started.base, `/api/databases/${DB1}/rows`);
+        expect(result.status).toBe(200);
+        expect(result.body.databaseId).toBe(DB1);
+        const schemaBytes = await readFile(join(vaultPath, 'databases', `${DB1}.json`));
+        expect(result.body.schemaHash).toBe(createHash('sha256').update(schemaBytes).digest('hex'));
+        expect(result.body.rows).toHaveLength(1);
+        expect(result.body.rows[0]).toMatchObject({
+          noteId: N1,
+          title: 'Member note',
+          values: { [PROP1]: 'Ready' },
+          issues: [],
+        });
+        const raw = await readFile(join(vaultPath, member.path));
+        expect(result.body.rows[0]?.contentHash).toBe(createHash('sha256').update(raw).digest('hex'));
+        expect(result.body.diagnostics).toEqual([
+          expect.objectContaining({ noteId: future.id, code: 'UNSUPPORTED_NAMESPACE_VERSION' }),
+        ]);
+
+        const empty = await json<{ rows: unknown[]; diagnostics: unknown[] }>(
+          started.base,
+          `/api/databases/${DB2}/rows`,
+        );
+        expect(empty.status).toBe(200);
+        expect(empty.body.rows).toEqual([]);
+
+        // The schema selector may have been loaded before this change. The
+        // rows route must reject that revision rather than project rows under
+        // a schema that the UI did not select.
+        const selectedSchemaHash = result.body.schemaHash;
+        const currentSchema = await vault.readDatabaseWithHash(DB1);
+        await vault.replaceDatabase(
+          { ...currentSchema.database, name: 'Renamed while loading rows' },
+          { expectedHash: currentSchema.hash },
+        );
+        const staleSchema = await json<{ error: { code: string; currentHash: string } }>(
+          started.base,
+          `/api/databases/${DB1}/rows?schemaHash=${selectedSchemaHash}`,
+        );
+        expect(staleSchema.status).toBe(409);
+        expect(staleSchema.body.error.code).toBe('SCHEMA_CHANGED');
+        expect(staleSchema.body.error.currentHash).not.toBe(selectedSchemaHash);
+        const refreshed = await json<{ schemaHash: string; rows: unknown[] }>(
+          started.base,
+          `/api/databases/${DB1}/rows?schemaHash=${staleSchema.body.error.currentHash}`,
+        );
+        expect(refreshed.status).toBe(200);
+        expect(refreshed.body.schemaHash).toBe(staleSchema.body.error.currentHash);
+        expect(refreshed.body.rows).toHaveLength(1);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('keeps ordinary note saves from creating or changing structured metadata', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const withData = noteFixture(N1, 'Research note', 'notes/research.md', 'Original\n');
+      withData.extraFrontmatter.nodus_data = propertiesNamespace({
+        [DB1]: { [PROP1]: 'Existing' },
+      }, { futureExtension: { retained: [1, 'x'] } });
+      await vault.createNote(withData);
+      const plainPath = 'notes/plain.md';
+      await mkdir(join(vaultPath, 'notes'), { recursive: true });
+      await writeFile(join(vaultPath, plainPath), '# Plain markdown\n\nBody\n', 'utf8');
+      const plain = await vault.readNoteAtPath(plainPath);
+
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const saved = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`, {
+          method: 'PUT',
+          body: {
+            title: 'Renamed research note',
+            body: 'Edited body\n',
+            baseHash: opened.body.note.contentHash,
+            icon: '📚',
+          },
+        });
+        expect(saved.status).toBe(200);
+        expect((await vault.readNote(N1)).extraFrontmatter).toEqual({
+          ...withData.extraFrontmatter,
+          icon: '📚',
+        });
+
+        const plainOpened = await json<{ note: UiNote }>(started.base, `/api/notes/${plain.id}`);
+        const plainSaved = await json<{ note: UiNote }>(started.base, `/api/notes/${plain.id}`, {
+          method: 'PUT',
+          body: {
+            title: plain.title,
+            body: 'Plain body edited\n',
+            baseHash: plainOpened.body.note.contentHash,
+          },
+        });
+        expect(plainSaved.status).toBe(200);
+        expect(await readFile(join(vaultPath, plainPath), 'utf8')).toBe('Plain body edited\n');
+        expect((await vault.readNote(plain.id)).extraFrontmatter).toEqual({});
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('updates exactly one property through an explicit conditional API operation', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const original = noteFixture(N1, 'Research note', 'notes/research.md', 'Keep body\r\n');
+      original.extraFrontmatter.nodus_data = propertiesNamespace({
+        [DB1]: { [PROP1]: 'Old', [PROP2]: OPTION1 },
+      });
+      original.extraFrontmatter.custom = { preserve: true };
+      await vault.createNote(original);
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const changed = await json<{
+          contentHash: string;
+          rows: Array<{ values: Record<string, unknown> }>;
+          issues: unknown[];
+        }>(started.base, `/api/notes/${N1}/properties`, {
+          method: 'PUT',
+          body: {
+            databaseId: DB1,
+            propertyId: PROP1,
+            value: 'New',
+            baseHash: opened.body.note.contentHash,
+          },
+        });
+        expect(changed.status).toBe(200);
+        expect(changed.body.rows[0]?.values).toEqual({ [PROP1]: 'New', [PROP2]: OPTION1 });
+        expect(changed.body.issues).toEqual([]);
+        const stored = await vault.readNote(N1);
+        expect(stored.body).toBe('Keep body\r\n');
+        expect(stored.extraFrontmatter.custom).toEqual({ preserve: true });
+        expect(stored.extraFrontmatter.nodus_data).toEqual(
+          propertiesNamespace({ [DB1]: { [PROP1]: 'New', [PROP2]: OPTION1 } }),
+        );
+        const invalidType = await json<{
+          error: { code: string; structuredDataIssues?: Array<{ code: string }> };
+        }>(started.base, `/api/notes/${N1}/properties`, {
+          method: 'PUT',
+          body: {
+            databaseId: DB1,
+            propertyId: PROP1,
+            value: 42,
+            baseHash: changed.body.contentHash,
+          },
+        });
+        expect(invalidType.status).toBe(422);
+        expect(invalidType.body.error.code).toBe('STRUCTURED_DATA_INVALID');
+        expect(invalidType.body.error.structuredDataIssues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'TYPE_MISMATCH' })]),
+        );
+        expect(await vault.readNote(N1)).toEqual(stored);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('requires explicit confirmation before structured metadata is added to a plain note', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const path = 'daily/plain.md';
+      await mkdir(join(vaultPath, 'daily'), { recursive: true });
+      const source = '# Plain note\r\n\r\nBody stays.\r\n';
+      await writeFile(join(vaultPath, path), source, 'utf8');
+      const plain = await vault.readNoteAtPath(path);
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${plain.id}`);
+        const before = await readFile(join(vaultPath, path));
+        const unconfirmed = await json<{ error: { code: string } }>(
+          started.base,
+          `/api/notes/${plain.id}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'Added',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(unconfirmed.status).toBe(409);
+        expect(unconfirmed.body.error.code).toBe('CONFIRMATION_REQUIRED');
+        expect(await readFile(join(vaultPath, path))).toEqual(before);
+
+        const confirmed = await json<{ contentHash: string }>(
+          started.base,
+          `/api/notes/${plain.id}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'Added',
+              baseHash: opened.body.note.contentHash,
+              confirmCreate: true,
+            },
+          },
+        );
+        expect(confirmed.status).toBe(200);
+        const stored = parseNote(await readFile(join(vaultPath, path), 'utf8'), path);
+        expect(stored.id).toBe(plain.id);
+        expect(stored.body).toBe(source);
+        expect(stored.extraFrontmatter.nodus_data).toEqual(
+          propertiesNamespace({ [DB1]: { [PROP1]: 'Added' } }),
+        );
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects invalid, orphaned, or unsupported structured data without changing note bytes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const invalid = noteFixture(N1, 'Invalid structured note', 'notes/invalid.md', 'Body\n');
+      invalid.extraFrontmatter.nodus_data = propertiesNamespace({
+        [DB1]: { [PROP2]: '77777777-7777-4777-8777-777777777777' },
+      });
+      await vault.createNote(invalid);
+      const future = noteFixture(N2, 'Future structured note', 'notes/future.md', 'Future body\n');
+      const futureNamespace = {
+        format: NOTE_PROPERTIES_FORMAT,
+        version: 2,
+        databases: { [DB1]: { [PROP1]: { future: 'keep' } } },
+        futureEnvelope: { keep: true },
+      };
+      future.extraFrontmatter.nodus_data = futureNamespace;
+      await vault.createNote(future);
+      const rawPath = join(vaultPath, invalid.path);
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const before = await readFile(rawPath);
+        const badOption = await json<{ error: { code: string; structuredDataIssues?: Array<{ code: string }> } }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'New',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(badOption.status).toBe(422);
+        expect(badOption.body.error.structuredDataIssues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'MISSING_OPTION' })]),
+        );
+        expect(await readFile(rawPath)).toEqual(before);
+
+        const invalidType = await json<{ error: { code: string; structuredDataIssues?: Array<{ code: string }> } }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 9,
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(invalidType.status).toBe(422);
+        expect(invalidType.body.error.structuredDataIssues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'MISSING_OPTION' })]),
+        );
+        expect(await readFile(rawPath)).toEqual(before);
+
+        const stale = await json<{ error: { code: string; currentHash?: string } }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'New',
+              baseHash: '0'.repeat(64),
+            },
+          },
+        );
+        expect(stale.status).toBe(409);
+        expect(stale.body.error.code).toBe('STALE_WRITE');
+        expect(stale.body.error.currentHash).toBe(opened.body.note.contentHash);
+        expect(await readFile(rawPath)).toEqual(before);
+
+        const futureOpened = await json<{ note: UiNote }>(started.base, `/api/notes/${N2}`);
+        const futureRawPath = join(vaultPath, future.path);
+        const futureBefore = await readFile(futureRawPath);
+        const futureRead = await json<{ issues: Array<{ code: string }>; rows: unknown[] }>(
+          started.base,
+          `/api/notes/${N2}/properties`,
+        );
+        expect(futureRead.body.issues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'UNSUPPORTED_NAMESPACE_VERSION' })]),
+        );
+        expect(futureRead.body.rows).toEqual([]);
+        const futureWrite = await json<{ error: { structuredDataIssues?: Array<{ code: string }> } }>(
+          started.base,
+          `/api/notes/${N2}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'Must not replace future data',
+              baseHash: futureOpened.body.note.contentHash,
+            },
+          },
+        );
+        expect(futureWrite.status).toBe(422);
+        expect(futureWrite.body.error.structuredDataIssues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'UNSUPPORTED_NAMESPACE_VERSION' })]),
+        );
+        expect(await readFile(futureRawPath)).toEqual(futureBefore);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('does not overwrite a note changed after API preflight', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const original = noteFixture(N1, 'Research note', 'notes/research.md', 'Original\n');
+      original.extraFrontmatter.nodus_data = propertiesNamespace({ [DB1]: { [PROP1]: 'Old' } });
+      await vault.createNote(original);
+      const otherWriter = await FileSystemVault.open(vaultPath);
+      const listDatabases = FileSystemVault.prototype.listDatabases;
+      let injected = false;
+      const race = vi.spyOn(FileSystemVault.prototype, 'listDatabases').mockImplementation(async function (this: FileSystemVault) {
+        if (!injected) {
+          injected = true;
+          const latest = await otherWriter.readNoteWithHash(N1);
+          await otherWriter.replaceNote(
+            { ...latest.note, body: 'Concurrent external content\n' },
+            { expectedHash: latest.hash },
+          );
+        }
+        return listDatabases.call(this);
+      });
+      const started = await startApi(vaultPath);
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const changed = await json<{ error: { code: string; currentHash?: string } }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'API write must lose safely',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(changed.status).toBe(409);
+        expect(changed.body.error.code).toBe('STALE_WRITE');
+        expect(changed.body.error.currentHash).not.toBe(opened.body.note.contentHash);
+        expect((await otherWriter.readNote(N1)).body).toBe('Concurrent external content\n');
+      } finally {
+        race.mockRestore();
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('leaves source bytes unchanged when the conditional structured write fails', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const original = noteFixture(N1, 'Research note', 'notes/research.md', 'Original\n');
+      original.extraFrontmatter.nodus_data = propertiesNamespace({ [DB1]: { [PROP1]: 'Old' } });
+      await vault.createNote(original);
+      const rawPath = join(vaultPath, original.path);
+      const started = await startApi(vaultPath);
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const write = vi.spyOn(FileSystemVault.prototype, 'replaceNote').mockRejectedValue(new Error('injected write failure'));
+      try {
+        const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
+        const before = await readFile(rawPath);
+        const failed = await json<{ error: { code: string } }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+          {
+            method: 'PUT',
+            body: {
+              databaseId: DB1,
+              propertyId: PROP1,
+              value: 'New',
+              baseHash: opened.body.note.contentHash,
+            },
+          },
+        );
+        expect(failed.status).toBe(500);
+        expect(await readFile(rawPath)).toEqual(before);
+      } finally {
+        write.mockRestore();
+        errorLog.mockRestore();
         await stopApi(started);
       }
     });
@@ -833,7 +1355,334 @@ describe('local UI API', () => {
           '/api/databases',
           { method: 'POST', body: { name: 'Nope' } },
         );
-        expect(writeAttempt.status).toBe(404);
+        expect(writeAttempt.status).toBe(400);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('creates, lists, conditionally updates, and diagnoses saved views through the API', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const started = await startApi(vaultPath);
+      try {
+        const view = {
+          id: VIEW1, databaseId: DB1, name: 'Reading',
+          sort: { propertyId: 'title', direction: 'asc' },
+          filters: [{ id: FILTER1, propertyId: PROP2, operator: 'is', value: OPTION1 }],
+          visiblePropertyIds: [PROP2],
+        };
+        const created = await json<{ view: { view: typeof view; contentHash: string; diagnostics: unknown[] } }>(
+          started.base, `/api/databases/${DB1}/views`, { method: 'POST', body: { view } },
+        );
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        expect(created.body.view.view).toEqual(view);
+        expect(created.body.view.contentHash).toMatch(/^[0-9a-f]{64}$/);
+
+        const listed = await json<{ views: Array<{ view: typeof view; contentHash: string }> }>(started.base, `/api/databases/${DB1}/views`);
+        expect(listed.body.views).toHaveLength(1);
+        const updated = { ...view, name: 'Updated' };
+        const saved = await json<{ view: { view: typeof view; contentHash: string } }>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, {
+          method: 'PUT', body: { view: updated, baseHash: listed.body.views[0]!.contentHash },
+        });
+        expect(saved.status).toBe(200);
+        expect(saved.body.view.view.name).toBe('Updated');
+        const stale = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, {
+          method: 'PUT', body: { view, baseHash: listed.body.views[0]!.contentHash },
+        });
+        expect(stale.status).toBe(409);
+        expect(stale.body.error.code).toBe('STALE_WRITE');
+
+        const invalid = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}/views`, {
+          method: 'POST', body: { view: { ...view, future: true } },
+        });
+        expect(invalid.status).toBe(400);
+        expect(invalid.body.error.code).toBe('INVALID_INPUT');
+
+        const invalidReferences = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}/views`, {
+          method: 'POST', body: { view: { ...view, filters: [{ ...view.filters[0], value: DB2 }] } },
+        });
+        expect(invalidReferences.status).toBe(422);
+        expect(invalidReferences.body.error.code).toBe('INVALID_VIEW_REFERENCES');
+
+        await vault.deleteDatabase(DB1);
+        const orphaned = await json<{ views: Array<{ diagnostics: Array<{ code: string }> }> }>(started.base, `/api/databases/${DB1}/views`);
+        expect(orphaned.body.views[0]?.diagnostics).toMatchObject([{ code: 'MISSING_DATABASE' }]);
+        const deleted = await json<{ deleted: true }>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, {
+          method: 'DELETE', body: { baseHash: saved.body.view.contentHash },
+        });
+        expect(deleted.status).toBe(200);
+        expect(deleted.body.deleted).toBe(true);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('reads and duplicates typed saved views, enforces revisions, and clears one property without removing membership', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createDatabase(propertyDatabase);
+      await vault.createNote({ ...createNote({ id: N1, title: 'Board card', path: 'notes/card.md', body: 'Markdown body stays.', now: NOW }), extraFrontmatter: {
+        custom: { keep: true }, nodus_data: propertiesNamespace({ [DB1]: { [PROP1]: 'Preserved', [PROP2]: OPTION1 } }),
+      } });
+      const started = await startApi(vault.root);
+      try {
+        const board = { id: VIEW1, databaseId: DB1, name: 'Board', type: 'kanban', settings: { groupPropertyId: PROP2 }, sort: { propertyId: 'title', direction: 'asc' }, filters: [], visiblePropertyIds: [PROP1] };
+        const created = await json<any>(started.base, `/api/databases/${DB1}/views`, { method: 'POST', body: { view: board } });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        const read = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}`);
+        expect(read.body.view.view).toEqual(board);
+        const duplicate = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}/duplicate`, { method: 'POST', body: { id: FILTER1, name: 'Board copy', baseHash: read.body.view.contentHash } });
+        expect(duplicate.status).toBe(201);
+        expect(duplicate.body.view.view).toEqual({ ...board, id: FILTER1, name: 'Board copy' });
+        const updated = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, { method: 'PUT', body: { view: { ...board, name: 'Updated board' }, baseHash: read.body.view.contentHash } });
+        expect(updated.status).toBe(200);
+        const rejected = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}/duplicate`, { method: 'POST', body: { id: 'fcd84688-c6dc-4535-a238-ab3dab2ccdc4', name: 'Stale copy', baseHash: read.body.view.contentHash } });
+        expect(rejected.status).toBe(409);
+        const staleDelete = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, { method: 'DELETE', body: { baseHash: read.body.view.contentHash } });
+        expect(staleDelete.status).toBe(409);
+        const beforeInvalid = await readFile(join(vault.root, updated.body.view.path));
+        const invalid = await json<any>(started.base, `/api/databases/${DB1}/views/${VIEW1}`, { method: 'PUT', body: { view: { ...board, settings: { groupPropertyId: PROP2, unknown: true } }, baseHash: updated.body.view.contentHash } });
+        expect(invalid.status).toBe(400);
+        expect(await readFile(join(vault.root, updated.body.view.path))).toEqual(beforeInvalid);
+        const note = await vault.readNoteWithHash(N1);
+        const cleared = await json<any>(started.base, `/api/notes/${N1}/properties`, { method: 'PUT', body: { databaseId: DB1, propertyId: PROP2, baseHash: note.hash, remove: true } });
+        expect(cleared.status).toBe(200);
+        expect(cleared.body.rows).toMatchObject([{ databaseId: DB1, values: { [PROP1]: 'Preserved' } }]);
+        expect(cleared.body.rows[0].values).not.toHaveProperty(PROP2);
+        const stored = await vault.readNoteWithHash(N1);
+        expect(stored.note.extraFrontmatter.custom).toEqual({ keep: true });
+        expect(stored.note.body).toBe('Markdown body stays.');
+        const bytes = await readFile(join(vault.root, stored.note.path));
+        const stale = await json<any>(started.base, `/api/notes/${N1}/properties`, { method: 'PUT', body: { databaseId: DB1, propertyId: PROP2, baseHash: note.hash, remove: true } });
+        expect(stale.status).toBe(409);
+        const both = await json<any>(started.base, `/api/notes/${N1}/properties`, { method: 'PUT', body: { databaseId: DB1, propertyId: PROP2, baseHash: stored.hash, remove: true, value: OPTION1 } });
+        expect(both.status).toBe(400);
+        expect(await readFile(join(vault.root, stored.note.path))).toEqual(bytes);
+      } finally { await stopApi(started); }
+    });
+  });
+
+  it('creates and conditionally updates schemas without touching note property values', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const note = noteFixture(N1, 'A note', 'notes/a.md', 'Original body\n');
+      note.extraFrontmatter.nodus_data = propertiesNamespace({
+        [DB1]: { [PROP1]: 'Existing value', [PROP2]: OPTION1 },
+      }, { futureField: { nested: ['keep', 1] } });
+      await vault.createNote(note);
+      const notePath = join(vaultPath, note.path);
+      const beforeNote = await readFile(notePath);
+      const started = await startApi(vaultPath);
+
+      try {
+        const created = await json<{ database: UiDatabase; error?: { code: string } }>(
+          started.base,
+          '/api/databases',
+          { method: 'POST', body: { database: propertyDatabase } },
+        );
+        expect(created.status).toBe(201);
+        expect(created.body.database).toMatchObject({ id: DB1, name: 'Research' });
+        expect(created.body.database.contentHash).toMatch(/^[0-9a-f]{64}$/);
+
+        const invalid = await json<{ error: { code: string } }>(started.base, '/api/databases', {
+          method: 'POST',
+          body: { database: { ...propertyDatabase, id: DB2, properties: [
+            { id: PROP1, name: 'Same', type: 'text' },
+            { id: PROP2, name: 'same', type: 'text' },
+          ] } },
+        });
+        expect(invalid.status).toBe(400);
+        expect(invalid.body.error.code).toBe('INVALID_INPUT');
+
+        const optionInvalid = await json<{ error: { code: string } }>(started.base, '/api/databases', {
+          method: 'POST',
+          body: { database: { ...propertyDatabase, id: DB2, properties: [{
+            id: PROP2,
+            name: 'Status',
+            type: 'select',
+            options: [
+              { id: OPTION1, name: 'Duplicate' },
+              { id: '77777777-7777-4777-8777-777777777777', name: 'Duplicate' },
+            ],
+          }] } },
+        });
+        expect(optionInvalid.status).toBe(400);
+        expect(optionInvalid.body.error.code).toBe('INVALID_INPUT');
+
+        const renamed = {
+          ...propertyDatabase,
+          name: 'Research notes',
+          properties: propertyDatabase.properties.map((property) => property.id === PROP1
+            ? { ...property, name: 'Progress' }
+            : { ...property, options: property.options?.map((option) => ({ ...option, name: 'To read' })) }),
+        };
+        const updated = await json<{ database: UiDatabase }>(
+          started.base,
+          `/api/databases/${DB1}`,
+          { method: 'PUT', body: { database: renamed, baseHash: created.body.database.contentHash } },
+        );
+        expect(updated.status).toBe(200);
+        expect(updated.body.database.name).toBe('Research notes');
+        expect(updated.body.database.properties.map((property) => property.id)).toEqual([PROP1, PROP2]);
+        expect(updated.body.database.properties[1]?.options?.[0]?.id).toBe(OPTION1);
+        expect(await readFile(notePath)).toEqual(beforeNote);
+
+        await writeFile(join(vaultPath, `databases/${DB1}.json`), '{"format":"nodus-database","version":1,"id":"33333333-3333-4333-8333-333333333333","name":"unsupported","properties":[],"future":{"preserve":true}}\n');
+        const malformedRaw = await readFile(join(vaultPath, `databases/${DB1}.json`));
+        const rejectedMalformed = await json<{ error: { code: string } }>(
+          started.base,
+          `/api/databases/${DB1}`,
+          { method: 'PUT', body: { database: renamed, baseHash: createHash('sha256').update(malformedRaw).digest('hex') } },
+        );
+        expect(rejectedMalformed.status).toBe(422);
+        expect(await readFile(join(vaultPath, `databases/${DB1}.json`))).toEqual(malformedRaw);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects unknown schema fields and unsupported versions before create or update writes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const started = await startApi(vaultPath);
+      const schemaPath = join(vaultPath, `databases/${DB1}.json`);
+      const before = await readFile(schemaPath);
+      const invalidSchemas: Array<{ label: string; schema: Record<string, unknown> }> = [
+        { label: 'top-level key', schema: { ...propertyDatabase, unknownTopLevel: { preserve: true } } },
+        {
+          label: 'property key',
+          schema: {
+            ...propertyDatabase,
+            properties: [{ ...propertyDatabase.properties[0], unknownProperty: true }, propertyDatabase.properties[1]],
+          },
+        },
+        {
+          label: 'option key',
+          schema: {
+            ...propertyDatabase,
+            properties: [propertyDatabase.properties[0], {
+              ...propertyDatabase.properties[1],
+              options: [{ ...propertyDatabase.properties[1]?.options?.[0], unknownOption: 'keep' }],
+            }],
+          },
+        },
+        { label: 'unsupported version', schema: { ...propertyDatabase, version: 2 } },
+      ];
+      try {
+        for (const [index, item] of invalidSchemas.entries()) {
+          const createSchema = { ...item.schema, id: DB2 };
+          const created = await json<{ error: { code: string } }>(started.base, '/api/databases', {
+            method: 'POST', body: { database: createSchema },
+          });
+          expect(created.status, `create rejects ${item.label}`).toBe(400);
+          expect(created.body.error.code).toBe('INVALID_INPUT');
+          await expect(readFile(join(vaultPath, `databases/${DB2}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
+
+          const updateSchema = { ...item.schema, id: DB1, name: `Rejected update ${index}` };
+          const updated = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}`, {
+            method: 'PUT',
+            body: { database: updateSchema, baseHash: createHash('sha256').update(before).digest('hex') },
+          });
+          expect(updated.status, `update rejects ${item.label}`).toBe(400);
+          expect(updated.body.error.code).toBe('INVALID_INPUT');
+          expect(await readFile(schemaPath)).toEqual(before);
+        }
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('serializes concurrent schema updates with the same base hash and stores exactly the winner', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const started = await startApi(vaultPath);
+      const schemaPath = join(vaultPath, `databases/${DB1}.json`);
+      try {
+        const initial = await json<{ databases: UiDatabase[] }>(started.base, '/api/databases');
+        const baseHash = initial.body.databases[0]?.contentHash;
+        expect(baseHash).toBeDefined();
+
+        const candidates = ['Concurrent edit A', 'Concurrent edit B'].map((name) => ({
+          ...propertyDatabase,
+          name,
+        }));
+        const results = await Promise.all(candidates.map((database) => json<{
+          database?: UiDatabase;
+          error?: { code: string };
+        }>(started.base, `/api/databases/${DB1}`, {
+          method: 'PUT',
+          body: { database, baseHash },
+        })));
+
+        expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+        const winner = results.find((result) => result.status === 200)?.body.database;
+        const loser = results.find((result) => result.status === 409)?.body.error;
+        expect(winner).toBeDefined();
+        expect(loser?.code).toBe('STALE_WRITE');
+        const stored = await readFile(schemaPath);
+        expect(createHash('sha256').update(stored).digest('hex')).toBe(winner?.contentHash);
+        expect(JSON.parse(stored.toString('utf8')).name).toBe(winner?.name);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('rejects stale database schema replacement without overwriting newer bytes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(propertyDatabase);
+      const started = await startApi(vaultPath);
+      try {
+        const listed = await json<{ databases: UiDatabase[] }>(started.base, '/api/databases');
+        const staleHash = listed.body.databases[0]?.contentHash;
+        expect(staleHash).toBeDefined();
+        const external = { ...propertyDatabase, name: 'External edit' };
+        const externalText = JSON.stringify({ format: 'nodus-database', version: 1, ...external }, null, 2) + '\n';
+        await writeFile(join(vaultPath, `databases/${DB1}.json`), externalText, 'utf8');
+        const response = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}`, {
+          method: 'PUT',
+          body: { database: { ...propertyDatabase, name: 'My stale edit' }, baseHash: staleHash },
+        });
+        expect(response.status).toBe(409);
+        expect(response.body.error.code).toBe('STALE_WRITE');
+        expect(await readFile(join(vaultPath, `databases/${DB1}.json`), 'utf8')).toBe(externalText);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('does not replace an existing schema containing unknown fields', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const started = await startApi(vaultPath);
+      const schemaPath = join(vaultPath, `databases/${DB1}.json`);
+      try {
+        await mkdir(join(vaultPath, 'databases'), { recursive: true });
+        const unknown = `{"format":"nodus-database","version":1,"id":"${DB1}","name":"Unknown","properties":[],"future":{"keep":true}}\n`;
+        await writeFile(schemaPath, unknown, 'utf8');
+        const hash = createHash('sha256').update(unknown).digest('hex');
+        const response = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}`, {
+          method: 'PUT',
+          body: { database: { id: DB1, name: 'Replacement', properties: [] }, baseHash: hash },
+        });
+        expect(response.status).toBe(422);
+        expect(await readFile(schemaPath, 'utf8')).toBe(unknown);
       } finally {
         await stopApi(started);
       }
@@ -979,7 +1828,7 @@ describe('backup and restore API routes', () => {
           { method: 'POST', body: { targetDir: target } },
         );
         expect(created.status).toBe(201);
-        expect(created.body).toEqual({ targetDir: target, notes: 1, databases: 1 });
+        expect(created.body).toEqual({ targetDir: target, notes: 1, databases: 1, databaseViews: 0 });
         expect((await stat(join(target, MANIFEST_FILE))).isFile()).toBe(true);
 
         const validated = await json<{
@@ -988,7 +1837,7 @@ describe('backup and restore API routes', () => {
         }>(started.base, '/api/backup/validate', { method: 'POST', body: { dir: target } });
         expect(validated.status).toBe(200);
         expect(validated.body.manifest.format).toBe('nodus-backup');
-        expect(validated.body.counts).toEqual({ notes: 1, databases: 1 });
+        expect(validated.body.counts).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
         expect(validated.body.manifest.files.every((file) => !file.path.startsWith('/'))).toBe(true);
         expect(JSON.stringify(validated.body)).not.toContain(dir);
       } finally {
@@ -1087,7 +1936,7 @@ describe('backup and restore API routes', () => {
         const unsupportedRaw = JSON.parse(
           await readFile(join(unsupportedTarget, MANIFEST_FILE), 'utf8'),
         ) as { version: number };
-        unsupportedRaw.version = 2;
+        unsupportedRaw.version = 3;
         await writeFile(
           join(unsupportedTarget, MANIFEST_FILE),
           JSON.stringify(unsupportedRaw),
@@ -1138,7 +1987,7 @@ describe('backup and restore API routes', () => {
           manifest: { digest?: string };
         }>(started.base, '/api/restore/preview', { method: 'POST', body: { dir: backupDir } });
         expect(additions.status).toBe(200);
-        expect(additions.body.counts).toEqual({ notes: 1, databases: 1 });
+        expect(additions.body.counts).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
         expect(additions.body.conflicts).toEqual({ ids: [], paths: [] });
         expect(additions.body.manifest.digest).toMatch(/^[0-9a-f]{64}$/);
 
@@ -1183,7 +2032,7 @@ describe('backup and restore API routes', () => {
           { method: 'POST', body: { dir: backupDir } },
         );
         expect(restored.status).toBe(200);
-        expect(restored.body).toEqual({ notes: 1, databases: 1 });
+        expect(restored.body).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
 
         const notes = await json<{ notes: Array<{ id: string }> }>(started.base, '/api/notes');
         expect(notes.body.notes.map((note) => note.id)).toEqual([N1]);
@@ -1210,7 +2059,7 @@ describe('backup and restore API routes', () => {
           { method: 'POST', body: { dir: backupDir, overwrite: true } },
         );
         expect(overwritten.status).toBe(200);
-        expect(overwritten.body).toEqual({ notes: 1, databases: 1 });
+        expect(overwritten.body).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
       } finally {
         await stopApi(started);
       }

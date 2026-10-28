@@ -25,6 +25,17 @@ const database: DatabaseDefinition = {
   properties: [{ id: PROP1, name: 'Title', type: 'text' }],
 };
 
+const futureNodusData = {
+  format: 'nodus-note-properties',
+  version: 7,
+  databases: {
+    [DB1]: {
+      [PROP1]: { nested: ['opaque', 3, { keep: true }] },
+    },
+  },
+  futureEnvelope: { vendor: 'example', flags: [true, 'preserve'] },
+};
+
 const MANIFEST = 'nodus-backup.json';
 
 const pkg = JSON.parse(
@@ -41,6 +52,7 @@ function hash(text: string): string {
  * SHA-256 hex. Locks the serialization spec against accidental changes.
  */
 function canonicalDigest(manifest: {
+  version: number;
   createdAt: unknown;
   app: unknown;
   formats: unknown;
@@ -48,8 +60,8 @@ function canonicalDigest(manifest: {
   files: unknown;
 }): string {
   const app = manifest.app as { name: string; version: string };
-  const formats = manifest.formats as { note: number; database: number; backup: number };
-  const counts = manifest.counts as { notes: number; databases: number };
+  const formats = manifest.formats as { note: number; database: number; backup: number; databaseView?: number };
+  const counts = manifest.counts as { notes: number; databases: number; databaseViews?: number };
   const files = (manifest.files as Array<Record<string, unknown>>).map((file) => ({
     kind: file.kind,
     id: file.id,
@@ -61,11 +73,11 @@ function canonicalDigest(manifest: {
     .update(
       JSON.stringify({
         format: 'nodus-backup',
-        version: 1,
+        version: manifest.version,
         createdAt: manifest.createdAt,
         app: { name: app.name, version: app.version },
-        formats: { note: formats.note, database: formats.database, backup: formats.backup },
-        counts: { notes: counts.notes, databases: counts.databases },
+        formats: { note: formats.note, database: formats.database, ...(formats.databaseView === undefined ? {} : { databaseView: formats.databaseView }), backup: formats.backup },
+        counts: { notes: counts.notes, databases: counts.databases, ...(counts.databaseViews === undefined ? {} : { databaseViews: counts.databaseViews }) },
         files,
       }),
       'utf8',
@@ -98,17 +110,17 @@ describe('createBackup', () => {
 
       const report = await createBackup(vault, target, { now: BACKUP_NOW });
 
-      expect(report).toEqual({ targetDir: target, notes: 1, databases: 1 });
+      expect(report).toEqual({ targetDir: target, notes: 1, databases: 1, databaseViews: 0 });
       expect(await readFile(join(target, 'notes/a.md'), 'utf8')).toBe(noteText);
 
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
       expect(manifest).toEqual({
         format: 'nodus-backup',
-        version: 1,
+        version: 2,
         createdAt: BACKUP_NOW,
         app: { name: pkg.name, version: pkg.version },
-        formats: { note: 1, database: 1, backup: 1 },
-        counts: { notes: 1, databases: 1 },
+        formats: { note: 1, database: 1, databaseView: 2, backup: 2 },
+        counts: { notes: 1, databases: 1, databaseViews: 0 },
         files: [
           {
             kind: 'note',
@@ -204,7 +216,7 @@ describe('validateBackup', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target);
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
-      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 2 }), 'utf8');
+      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 3 }), 'utf8');
 
       expect(await storageErrorCode(() => validateBackup(target))).toBe('UNSUPPORTED_VERSION');
     });
@@ -317,10 +329,42 @@ describe('restoreBackup', () => {
       const restored = await FileSystemVault.open(join(dir, 'restored'));
       const report = await restoreBackup(target, restored.root);
 
-      expect(report).toEqual({ notes: 1, databases: 1 });
+      expect(report).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
       expect(await readFile(join(restored.root, 'notes/a.md'), 'utf8')).toBe(noteText);
       expect(await restored.readNote(N1)).toMatchObject({ extraFrontmatter: { project: 'Research' } });
       expect(await restored.readDatabase(DB1)).toEqual(database);
+    });
+  });
+
+  it('preserves nested and future nodus_data through backup validation and restore', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedVault(join(dir, 'vault'));
+      const existing = await source.readNote(N1);
+      await source.replaceNote({
+        ...existing,
+        extraFrontmatter: {
+          ...existing.extraFrontmatter,
+          vendorExtension: { keep: ['outside', { namespace: true }] },
+          nodus_data: futureNodusData,
+        },
+      });
+      const sourceBytes = await readFile(join(source.root, 'notes/a.md'));
+      const backup = join(dir, 'backup');
+      await createBackup(source, backup, { now: BACKUP_NOW });
+
+      const validation = await validateBackup(backup);
+      expect(validation.entries.find((entry) => entry.kind === 'note')?.text).toBe(sourceBytes.toString('utf8'));
+
+      const restored = await FileSystemVault.open(join(dir, 'restored'));
+      await restoreBackup(backup, restored.root);
+
+      expect(await readFile(join(restored.root, 'notes/a.md'))).toEqual(sourceBytes);
+      const parsed = await restored.readNote(N1);
+      expect(parsed.extraFrontmatter).toEqual({
+        project: 'Research',
+        vendorExtension: { keep: ['outside', { namespace: true }] },
+        nodus_data: futureNodusData,
+      });
     });
   });
 
@@ -629,6 +673,18 @@ describe('backup path and byte validation', () => {
 });
 
 describe('manifest metadata', () => {
+  it('keeps reading existing v2 manifests declaring saved-view format v1', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await seedVault(join(dir, 'vault'));
+      const target = join(dir, 'backup');
+      await createBackup(vault, target, { now: BACKUP_NOW });
+      const manifest = await readManifestJson(target);
+      manifest.formats.databaseView = 1;
+      manifest.digest = canonicalDigest(manifest);
+      await writeManifestJson(target, manifest);
+      expect((await validateBackup(target)).manifest.formats?.databaseView).toBe(1);
+    });
+  });
   it('records actual UTF-8 byte lengths for non-ASCII content', async () => {
     await withTempDir(async (dir) => {
       const vault = await seedVault(join(dir, 'vault'));
@@ -650,7 +706,7 @@ describe('manifest metadata', () => {
       const manifest = await readManifestJson(target);
       await writeManifestJson(target, {
         format: manifest.format,
-        version: manifest.version,
+        version: 1,
         createdAt: manifest.createdAt,
         files: manifest.files.map(
           ({ kind, id, path, sha256 }: { kind: string; id: string; path: string; sha256: string }) => ({
@@ -725,7 +781,7 @@ describe('manifest metadata', () => {
 
       await expect(validateBackup(target)).rejects.toMatchObject({
         code: 'CORRUPT_BACKUP',
-        details: { issues: [expect.stringContaining('lack bytes')] },
+        details: { issues: [expect.stringContaining('byte lengths')] },
       });
     });
   });
@@ -736,7 +792,7 @@ describe('manifest metadata', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target, { now: BACKUP_NOW });
       const manifest = await readManifestJson(target);
-      manifest.counts = { notes: 2, databases: 1 };
+      manifest.counts = { notes: 2, databases: 1, databaseViews: 0 };
       await writeManifestJson(target, manifest);
 
       await expect(validateBackup(target)).rejects.toMatchObject({
@@ -776,7 +832,7 @@ describe('previewRestore', () => {
 
       const preview = await previewRestore(backup, live);
 
-      expect(preview.counts).toEqual({ notes: 1, databases: 1 });
+      expect(preview.counts).toEqual({ notes: 1, databases: 1, databaseViews: 0 });
       expect(preview.conflicts).toEqual({ ids: [], paths: [] });
       expect(preview.manifest.digest).toMatch(/^[0-9a-f]{64}$/);
       expect(preview.manifest.createdAt).toBe(BACKUP_NOW);

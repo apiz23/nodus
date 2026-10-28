@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { DATABASE_FORMAT_VERSION, parseDatabase } from '../../database/schema.js';
+import { DATABASE_VIEW_VERSION, parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
 import type { Note } from '../../domain/note.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { isUuidV4 } from '../../domain/ids.js';
@@ -31,13 +32,16 @@ import {
   BACKUP_MANIFEST,
   BACKUP_VERSION,
   databasePath,
+  databaseViewPath,
+  DATABASE_VIEWS_DIR,
   isReservedNotePath,
 } from '../fs/layout.js';
 import { isInsideRoot, resolveInsideRoot } from '../fs/safe-path.js';
 import { FileSystemVault } from '../fs/vault.js';
+import { walkVault } from '../fs/scan.js';
 
 /**
- * Creates a recovery snapshot: every note and database definition, byte for
+ * Creates a recovery snapshot: every note, database definition, and saved view, byte for
  * byte, plus a manifest of SHA-256 hashes written last.
  *
  * The target must be empty and outside the vault. A missing manifest therefore
@@ -92,6 +96,7 @@ export async function createBackup(
   const files: BackupManifestFile[] = [];
   let notes = 0;
   let databases = 0;
+  let databaseViews = 0;
 
   try {
     for (const { entry, bytes } of backupEntries) {
@@ -104,7 +109,8 @@ export async function createBackup(
         bytes: bytes.byteLength,
       });
       if (entry.kind === 'note') notes += 1;
-      else databases += 1;
+      else if (entry.kind === 'database') databases += 1;
+      else databaseViews += 1;
     }
 
     const app = await readAppInfo();
@@ -113,8 +119,8 @@ export async function createBackup(
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: DATABASE_FORMAT_VERSION, backup: BACKUP_VERSION },
-      counts: { notes, databases },
+      formats: { note: NOTE_FORMAT_VERSION, database: DATABASE_FORMAT_VERSION, databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION },
+      counts: { notes, databases, databaseViews },
       files,
     };
     manifest.digest = digestOf(manifest);
@@ -123,7 +129,7 @@ export async function createBackup(
     throw storageFailure(error, 'Write backup', targetDir);
   }
 
-  return { targetDir: target, notes, databases };
+  return { targetDir: target, notes, databases, databaseViews };
 }
 
 /**
@@ -144,10 +150,24 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     throw corruptBackup(`Backup root "${targetDir}" is not a regular directory`);
   }
   const manifest = await readManifest(target);
+  // A v1 manifest cannot account for views. Never restore only a subset when
+  // a portable saved-view tree has been copied into an older backup.
+  const viewDirectory = (await readdir(target)).find((name) => name.toLowerCase() === DATABASE_VIEWS_DIR);
+  if (viewDirectory !== undefined) {
+    if (manifest.version === 1) throw corruptBackup('Backup manifest v1 cannot represent the saved-view directory; no restore occurred');
+    const info = await lstat(join(target, viewDirectory));
+    if (viewDirectory !== DATABASE_VIEWS_DIR || !info.isDirectory() || info.isSymbolicLink()) throw corruptBackup('Saved-view backup directory must be a regular database-views/ directory');
+    const walk = await walkVault(target);
+    const listed = new Set(manifest.files.filter((file) => file.kind === 'database-view').map((file) => file.path));
+    if (walk.issues.some((issue) => issue.path.toLowerCase().startsWith(`${DATABASE_VIEWS_DIR}/`)) || walk.entries.some((entry) => entry.path.startsWith(`${DATABASE_VIEWS_DIR}/`) && (entry.kind !== 'database-view' || !listed.has(entry.path)))) {
+      throw corruptBackup('Saved-view backup files are unsafe or missing from the manifest; no restore occurred');
+    }
+  }
   const issues: string[] = [];
   const entries: VaultEntry[] = [];
   const notes: Note[] = [];
   const databases: DatabaseDefinition[] = [];
+  const databaseViews: DatabaseView[] = [];
 
   const ids = new Set<string>();
   const paths = new Set<string>();
@@ -246,7 +266,7 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
         issues.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-    } else {
+    } else if (file.kind === 'database') {
       if (file.path !== databasePath(file.id)) {
         issues.push(`Database "${file.id}" must be stored at "${databasePath(file.id)}"`);
         continue;
@@ -258,6 +278,25 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
           continue;
         }
         databases.push(database);
+      } catch (error) {
+        const unsupported = unsupportedError(error, file.path);
+        if (unsupported !== undefined) throw unsupported;
+        issues.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+    } else {
+      const pathIds = viewPathFromManifest(file.path);
+      if (pathIds === undefined || pathIds.path !== file.path || pathIds.viewId !== file.id) {
+        issues.push(`Saved view at "${file.path}" does not match its path and manifest ID`);
+        continue;
+      }
+      try {
+        const view = parseDatabaseView(text);
+        if (view.id !== file.id || view.databaseId !== pathIds.databaseId) {
+          issues.push(`Saved view at "${file.path}" does not match manifest path and ID`);
+          continue;
+        }
+        databaseViews.push(view);
       } catch (error) {
         const unsupported = unsupportedError(error, file.path);
         if (unsupported !== undefined) throw unsupported;
@@ -277,7 +316,7 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     );
   }
 
-  return { manifest, entries, notes, databases };
+  return { manifest, entries, notes, databases, databaseViews };
 }
 
 /**
@@ -315,6 +354,7 @@ export async function restoreBackup(
       entries: validation.entries,
       notes: validation.notes,
       databases: validation.databases,
+      databaseViews: validation.databaseViews,
     },
     { overwrite: options.overwrite },
   );
@@ -338,13 +378,18 @@ export async function previewRestore(
 
   const noteIds = new Set<string>();
   const databaseIds = new Set<string>();
+  const viewIds = new Set<string>();
   const notePaths = new Set<string>();
+  const viewPaths = new Set<string>();
   for (const entry of existing) {
     if (entry.kind === 'note') {
       noteIds.add(entry.id);
       notePaths.add(foldPath(entry.path));
-    } else {
+    } else if (entry.kind === 'database') {
       databaseIds.add(entry.id);
+    } else {
+      viewIds.add(entry.id);
+      viewPaths.add(foldPath(entry.path));
     }
   }
 
@@ -357,10 +402,15 @@ export async function previewRestore(
   for (const database of validation.databases) {
     if (databaseIds.has(database.id)) ids.add(database.id);
   }
+  for (const view of validation.databaseViews) {
+    const path = databaseViewPath(view.databaseId, view.id);
+    if (viewIds.has(view.id)) ids.add(view.id);
+    if (viewPaths.has(foldPath(path))) paths.add(path);
+  }
 
   return {
     manifest: validation.manifest,
-    counts: { notes: validation.notes.length, databases: validation.databases.length },
+    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length },
     conflicts: { ids: [...ids].sort(), paths: [...paths].sort() },
   };
 }
@@ -444,6 +494,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   }
 
   const issues: string[] = [];
+  if (version === 2) rejectUnknownKeys(data, ['format', 'version', 'createdAt', 'app', 'formats', 'counts', 'files', 'digest'], 'manifest', issues);
   const files: BackupManifestFile[] = [];
 
   data.files.forEach((item: unknown, index: number) => {
@@ -451,10 +502,11 @@ async function readManifest(target: string): Promise<BackupManifest> {
       issues.push(`files[${index}] is not an object`);
       return;
     }
-    if (item.kind !== 'note' && item.kind !== 'database') {
-      issues.push(`files[${index}].kind must be "note" or "database"`);
+    if (item.kind !== 'note' && item.kind !== 'database' && !(version === 2 && item.kind === 'database-view')) {
+      issues.push(`files[${index}].kind is not supported by backup version ${version}`);
       return;
     }
+    if (version === 2) rejectUnknownKeys(item, ['kind', 'id', 'path', 'sha256', 'bytes'], `files[${index}]`, issues);
     if (typeof item.id !== 'string' || !isUuidV4(item.id)) {
       issues.push(`files[${index}].id must be a lowercase UUID v4`);
       return;
@@ -483,6 +535,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   // Optional metadata written by current builds; absent on legacy v1 manifests.
   let app: BackupManifestApp | undefined;
   if (data.app !== undefined) {
+    if (version === 2 && isRecord(data.app)) rejectUnknownKeys(data.app, ['name', 'version'], 'app', issues);
     if (!isRecord(data.app) || typeof data.app.name !== 'string' || data.app.name.length === 0 ||
         typeof data.app.version !== 'string' || data.app.version.length === 0) {
       issues.push('app must contain non-empty string name and version');
@@ -496,10 +549,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
     if (!isRecord(data.formats) ||
         !isIntegerAtLeast(data.formats.note, 1) ||
         !isIntegerAtLeast(data.formats.database, 1) ||
-        !isIntegerAtLeast(data.formats.backup, 1)) {
-      issues.push('formats must contain positive integers note, database, and backup');
+        !isIntegerAtLeast(data.formats.backup, 1) ||
+        (version === 2 && !isIntegerAtLeast(data.formats.databaseView, 1))) {
+      issues.push('formats must contain positive integers note, database, backup, and for v2 databaseView');
     } else {
-      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup };
+      if (version === 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', 'backup'], 'formats', issues);
+      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version === 2 ? { databaseView: data.formats.databaseView as number } : {}) };
     }
   }
 
@@ -507,12 +562,16 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (data.counts !== undefined) {
     if (!isRecord(data.counts) ||
         !isIntegerAtLeast(data.counts.notes, 0) ||
-        !isIntegerAtLeast(data.counts.databases, 0)) {
-      issues.push('counts must contain non-negative integers notes and databases');
+        !isIntegerAtLeast(data.counts.databases, 0) ||
+        (version === 2 && !isIntegerAtLeast(data.counts.databaseViews, 0))) {
+      issues.push('counts must contain non-negative integers notes, databases, and for v2 databaseViews');
     } else {
-      counts = { notes: data.counts.notes, databases: data.counts.databases };
+      if (version === 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews'], 'counts', issues);
+      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version === 2 ? { databaseViews: data.counts.databaseViews as number } : {}) };
       const noteFiles = files.filter((file) => file.kind === 'note').length;
-      if (counts.notes !== noteFiles || counts.databases !== files.length - noteFiles) {
+      const databaseFiles = files.filter((file) => file.kind === 'database').length;
+      const viewFiles = files.filter((file) => file.kind === 'database-view').length;
+      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version === 2 && counts.databaseViews !== viewFiles)) {
         issues.push('counts does not match the number of file entries');
       }
     }
@@ -525,6 +584,13 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (data.digest !== undefined && digest === undefined) {
     issues.push('digest must be a lowercase SHA-256 hex digest');
   }
+  if (version === 2 && (formats === undefined || counts === undefined)) issues.push('v2 manifests require formats and counts');
+  if (version === 2 && files.some((file) => file.bytes === undefined)) issues.push('v2 manifest file entries require byte lengths');
+  if (version === 2 && digest === undefined) issues.push('v2 manifests require a digest');
+  if (version === 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
+    if (formats.databaseView > DATABASE_VIEW_VERSION) throw new StorageError('UNSUPPORTED_VERSION', `Database view format version ${formats.databaseView} is newer than supported version ${DATABASE_VIEW_VERSION}`, { path: BACKUP_MANIFEST });
+  }
+  if (version === 2 && formats?.backup !== version) issues.push('formats.backup must match manifest version 2');
 
   if (digest !== undefined && issues.length === 0) {
     if (files.some((file) => file.bytes === undefined)) {
@@ -532,7 +598,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
     } else {
       const candidate: BackupManifest = {
         format: BACKUP_FORMAT,
-        version: BACKUP_VERSION,
+        version: version as 1 | 2,
         createdAt: data.createdAt,
         ...(app === undefined ? {} : { app }),
         ...(formats === undefined ? {} : { formats }),
@@ -554,7 +620,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
 
   return {
     format: BACKUP_FORMAT,
-    version: BACKUP_VERSION,
+    version: version as 1 | 2,
     createdAt: data.createdAt,
     ...(app === undefined ? {} : { app }),
     ...(formats === undefined ? {} : { formats }),
@@ -595,7 +661,13 @@ function corruptBackup(message: string): StorageError {
   return new StorageError('CORRUPT_BACKUP', message, { path: BACKUP_MANIFEST });
 }
 
-function restorePathIssue(kind: 'note' | 'database', id: string, path: string): string | undefined {
+function restorePathIssue(kind: 'note' | 'database' | 'database-view', id: string, path: string): string | undefined {
+  if (kind === 'database-view') {
+    const ids = viewPathFromManifest(path);
+    return ids !== undefined && ids.path === path && ids.viewId === id
+      ? undefined
+      : `Saved view path "${path}" must be database-views/<database-id>/<view-id>.json and match its ID`;
+  }
   if (kind === 'database') {
     return path === databasePath(id) ? undefined : `Database "${id}" must be stored at "${databasePath(id)}"`;
   }
@@ -607,8 +679,15 @@ function restorePathIssue(kind: 'note' | 'database', id: string, path: string): 
   if (path.split('/').some((segment) => segment.startsWith('.'))) {
     return `Hidden note path "${path}" is not restorable`;
   }
-  if (isReservedNotePath(path)) return `Note path "${path}" is reserved for database definitions`;
+  if (isReservedNotePath(path.toLowerCase())) return `Note path "${path}" is reserved for Nodus database metadata`;
   return undefined;
+}
+
+function viewPathFromManifest(path: string): { databaseId: string; viewId: string; path: string } | undefined {
+  const match = /^database-views\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/.exec(path);
+  if (!match) return undefined;
+  const databaseId = match[1]!; const viewId = match[2]!;
+  return { databaseId, viewId, path: databaseViewPath(databaseId, viewId) };
 }
 
 async function assertNoSymlinkComponents(root: string, relativePath: string): Promise<void> {
@@ -637,6 +716,10 @@ function isMissing(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function rejectUnknownKeys(value: Record<string, unknown>, allowed: string[], where: string, issues: string[]): void {
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) issues.push(`Unknown key "${key}" in ${where}`);
 }
 
 function isIntegerAtLeast(value: unknown, min: number): value is number {
@@ -693,11 +776,16 @@ function canonicalDigestInput(
     payload.formats = {
       note: manifest.formats.note,
       database: manifest.formats.database,
+      ...(manifest.formats.databaseView === undefined ? {} : { databaseView: manifest.formats.databaseView }),
       backup: manifest.formats.backup,
     };
   }
   if (manifest.counts !== undefined) {
-    payload.counts = { notes: manifest.counts.notes, databases: manifest.counts.databases };
+    payload.counts = {
+      notes: manifest.counts.notes,
+      databases: manifest.counts.databases,
+      ...(manifest.counts.databaseViews === undefined ? {} : { databaseViews: manifest.counts.databaseViews }),
+    };
   }
   payload.files = manifest.files.map((file) =>
     file.bytes === undefined

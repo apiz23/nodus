@@ -3,22 +3,31 @@ import type {
   ImportReport,
   RestorePreview,
   UiBacklinksResponse,
+  UiDiscoveryResponse,
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
   UiDatabase,
+  UiDatabaseDefinition,
+  UiDatabaseRowsResponse,
+  UiDatabaseView,
+  UiDatabaseViewsResponse,
   UiDeleteNoteInput,
   UiMoveNoteInput,
   UiNote,
+  UiNotePropertiesResponse,
   UiNoteSummary,
   UiRestoreInput,
   UiSaveNoteInput,
+  UiSetNotePropertyInput,
   UiOpenVaultInput,
   UiSearchResult,
   UiValidateBackupInput,
   UiVaultPickResult,
   UiVaultStatus,
+  UiApiErrorBody,
 } from '../../src/ui-server/dto.js';
+import type { DatabaseView } from '../../src/database/database-view.js';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -26,6 +35,7 @@ export class ApiError extends Error {
   readonly currentHash?: string;
   readonly issues?: string[];
   readonly paths?: string[];
+  readonly structuredDataIssues?: UiApiErrorBody['error']['structuredDataIssues'];
 
   constructor(
     status: number,
@@ -34,6 +44,7 @@ export class ApiError extends Error {
     currentHash?: string,
     issues?: string[],
     paths?: string[],
+    structuredDataIssues?: UiApiErrorBody['error']['structuredDataIssues'],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -42,6 +53,7 @@ export class ApiError extends Error {
     this.currentHash = currentHash;
     this.issues = issues;
     this.paths = paths;
+    this.structuredDataIssues = structuredDataIssues;
   }
 }
 
@@ -79,6 +91,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
             currentHash?: string;
             paths?: string[];
             issues?: string[];
+            structuredDataIssues?: UiApiErrorBody['error']['structuredDataIssues'];
           };
         }
       | undefined;
@@ -89,6 +102,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       errorBody?.error?.currentHash,
       errorBody?.error?.issues,
       errorBody?.error?.paths,
+      errorBody?.error?.structuredDataIssues,
     );
   }
 
@@ -123,8 +137,25 @@ export const api = {
     return request<{ note: UiNote }>(`/api/notes/${encodeURIComponent(id)}`);
   },
 
-  backlinks(id: string): Promise<UiBacklinksResponse> {
-    return request<UiBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/backlinks`);
+  noteProperties(id: string): Promise<UiNotePropertiesResponse> {
+    return request<UiNotePropertiesResponse>(`/api/notes/${encodeURIComponent(id)}/properties`);
+  },
+
+  setNoteProperty(id: string, input: UiSetNotePropertyInput): Promise<UiNotePropertiesResponse> {
+    return request<UiNotePropertiesResponse>(`/api/notes/${encodeURIComponent(id)}/properties`, {
+      method: 'PUT',
+      body: jsonBody(input),
+    });
+  },
+
+  discovery(refresh = false): Promise<UiDiscoveryResponse> {
+    return request(`/api/discovery${refresh ? '?refresh=true' : ''}`);
+  },
+  createLinkTarget(target: string): Promise<{ note: UiNote }> {
+    return request('/api/discovery/create', { method: 'POST', body: jsonBody({ target }) });
+  },
+  backlinks(id: string, refresh = false): Promise<UiBacklinksResponse> {
+    return request<UiBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/backlinks${refresh ? '?refresh=true' : ''}`);
   },
 
   createNote(input: UiCreateNoteInput): Promise<{ note: UiNote }> {
@@ -155,13 +186,61 @@ export const api = {
     });
   },
 
-  search(query: string): Promise<{ results: UiSearchResult[] }> {
-    const params = new URLSearchParams({ q: query });
-    return request<{ results: UiSearchResult[] }>(`/api/search?${params.toString()}`);
+  search(query: string, signal?: AbortSignal, refresh = false): Promise<{ results: UiSearchResult[] }> {
+    return request<{ results: UiSearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}${refresh ? '&refresh=true' : ''}`, { signal });
   },
 
   databases(): Promise<{ databases: UiDatabase[] }> {
     return request<{ databases: UiDatabase[] }>('/api/databases');
+  },
+
+  createDatabase(database: UiDatabaseDefinition): Promise<{ database: UiDatabase }> {
+    return request<{ database: UiDatabase }>('/api/databases', {
+      method: 'POST',
+      body: jsonBody({ database }),
+    });
+  },
+
+  replaceDatabase(
+    id: string,
+    database: UiDatabaseDefinition,
+    baseHash: string,
+  ): Promise<{ database: UiDatabase }> {
+    return request<{ database: UiDatabase }>(`/api/databases/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: jsonBody({ database, baseHash }),
+    });
+  },
+
+  databaseRows(id: string, expectedSchemaHash?: string): Promise<UiDatabaseRowsResponse> {
+    const params = new URLSearchParams();
+    if (expectedSchemaHash !== undefined) params.set('schemaHash', expectedSchemaHash);
+    const query = params.size > 0 ? `?${params.toString()}` : '';
+    return request<UiDatabaseRowsResponse>(`/api/databases/${encodeURIComponent(id)}/rows${query}`);
+  },
+
+  databaseViews(databaseId: string): Promise<UiDatabaseViewsResponse> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views`);
+  },
+
+  databaseView(databaseId: string, viewId: string): Promise<{ view: UiDatabaseView }> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}`);
+  },
+
+  createDatabaseView(view: DatabaseView): Promise<{ view: UiDatabaseView }> {
+    return request(`/api/databases/${encodeURIComponent(view.databaseId)}/views`, { method: 'POST', body: jsonBody({ view }) });
+  },
+
+  replaceDatabaseView(view: DatabaseView, baseHash: string): Promise<{ view: UiDatabaseView }> {
+    return request(`/api/databases/${encodeURIComponent(view.databaseId)}/views/${encodeURIComponent(view.id)}`, { method: 'PUT', body: jsonBody({ view, baseHash }) });
+  },
+
+  duplicateDatabaseView(databaseId: string, viewId: string, id: string, name: string, baseHash: string): Promise<{ view: UiDatabaseView }> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}/duplicate`, { method: 'POST', body: jsonBody({ id, name, baseHash }) });
+  },
+
+  deleteDatabaseView(databaseId: string, viewId: string, baseHash: string): Promise<{ deleted: true }> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}`, { method: 'DELETE', body: jsonBody({ baseHash }) });
   },
 
   createBackup(input: UiCreateBackupInput): Promise<BackupReport> {
