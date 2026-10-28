@@ -1,6 +1,6 @@
 # Nodus Database Definition Format (version 1)
 
-A database definition is a separate, versioned JSON file. It describes a database's properties and select options. It does not contain rows, query logic, or view configuration.
+A database definition is a separate, versioned JSON file. It describes a database's properties and select options. It does not contain rows, query logic, or view configuration. Saved views use a separate versioned format; see [Saved database view format](database-views.md). Database schema v1 is unchanged.
 
 ## Example
 
@@ -93,9 +93,13 @@ These are deferred. Their validation rules are not defined yet, so the parser re
 - Versioning follows the compatibility policy in the README. Version 2 is rejected with `UNSUPPORTED_VERSION`.
 - No migrations exist. The migration contract in [note-format.md](note-format.md#migration-contract) applies to this format as well.
 
+## Current schema editor
+
+The UI can create a version 1 schema, add properties, rename schemas and properties, add select/multi-select options, and rename existing options. Existing property and option IDs are retained. Property types are selected when a property is created and are read-only afterward; property and option removal are not offered, so existing note values are not orphaned by these UI actions. Schema writes are validated by the same version 1 parser/serializer and use a raw-file SHA-256 precondition. Unsupported or malformed on-disk schema files cannot be edited through the UI or replacement API; they are rejected without rewriting the file. No schema edit rewrites note Markdown or property values.
+
 ## Decisions
 
-- `options` may be an empty array for select and multi-select, so a property can be defined before its options are configured. Values are not implemented in Phase 1; when they are, each value must match one of the property's option IDs.
+- `options` may be an empty array for select and multi-select, so a property can be defined before its options are configured. Current note values live in the note's `nodus_data` frontmatter; select and multi-select values refer to these stable option IDs.
 - Property names are unique within the database, case-insensitively, after Unicode NFC normalization, as required by the approved plan.
 - Option names are unique within their property, also after NFC normalization, but the comparison is **case-sensitive**: `Open` and `open` are distinct. The approved plan requires uniqueness without specifying case, so exact match is used.
 - IDs must be unique across a vault, not just within one file. The vault/storage layer owns that check.

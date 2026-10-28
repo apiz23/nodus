@@ -9,16 +9,18 @@ Nodus stores a vault as ordinary Markdown files and versioned JSON definitions. 
   notes/roadmap.md                    # any *.md at any relative path
   projects/nodus/plan.md
   databases/9b2e4f10-...-2c6d9e0a4b73.json
+  database-views/9b2e4f10-...-2c6d9e0a4b73/665f1175-...-657bb79fa9a1.json
 ```
 
 - **Notes** are stored at their Phase 1 `Note.path`, which is workspace-relative, `/`-separated, and ends in `.md`. The path is not stored in frontmatter.
 - **Database definitions** are stored at `databases/<database-id>.json`, one definition per file. The file name must equal the definition's `id`.
+- **Saved database views** are separate versioned files at `database-views/<database-id>/<view-id>.json`. Removing a database does not cascade-delete its saved views.
 - The `databases/` tree is reserved. Notes with paths under it are rejected with `INVALID_INPUT`.
 - Newly created or normally edited files are written as UTF-8 without a byte order mark. Portable imports and backup restores preserve a valid source-file BOM byte for byte; malformed UTF-8 is rejected.
 
 ### Scan rules
 
-- Only `*.md` files are notes. JSON files outside `databases/` are ignored.
+- Only `*.md` files are notes. JSON files outside `databases/` and `database-views/` are ignored.
 - Hidden files and directories (any segment starting with `.`) are not scanned. This excludes `.git`, `.obsidian`, and similar tooling directories. A note placed in a hidden directory is invisible to Nodus.
 - Symbolic links and junctions are never followed. `checkHealth` reports them as `UNSAFE_PATH`.
 - Leftover `.nodus-tmp-*` files are reported by `checkHealth` as `INCOMPLETE_WRITE`. They are never read as notes.
@@ -26,7 +28,7 @@ Nodus stores a vault as ordinary Markdown files and versioned JSON definitions. 
 
 ## Contracts
 
-`src/storage/contracts.ts` defines two entity stores and one vault contract. None of them reference a filesystem, browser, network, or UI type.
+`src/storage/contracts.ts` defines note, database-definition, and saved-view stores plus one vault contract. None of them reference a filesystem, browser, network, or UI type.
 
 ```ts
 interface NoteStore {
@@ -82,7 +84,7 @@ All storage failures are `StorageError`, which is separate from the Phase 1 `Nod
 | `UNSAFE_PATH` | A path escapes the vault, is a symbolic link, or fails the Phase 1 path rules. |
 | `INVALID_INPUT` | Caller-supplied data or options are invalid. |
 | `INVALID_CONTENT` | On-disk content is malformed or does not match the approved format. |
-| `UNSUPPORTED_VERSION` | A note, database, or backup version is newer than this build. |
+| `UNSUPPORTED_VERSION` | A note, database, saved-view, or backup version is newer than this build. |
 | `CORRUPT_BACKUP` | The manifest is missing/invalid, a file is missing, a hash mismatches, or a document is inconsistent. |
 | `PARTIAL_WRITE` | A multi-file operation stopped after changing paths. `details.paths` lists completed paths and the path where it stopped. |
 | `STALE_WRITE` | A conditional write (`expectedHash`) found different bytes on disk. `details.currentHash` carries the current SHA-256. No write occurred. |
@@ -176,7 +178,7 @@ This restricts which folders a request (or a local process that can reach the lo
 | `INVALID_CONTENT` | A note or database cannot be parsed, or a database filename does not match its ID. |
 | `UNSUPPORTED_VERSION` | A document declares a newer format version. |
 | `DUPLICATE_ID` | The same note ID is present at more than one path. |
-| `UNSAFE_PATH` | A symbolic link or junction was skipped, or a file is in the reserved `databases/` tree incorrectly. |
+| `UNSAFE_PATH` | A symbolic link or junction was skipped, or a file is in a reserved Nodus metadata tree incorrectly. |
 | `INCOMPLETE_WRITE` | A `.nodus-tmp-*` file exists; it may belong to an active or interrupted write. Stop writers and preserve and inspect it before cleanup. |
 
 Normal operations are strict: `listNotes`, `snapshot`, export, and backup throw `INVALID_CONTENT` or `UNSUPPORTED_VERSION` rather than silently skipping a bad file. Use `checkHealth` first when diagnosing a vault.
@@ -188,15 +190,16 @@ Export is a plain directory, not a proprietary archive:
 ```
 <export>/notes/roadmap.md
 <export>/databases/<id>.json
+<export>/database-views/<database-id>/<view-id>.json
 ```
 
-- `exportVault(vault, target)` requires an empty target outside the vault, writes every valid note and definition byte for byte, and reports counts. A partial failure can leave a valid subset that import accepts: a plain export has no completeness manifest. Confirm that export succeeded and check its counts; use a verified backup when interrupted-copy detection is required.
+- `exportVault(vault, target)` requires an empty target outside the vault, writes every valid note, definition, and saved view byte for byte, and reports counts. A partial failure can leave a valid subset that import accepts: a plain export has no completeness manifest. Confirm that export succeeded and check its counts; use a verified backup when interrupted-copy detection is required.
 - The export is itself a valid vault, so it can be opened directly by `FileSystemVault.open`.
 
 Import is validated in two separable steps:
 
-1. `planImport(sourceDir)` reads and validates the whole directory with the Phase 1 parsers. It rejects malformed files, unsupported versions, duplicate IDs, database filename/id mismatches, symbolic links, and paths that collide by case or normalization. It writes nothing.
-2. `vault.applyImport(plan, options)` compares the plan with the target. Without `{ overwrite: true }`, any existing ID or path aborts with `CONFLICT` before a single write. With it, notes and databases are replaced, old paths are removed after the new files are written, and unrelated notes are left alone.
+1. `planImport(sourceDir)` reads and validates the whole directory with the note, database, and saved-view parsers. It rejects malformed files, unsupported versions, duplicate IDs, reserved path/ID mismatches, symbolic links, and paths that collide by case or normalization. It writes nothing.
+2. `vault.applyImport(plan, options)` compares the plan with the target. Without `{ overwrite: true }`, any existing ID or path aborts with `CONFLICT` before a single write. With it, matching notes, databases, and views are replaced, old note paths are removed after new files are written, and unrelated data is left alone.
 
 Behavior and limits:
 
@@ -214,11 +217,11 @@ Behavior and limits:
 ```json
 {
   "format": "nodus-backup",
-  "version": 1,
+  "version": 2,
   "createdAt": "2026-10-27T08:00:00.000Z",
   "app": { "name": "nodus", "version": "0.1.0" },
-  "formats": { "note": 1, "database": 1, "backup": 1 },
-  "counts": { "notes": 12, "databases": 3 },
+  "formats": { "note": 1, "database": 1, "databaseView": 1, "backup": 2 },
+  "counts": { "notes": 12, "databases": 3, "databaseViews": 4 },
   "files": [
     {
       "kind": "note",
@@ -234,21 +237,21 @@ Behavior and limits:
 
 - Files are copied byte for byte with the same atomic write used for notes. A missing manifest means an interrupted or incomplete backup.
 - The target must be **empty** and outside the vault. A non-empty target fails with `CONFLICT` and is left untouched; a nonexistent target is created.
-- `format` is always `nodus-backup`; manifest `version` is `1`.
+- `format` is always `nodus-backup`; current manifests use version `2` to include saved views. Version-1 manifests remain readable and contain only notes and database definitions.
 
 ### Manifest metadata and digest
 
-- Each `files` entry carries `kind` (`note` | `database`), the document `id`, the vault-relative `path`, the lowercase hex SHA-256 of the UTF-8 content, and `bytes` (UTF-8 byte length).
-- Optional metadata written by current builds: `app` (name/version of the writer, from `package.json`), `formats` (note/database/backup versions the writer understood), and `counts` (cross-checked against the file list during validation).
+- Each v2 `files` entry carries `kind` (`note` | `database` | `database-view`), the document `id`, the vault-relative `path`, the lowercase hex SHA-256 of the UTF-8 content, and `bytes` (UTF-8 byte length).
+- V2 includes `formats` (note/database/database-view/backup versions), `counts` (notes/databases/databaseViews), and a canonical digest. V1 metadata remains optional under its original rules.
 - `digest` is the SHA-256 of the manifest serialized canonically: fixed key order (`format`, `version`, `createdAt`, then `app`/`formats`/`counts` when present, then `files` with fixed entry keys), `JSON.stringify` without whitespace, encoded UTF-8. The `digest` field itself is excluded from its own input.
-- **Backward compatibility:** older valid v1 manifests without `app`, `formats`, `counts`, `bytes`, or `digest` still validate. When `digest` is present it must match and every entry must carry `bytes`; a mismatch fails with `CORRUPT_BACKUP`.
+- **Backward compatibility:** valid v1 manifests without `app`, `formats`, `counts`, `bytes`, or `digest` still validate. V1 cannot represent saved views. V2 is explicitly unsupported by older Nodus builds, which reject unknown backup versions rather than dropping saved views. V2 rejects unknown fields and requires byte lengths and digest.
 - The hashes and digest are **integrity checks only**: they detect accidental or unauthorized byte changes. They do **not** authenticate the backup or prove who created it — anyone able to edit the backup can recompute them.
 
 ### Creating and validating backups
 
 Exposed through the local API (localhost only, origin-checked) and driven by Settings → Backup & restore (typed paths; Nodus has no file picker for backup folders):
 
-- `POST /api/backup` with `{ targetDir }` → 201 `{ targetDir, notes, databases }`.
+- `POST /api/backup` with `{ targetDir }` → 201 `{ targetDir, notes, databases, databaseViews }`.
 - `POST /api/backup/validate` with `{ dir }` → 200 `{ manifest, counts }`; failures are 422 `CORRUPT_BACKUP` (with an `issues` list shown in the UI), 422 `UNSUPPORTED_VERSION`, or 404 for a missing directory.
 
 Destination and source rules (`assertBackupTargetAllowed`), in order:
@@ -260,11 +263,11 @@ Destination and source rules (`assertBackupTargetAllowed`), in order:
 
 `NODUS_BACKUP_ROOTS` uses the platform path delimiter (`:` on macOS/Linux, `;` on Windows), like `NODUS_VAULT_ROOTS`. When unset or empty the only allowed root is the **parent directory of the active vault**. Roots are `realpath`-resolved; a root that does not exist is skipped. The same rules gate backup **sources** (validate, preview, restore).
 
-`validateBackup(dir)` reads the manifest (`nodus-backup.json` must exist or the backup is treated as incomplete/`CORRUPT_BACKUP`), verifies schema, version, optional digest, every listed file exists, is a regular non-symlink file, hashes match, every document parses under Phase 1 rules, IDs match the manifest, database filenames equal their IDs, and IDs/paths are unique (paths compared NFC-normalized, case-folded). Newer document or manifest versions produce `UNSUPPORTED_VERSION`; other problems produce `CORRUPT_BACKUP` with an issue list. Validation never writes.
+`validateBackup(dir)` reads the manifest (`nodus-backup.json` must exist or the backup is treated as incomplete/`CORRUPT_BACKUP`), verifies version-specific fields, every listed file exists, is a regular non-symlink file, hashes match, each note/schema/view parses, IDs match the manifest, reserved paths match their IDs, and IDs/paths are unique. Newer document or manifest versions produce `UNSUPPORTED_VERSION`; other problems produce `CORRUPT_BACKUP` with an issue list. Validation never writes.
 
 ### Restore behavior
 
-- `POST /api/restore/preview` with `{ dir }` returns a **read-only** `RestorePreview`: manifest, counts of the parseable documents (from parsing, not the manifest), and `conflicts` — note IDs against note IDs, database IDs against database IDs, and note paths after NFC normalization + case folding, mirroring the checks `applyImport` runs. Preview writes nothing on either side, but it **cannot guarantee** a later restore will be conflict-free: the vault may change in between.
+- `POST /api/restore/preview` with `{ dir }` returns a **read-only** `RestorePreview`: manifest, counts of parseable documents (from parsing, not the manifest), and ID/path conflicts, mirroring the checks `applyImport` runs. Preview writes nothing on either side, but it **cannot guarantee** a later restore will be conflict-free: the vault may change in between.
 - `POST /api/restore` with `{ dir, overwrite? }` always targets the **active vault** — a client-supplied `destination` field is rejected with 400, and the source passes the same allow-list checks. Restore validates the entire backup first, then applies it through the normal import path; the backup directory is only ever read.
 - **Merge semantics:** by default (`overwrite: false`) any existing ID or path aborts with `CONFLICT` (409) *before a single write*. With `overwrite: true`, matching-ID notes at the same exact path and matching-ID databases can be replaced; a matching-ID note can move paths. Different-ID exact-path collisions and case-insensitive/NFC path collisions remain blocked. Unrelated vault content is untouched. Restore **merges into the active vault — it never replaces or clears the vault as a whole**, and never touches files outside it. The Settings UI requires explicit confirmation showing the exact source on every restore; overwrite remains off until user enables it.
 - **Not globally atomic:** each file write is atomic, but merge restore spans files. An I/O failure after changes returns `PARTIAL_WRITE` (500) with `details.paths` listing completed changes and the path of the failed operation. The Settings UI tells the user to inspect the affected vault. The backup itself remains unchanged.
@@ -319,5 +322,5 @@ Do not build a cloud adapter or claim anywhere-access until those exist.
 - Symbolic links are unsupported.
 - Paths that collide by case are rejected even on case-sensitive filesystems, to keep vaults portable.
 - Optional `expectedHash` narrows, but does not eliminate, the check-then-write race: there is no OS-level compare-and-swap or locking enforced against non-cooperating writers, no trash, and no distributed transactions. The lock file coordinates cooperating Nodus processes only.
-- Database definitions have no views, relations, rows, or query execution. Those remain deferred.
-- The `databases/` directory is a reserved namespace owned by Nodus.
+- Database definitions contain property schemas only. Saved Table/Kanban/Calendar configuration lives in independently versioned view files, and rows are derived from Markdown. Relations remain deferred.
+- The `databases/` and `database-views/` directories are reserved namespaces owned by Nodus.

@@ -55,8 +55,34 @@ Nodus never picks one of the candidates automatically.
 
 ## Not implemented in Phase 1
 
-- Backlinks index or graph.
+- Graph visualization.
 - Automatic link rewriting on rename.
 - Heading or block targets (`[[Note#Heading]]`). The `#` is treated as part of the title.
-- Link autocomplete, search, or any editor integration.
 - Link extraction from frontmatter fields.
+
+## Knowledge discovery
+
+Discovery in the sidebar and command palette lists unresolved wiki links, ambiguous references,
+and orphan notes. A note is an orphan when no other note has a confirmed incoming wiki link;
+self-links and ambiguous mentions do not count. Orphans are valid notes, not errors. The scanner
+already excludes hidden/system metadata; there is no separate template-note convention to exclude.
+
+Create target preserves the original Markdown and rechecks resolution under the vault write lock.
+If a title or alias now resolves, the existing note opens. Ambiguous references require an explicit
+choice in the source Markdown. Missing UUID targets create a “Recovered note” with the requested ID.
+
+The editor's linked mentions section opens sources by stable ID and separates ambiguous mentions.
+ID links survive moves and title changes. Title/alias links follow the existing resolution rules;
+no link text is rewritten on rename.
+
+The reusable `buildLinkIndex` snapshot contains notes, link occurrences (raw text, target, display,
+body offsets, line, source ID/path, context, and resolution), and orphan notes. Markdown is the
+source of truth. The local API shares an in-memory snapshot for up to five seconds, coalesces
+concurrent rebuilds, and invalidates after note writes and restore. External changes appear on the
+next request after expiry or immediately with Refresh from disk / Refresh backlinks. Nothing
+parses while typing; discovery reflects saved notes. No persistent index or new dependencies are used.
+
+- `GET /api/discovery` returns `unresolved`, `ambiguous`, and `orphans`.
+- `POST /api/discovery/create` accepts `{ "target": "Title or UUID" }` and returns the destination note.
+- `GET /api/notes/:id/backlinks` returns source titles, snippets, counts, and ambiguity flags.
+- Both GET endpoints accept `?refresh=true` to rebuild from disk.

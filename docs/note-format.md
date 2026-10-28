@@ -53,8 +53,11 @@ Notes:
 ## Unknown fields
 
 - Unknown top-level keys are kept in `extraFrontmatter`. They are written back after the Nodus-owned keys, in their original order.
+- Opaque independently versioned top-level extension namespaces, including `nodus_data`, use this preservation rule. Older Nodus readers may ignore their meaning but preserve their YAML values; they do not validate or display them. `nodus_data` has its own format/version and does not change note format v1 or `nodus.version`.
 - Unknown keys under `nodus` are an error (`INVALID_FRONTMATTER`). That namespace is versioned and owned by Nodus.
 - User data is never silently dropped.
+
+The current pure `projectNoteProperties` validator understands `nodus_data` version 1. It reports an unsupported namespace version as `UNSUPPORTED_NAMESPACE_VERSION` and leaves the namespace opaque; this does not make the Markdown note unreadable. See the [structured-data ADR](structured-data-adr.md) for the namespace contract.
 
 ## Serialization
 
