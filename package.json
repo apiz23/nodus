@@ -13,6 +13,7 @@
     "dev": "vite --config ui/vite.config.ts",
     "build": "vite build --config ui/vite.config.ts",
     "preview": "vite preview --config ui/vite.config.ts",
+    "bench:search": "vitest run --config vitest.search-benchmark.config.ts",
     "test": "vitest run",
     "test:browser": "node scripts/browser-smoke.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit"
