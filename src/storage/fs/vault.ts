@@ -352,7 +352,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         issues.push({
           code: 'INCOMPLETE_WRITE',
           path: entry.path,
-          message: 'Leftover temporary file from an interrupted write; it is safe to delete',
+          message: 'Temporary file from an active or interrupted write; stop vault writers and preserve and inspect it before cleanup',
         });
         continue;
       }
@@ -753,7 +753,12 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   private async validateInternalPath(path: string): Promise<string> {
     const absolute = resolveInsideRoot(this.root, path);
     await assertInsideRoot(this.root, absolute, path);
-    await assertNotSymlink(absolute, path);
+    // The scanner excludes directory symlinks even when they stay inside the root.
+    let component = this.root;
+    for (const segment of path.split('/')) {
+      component = join(component, segment);
+      await assertNotSymlink(component, path);
+    }
     return absolute;
   }
 
@@ -770,12 +775,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         `Path "${path}" is reserved for database definitions`,
         { path, details: { paths: [path] } },
       );
-    }
-    // The scanner excludes directory symlinks even when they stay inside the root.
-    let component = this.root;
-    for (const segment of path.split('/')) {
-      component = join(component, segment);
-      await assertNotSymlink(component, path);
     }
     return absolute;
   }

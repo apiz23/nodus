@@ -177,7 +177,7 @@ This restricts which folders a request (or a local process that can reach the lo
 | `UNSUPPORTED_VERSION` | A document declares a newer format version. |
 | `DUPLICATE_ID` | The same note ID is present at more than one path. |
 | `UNSAFE_PATH` | A symbolic link or junction was skipped, or a file is in the reserved `databases/` tree incorrectly. |
-| `INCOMPLETE_WRITE` | A `.nodus-tmp-*` file remains from an interrupted write. |
+| `INCOMPLETE_WRITE` | A `.nodus-tmp-*` file exists; it may belong to an active or interrupted write. Stop writers and preserve and inspect it before cleanup. |
 
 Normal operations are strict: `listNotes`, `snapshot`, export, and backup throw `INVALID_CONTENT` or `UNSUPPORTED_VERSION` rather than silently skipping a bad file. Use `checkHealth` first when diagnosing a vault.
 
@@ -190,7 +190,7 @@ Export is a plain directory, not a proprietary archive:
 <export>/databases/<id>.json
 ```
 
-- `exportVault(vault, target)` requires an empty target outside the vault, writes every valid note and definition byte for byte, and reports counts. A partial failure leaves a partial export; importing it will fail validation rather than lose data.
+- `exportVault(vault, target)` requires an empty target outside the vault, writes every valid note and definition byte for byte, and reports counts. A partial failure can leave a valid subset that import accepts: a plain export has no completeness manifest. Confirm that export succeeded and check its counts; use a verified backup when interrupted-copy detection is required.
 - The export is itself a valid vault, so it can be opened directly by `FileSystemVault.open`.
 
 Import is validated in two separable steps:

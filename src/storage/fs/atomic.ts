@@ -7,9 +7,10 @@ import { TEMP_PREFIX } from './layout.js';
 /**
  * Writes a file through a temporary sibling and an atomic rename.
  *
- * Guarantees: readers never observe a half-written target; the temporary file is
- * removed on failure. Not guaranteed: durability of the rename itself, or a
- * vault-wide transaction across several files.
+ * Readers never observe a half-written target. Temporary-file cleanup is best
+ * effort on caught errors; abnormal termination can leave a temporary sibling.
+ * Not guaranteed: durability of the rename itself, or a vault-wide transaction
+ * across several files.
  */
 export async function writeFileAtomic(target: string, text: string | Uint8Array): Promise<void> {
   const directory = dirname(target);

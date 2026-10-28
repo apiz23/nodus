@@ -5,6 +5,9 @@ import { serializeDatabase } from '../src/database/schema.js';
 import { createNote } from '../src/domain/note.js';
 import { serializeNote } from '../src/format/note-format.js';
 import { FileSystemVault, sha256Hex } from '../src/storage/fs/vault.js';
+import { withVaultRootLock } from '../src/storage/fs/root-lock.js';
+import { createBackup, restoreBackup } from '../src/storage/backup/backup.js';
+import { planImport } from '../src/storage/portable/import.js';
 import { withTempDir } from './tmp.js';
 
 const ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -66,6 +69,50 @@ describe('vault text integrity', () => {
 });
 
 describe('vault mutation boundaries', () => {
+  it.each(['create', 'replace', 'import', 'restore'] as const)(
+    'rejects database %s through an in-root directory symlink before any target mutation', async (operation) => {
+      await withTempDir(async (dir) => {
+        const vault = await FileSystemVault.open(join(dir, 'vault'));
+        const internal = join(vault.root, 'internal');
+        await mkdir(internal);
+        await symlink(internal, join(vault.root, 'databases'), 'dir');
+        const original = serializeDatabase(database);
+        if (operation === 'replace') await writeFile(join(internal, `${ID}.json`), original);
+
+        const source = await FileSystemVault.open(join(dir, 'source'));
+        await source.createNote(note('notes/incoming.md', OTHER));
+        await source.createDatabase(database);
+        const plan = await planImport(source.root);
+        const backup = join(dir, 'backup');
+        await createBackup(source, backup);
+        const before = await readdir(vault.root, { recursive: true });
+        const mutate = {
+          create: () => vault.createDatabase(database),
+          replace: () => vault.replaceDatabase({ ...database, name: 'Changed' }),
+          import: () => vault.applyImport(plan),
+          restore: () => restoreBackup(backup, vault.root),
+        }[operation];
+
+        await expect(mutate()).rejects.toMatchObject({ code: 'UNSAFE_PATH' });
+        expect(await readdir(vault.root, { recursive: true })).toEqual(before);
+        expect(await readdir(internal)).toEqual(operation === 'replace' ? [`${ID}.json`] : []);
+        if (operation === 'replace') expect(await readFile(join(internal, `${ID}.json`), 'utf8')).toBe(original);
+      });
+    },
+  );
+
+  it('does not describe an active writer temporary file as safe to delete', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await withVaultRootLock(vault.root, async () => {
+        await writeFile(join(vault.root, '.nodus-tmp-active'), 'In progress');
+        const issue = (await vault.checkHealth()).issues.find(({ code }) => code === 'INCOMPLETE_WRITE');
+        expect(issue?.message).not.toContain('safe to delete');
+        expect(issue?.message).toContain('active');
+      });
+    });
+  });
+
   it.each(['outside-directory', 'inside-directory', 'broken-directory', 'leaf', 'broken-leaf'])(
     'rejects database deletion through a %s symlink', async (kind) => {
       await withTempDir(async (dir) => {
