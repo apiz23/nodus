@@ -41,8 +41,11 @@ The current app bundle is about 996 KB raw JavaScript and 323 KB gzip; Vite repo
 
 - `pnpm test:browser` — passed; checked-in end-to-end smoke described above.
 - `pnpm exec vitest run --no-cache test/editor-state.test.ts test/editor-tasklist.test.ts test/editor-wikilinks.test.ts test/page-icon.test.ts test/page-icons.test.ts test/ui-editor-layout.test.tsx test/ui-editor-reliability.test.ts --maxWorkers=2` — 7 files, 51 tests passed.
+- `pnpm exec vitest run --no-cache test/storage-reliability.test.ts test/storage-vault.test.ts test/storage-backup.test.ts test/storage-portable.test.ts test/storage-root-lock.test.ts test/storage-root-lock-recovery.test.ts --maxWorkers=2` — 6 files, 149 tests passed.
+- `pnpm test -- --maxWorkers=2` — 37 files, 524 tests passed.
 - `pnpm typecheck` — passed (both configured TypeScript projects).
-- Production builds of the pre-change parent and current tree — passed with Vite 8.3.5. Both used temporary output directories; current build warned that its JavaScript chunk exceeds 500 KB. The build byte comparison uses the emitted JS/CSS assets above.
+- Production build — passed with `pnpm exec vite build --config ui/vite.config.ts --outDir <verified-temporary-directory> --emptyOutDir` on Node 24.18.1 / Vite 8.3.5. The resolved output was checked to be outside the repository's `dist/` before building; its JavaScript chunk warning remains above 500 KB. The build also confirmed the current `dist/` fingerprint did not change.
+- Production builds of the pre-change parent and current tree for the size comparison — passed with Vite 8.3.5 and temporary output directories; measurements are listed above.
 - `git diff --check` — passed after adding this report.
 
 ## Limitations and disposition
