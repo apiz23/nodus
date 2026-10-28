@@ -62,7 +62,7 @@ function CommandDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        <Command shouldFilter={shouldFilter}>{children}</Command>
+        <Command label={title} shouldFilter={shouldFilter}>{children}</Command>
       </DialogContent>
     </Dialog>
   )
