@@ -138,6 +138,12 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(mobile).toContain('Search pages');
   });
 
+  it('keeps the sidebar inside the app viewport with its tree as the scroll area', () => {
+    const markup = renderSidebar('notes');
+    expect(markup).toContain('min-h-0');
+    expect(markup).toContain('overflow-hidden');
+  });
+
   it('renders the collapse control as a separate main-header action', () => {
     const markup = renderToStaticMarkup(
       createElement(TooltipProvider, null, createElement(SidebarToggle, { collapsed: false, onToggle: () => {} })),

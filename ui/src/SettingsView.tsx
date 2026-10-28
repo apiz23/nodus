@@ -186,15 +186,6 @@ export function SettingsView({
                     <code>NODUS_VAULT_ROOTS</code> (a <code>PATH</code>-delimited list) to allow
                     more roots.
                   </p>
-                  {error === null ? null : (
-                    <p
-                      className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
-                      role="alert"
-                    >
-                      <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                      <span>{error}</span>
-                    </p>
-                  )}
                 </Section>
 
                 <Section

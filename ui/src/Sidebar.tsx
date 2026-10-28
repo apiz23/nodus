@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react';
 import {
   ChevronDown,
   Database,
+  Compass,
   FileText,
   FolderClosed,
   FolderOpen,
@@ -62,6 +63,7 @@ interface SidebarProps {
 
 const navItems = [
   { id: 'notes' as const, label: 'All notes', icon: FileText },
+  { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'databases' as const, label: 'Databases', icon: Database },
 ];
 
@@ -146,7 +148,7 @@ export function Sidebar({
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex w-[280px] shrink-0 flex-col gap-2 border-r border-sidebar-border bg-sidebar px-2.5 py-3 transition-[width,transform] duration-150',
+          'fixed inset-y-0 left-0 z-50 flex min-h-0 w-[280px] shrink-0 flex-col gap-2 overflow-hidden border-r border-sidebar-border bg-sidebar px-2.5 py-3 transition-[width,transform] duration-150',
           compact ? 'md:static md:z-auto md:w-16 md:items-center md:px-2' : 'md:static md:z-auto md:w-[240px]',
           open ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
         )}
@@ -256,7 +258,7 @@ export function Sidebar({
                   event.currentTarget.blur();
                   return;
                 }
-                if (event.key === 'ArrowDown') {
+                if (event.key === 'ArrowDown' || (event.key === 'Enter' && query.trim() !== '')) {
                   // Move focus from the search box into the first result/page.
                   const tree = event.currentTarget
                     .closest('aside')
@@ -265,7 +267,8 @@ export function Sidebar({
                     );
                   if (tree !== null && tree !== undefined) {
                     event.preventDefault();
-                    tree.focus();
+                    if (event.key === 'Enter') tree.click();
+                    else tree.focus();
                   }
                 }
               }}
@@ -370,8 +373,8 @@ export function Sidebar({
             variant="ghost"
             size={compact ? 'icon' : 'sm'}
             className={cn('h-7 w-full justify-start gap-1.5 px-1.5 text-[11px] font-normal text-muted-foreground hover:text-foreground', compact && 'md:size-9 md:justify-center md:px-0')}
-            aria-label={`Storage health: ${status?.counts.issues ?? 0} issues`}
-            title={compact ? `Storage health: ${status?.counts.issues ?? 0} issues` : undefined}
+            aria-label={`Storage health: ${status?.counts.issues ?? 0} ${status?.counts.issues === 1 ? 'issue' : 'issues'}. Open settings.`}
+            title={compact ? `Storage health: ${status?.counts.issues ?? 0} ${status?.counts.issues === 1 ? 'issue' : 'issues'}` : undefined}
             onClick={() => { onView('settings'); onClose(); }}
           >
             <span
@@ -381,7 +384,7 @@ export function Sidebar({
               )}
               aria-hidden="true"
             />
-            {compact ? null : <span className="truncate">{status?.counts.issues ? `${status.counts.issues} storage issues` : 'Storage healthy'}</span>}
+            {compact ? null : <span className="truncate">{status?.counts.issues ? `${status.counts.issues} storage ${status.counts.issues === 1 ? 'issue' : 'issues'}` : 'Storage healthy'}</span>}
           </Button>
         </div>
 

@@ -29,6 +29,7 @@ import { useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
@@ -224,8 +225,8 @@ export function Editor({
               {fullWidth ? 'Use comfortable width' : 'Use full writing width'}
             </TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
+          <Popover>
+            <PopoverTrigger asChild>
               <Button
                 type="button"
                 variant="ghost"
@@ -235,28 +236,41 @@ export function Editor({
               >
                 <Info />
               </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-64 text-[11px]">
-              <div className="font-mono">{note.id}</div>
-              <div className="mt-1">SHA-256 {note.contentHash}</div>
-              {note.metadataKeys.length > 0 ? (
-                <div className="mt-1">Preserved: {note.metadataKeys.join(', ')}</div>
-              ) : null}
-            </TooltipContent>
-          </Tooltip>
+            </PopoverTrigger>
+            <PopoverContent align="end" aria-label="Page information" className="w-72 text-xs">
+              <h2 className="text-xs font-semibold">Page information</h2>
+              <dl className="mt-2 space-y-2">
+                <div>
+                  <dt className="text-[11px] text-muted-foreground">Note ID</dt>
+                  <dd className="mt-0.5 font-mono text-[10px] break-all">{note.id}</dd>
+                </div>
+                <div>
+                  <dt className="text-[11px] text-muted-foreground">Content hash</dt>
+                  <dd className="mt-0.5 font-mono text-[10px] break-all">SHA-256 {note.contentHash}</dd>
+                </div>
+                {note.metadataKeys.length > 0 ? (
+                  <div>
+                    <dt className="text-[11px] text-muted-foreground">Preserved metadata</dt>
+                    <dd className="mt-0.5 break-words">{note.metadataKeys.join(', ')}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </PopoverContent>
+          </Popover>
           <div
             role="group"
             aria-label="Markdown rendering mode"
             className="flex items-center gap-1"
           >
             {(['live', 'source'] as const).map((mode) => (
-              <button
+              <Button
                 key={mode}
                 type="button"
+                size="xs"
+                variant="ghost"
                 aria-pressed={editorMode === mode}
                 className={cn(
-                  'h-7 rounded-[5px] border px-2 text-[11px] font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70',
+                  'h-7 rounded-[5px] border px-2 text-[11px] font-medium',
                   editorMode === mode
                     ? 'border-border bg-muted text-foreground'
                     : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -264,7 +278,7 @@ export function Editor({
                 onClick={() => setEditorMode(mode)}
               >
                 {mode === 'live' ? 'Live' : 'Source'}
-              </button>
+              </Button>
             ))}
           </div>
           <Button
@@ -366,15 +380,17 @@ export function Editor({
                 Add icon
               </Button>
             ) : (
-              <button
+              <Button
                 type="button"
-                className="grid size-12 place-items-center rounded-md text-4xl leading-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80"
+                variant="ghost"
+                size="icon-lg"
+                className="size-12 text-4xl leading-none"
                 onClick={() => setIconPickerOpen(true)}
                 aria-label="Change page icon"
                 title="Change page icon"
               >
                 <span aria-hidden="true">{icon}</span>
-              </button>
+              </Button>
             )}
           </div>
 

@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { readFile, writeFile } from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
@@ -161,6 +162,75 @@ describe('search ranking', () => {
       } finally {
         await stopApi(started);
       }
+    });
+  });
+});
+
+
+describe('global search snapshot lifecycle', () => {
+  it('searches aliases and shares one derived snapshot across queries and discovery, invalidating on API writes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await seedRankedVault(vaultPath);
+      const vault = await FileSystemVault.open(vaultPath);
+      const aliasId = 'eeeeeeee-5555-4555-8555-555555555555';
+      await vault.createNote(createNote({ id: aliasId, title: 'Alias destination', path: 'alias.md', body: '', aliases: ['Planning'], now: NOW }));
+      const snapshot = vi.spyOn(FileSystemVault.prototype, 'snapshotNotes');
+      const started = await startApi(vaultPath);
+      const mutate = async (path: string, method: string, body: unknown) => {
+        const response = await fetch(`${started.base}/api${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        expect(response.ok).toBe(true);
+        return response.json() as Promise<{ note: { id: string; title: string; body: string; contentHash: string } }>;
+      };
+      try {
+        await search(started.base, '');
+        expect(snapshot).not.toHaveBeenCalled();
+        const results = (await search(started.base, 'planning')).results;
+        expect(results.slice(0, 2).map((note) => note.id)).toEqual([EXACT, aliasId]);
+        expect(results[1]).toMatchObject({ snippet: 'Alias: Planning', match: { field: 'alias', text: 'Planning', start: 0, end: 8 } });
+        await search(started.base, 'body');
+        await fetch(`${started.base}/api/discovery`);
+        expect(snapshot).toHaveBeenCalledTimes(1);
+        const original = await (await fetch(`${started.base}/api/notes/${aliasId}`)).json() as { note: { contentHash: string } };
+        const edited = await mutate(`/notes/${aliasId}`, 'PUT', { title: 'New alias destination', body: 'Fresh content', baseHash: original.note.contentHash });
+        expect((await search(started.base, 'Fresh')).results[0]?.id).toBe(aliasId);
+        expect(snapshot).toHaveBeenCalledTimes(2);
+        const moved = await mutate(`/notes/${aliasId}/move`, 'POST', { path: 'notes/moved-alias.md', baseHash: edited.note.contentHash });
+        expect((await search(started.base, 'planning')).results.find((note) => note.id === aliasId)?.path).toBe('notes/moved-alias.md');
+        await mutate(`/notes/${aliasId}`, 'DELETE', { baseHash: moved.note.contentHash });
+        expect((await search(started.base, 'planning')).results.some((note) => note.id === aliasId)).toBe(false);
+        const created = await mutate('/notes', 'POST', { title: 'Created destination' });
+        expect((await search(started.base, 'Created destination')).results[0]?.id).toBe(created.note.id);
+      } finally { snapshot.mockRestore(); await stopApi(started); }
+    });
+  });
+
+  it('refreshes external changes, reports disk errors without poisoning recovery, and isolates switched vaults', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      await seedRankedVault(vaultPath);
+      const started = await startApi(vaultPath);
+      try {
+        await search(started.base, 'planning');
+        const file = join(vaultPath, 'notes/aaaaaaaa.md');
+        const original = await readFile(file, 'utf8');
+        await writeFile(file, original.replace('title: Planning', 'title: Externally renamed'));
+        const refreshed = await fetch(`${started.base}/api/search?q=Externally&refresh=true`);
+        expect((await refreshed.json() as { results: UiSearchResult[] }).results[0]?.id).toBe(EXACT);
+        await writeFile(file, new Uint8Array([0xff]));
+        const failed = await fetch(`${started.base}/api/search?q=Externally&refresh=true`);
+        expect(failed.status).toBeGreaterThanOrEqual(400);
+        expect((await failed.json() as { error: { message: string } }).error.message).toContain('UTF-8');
+        await writeFile(file, original);
+        expect((await search(started.base, 'planning')).results[0]?.id).toBe(EXACT);
+        const nextPath = join(dir, 'other');
+        const nextVault = await FileSystemVault.open(nextPath);
+        await nextVault.createNote(createNote({ id: EXACT, title: 'Other vault', path: 'other.md', body: 'Separated content', now: NOW }));
+        const switched = await fetch(`${started.base}/api/vault/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: nextPath }) });
+        expect(switched.ok).toBe(true);
+        expect((await search(started.base, 'planning')).results).toEqual([]);
+        expect((await search(started.base, 'Separated')).results[0]).toMatchObject({ id: EXACT, title: 'Other vault' });
+      } finally { await stopApi(started); }
     });
   });
 });

@@ -6,17 +6,17 @@ import type {
   UiDatabase,
   UiNote,
   UiNoteSummary,
-  UiSearchResult,
   UiVaultStatus,
 } from '../../src/ui-server/dto';
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
 import { Editor } from './Editor';
-import { BacklinksPanel } from './BacklinksPanel';
+import { DiscoveryView } from './DiscoveryView';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
 import { Sidebar } from './Sidebar';
+import { useNoteSearch } from './useNoteSearch';
 import { scheduleAutosave } from './scheduleAutosave';
 import { saveResultDisposition } from './saveResultDisposition';
 import type { SaveState, View } from './types';
@@ -65,9 +65,6 @@ export default function App() {
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<string | null>(null);
 
   const [query, setQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<UiSearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
   const [searchRevision, setSearchRevision] = useState(0);
 
   const [activeNote, setActiveNote] = useState<UiNote | null>(null);
@@ -216,6 +213,7 @@ export default function App() {
     vaultRequestRef.current += 1;
     noteRequestRef.current += 1;
     setNoteLoading(false);
+    setCommandOpen(false);
     setVaultSwitching(true);
     return true;
   }
@@ -392,41 +390,9 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const q = query.trim();
-    if (q === '') {
-      setSearchResults([]);
-      setSearching(false);
-      setSearchError(null);
-      return;
-    }
-
-    let cancelled = false;
-    const vaultRequest = vaultRequestRef.current;
-    setSearching(true);
-    setSearchError(null);
-    const timer = window.setTimeout(() => {
-      api
-        .search(q)
-        .then((result) => {
-          if (!cancelled && vaultRequest === vaultRequestRef.current) setSearchResults(result.results);
-        })
-        .catch((error: unknown) => {
-          if (!cancelled && vaultRequest === vaultRequestRef.current) {
-            setSearchResults([]);
-            setSearchError(messageOf(error));
-          }
-        })
-        .finally(() => {
-          if (!cancelled && vaultRequest === vaultRequestRef.current) setSearching(false);
-        });
-    }, 220);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query, searchRevision]);
+  const { results: searchResults, searching, error: searchError, retry: retrySearch } = useNoteSearch(
+    query, status?.vault.path ?? '', searchRevision, status !== null && !vaultSwitching && !vaultWorkInFlight,
+  );
 
   useEffect(() => {
     if (databases.length === 0) {
@@ -554,6 +520,7 @@ export default function App() {
       setIconTouched(false);
       setDirty(false);
       setSaveState('idle');
+      setBacklinksRevision((value) => value + 1);
     } catch (error) {
       if (request !== noteRequestRef.current) return;
       setEditorError(messageOf(error));
@@ -724,7 +691,7 @@ export default function App() {
   return (
     <div
       className={cn(
-        'flex h-dvh flex-col bg-background text-foreground md:grid',
+        'flex h-dvh flex-col overflow-hidden bg-background text-foreground md:grid',
         focusMode
           ? 'md:grid-cols-1'
           : sidebarCollapsed
@@ -733,6 +700,12 @@ export default function App() {
         'md:grid-rows-1',
       )}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring/80"
+      >
+        Skip to content
+      </a>
       {focusMode ? null : (
         <Sidebar
           view={view}
@@ -755,7 +728,7 @@ export default function App() {
           searchError={query.trim() === '' ? notesError : searchError}
           onOpen={(id) => void openNoteById(id)}
           onClearSearch={() => setQuery('')}
-          onRetry={() => void refreshNotes()}
+          onRetry={() => { if (query.trim()) retrySearch(); else void refreshNotes(); }}
           onRenameNote={(id) => void requestRenameForNote(id)}
           onDeleteNote={(id) => void requestDeleteForNote(id)}
           open={sidebarOpen}
@@ -772,8 +745,10 @@ export default function App() {
       )}
 
       <main
-        className="flex min-h-0 min-w-0 flex-1 flex-col bg-background"
-        inert={vaultSwitching || vaultWorkInFlight || undefined}
+        id="main-content"
+        tabIndex={-1}
+        className="flex min-h-0 min-w-0 flex-1 flex-col bg-background outline-none"
+        inert={vaultSwitching || vaultWorkInFlight || sidebarOpen || undefined}
       >
         <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3 md:hidden">
           <Button
@@ -855,14 +830,39 @@ export default function App() {
           />
         ) : null}
 
+        {view === 'discovery' ? (
+          <DiscoveryView
+            key={status?.vault.path ?? 'vault-loading'}
+            revision={backlinksRevision}
+            onOpenNote={(id) => void openNoteById(id)}
+            onCreated={async () => { await Promise.all([refreshNotes(true), refreshStatus()]); setBacklinksRevision((value) => value + 1); }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+          />
+        ) : null}
+
         {view === 'databases' ? (
           <DatabasesView
+            key={status?.vault.path ?? 'vault-loading'}
+            vaultKey={status?.vault.path}
+            onNoteCreated={(note) => {
+              setNotes((current) => [...current.filter((item) => item.id !== note.id), note]);
+              setSearchRevision((value) => value + 1);
+            }}
             databases={databases}
+            notes={notes}
             loading={databasesLoading}
             error={databasesError}
             selectedId={selectedDatabaseId}
             onSelect={setSelectedDatabaseId}
             onRetry={() => void refreshDatabases()}
+            onDatabaseSaved={(database, created, selectCreated) => {
+              setDatabases((current) => created
+                ? [...current, database].sort((left, right) => left.name.localeCompare(right.name))
+                : current.map((item) => item.id === database.id ? database : item));
+              if (created && selectCreated) setSelectedDatabaseId(database.id);
+            }}
+            onOpenNote={(id) => void openNoteById(id)}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
@@ -883,6 +883,7 @@ export default function App() {
             theme={theme}
             onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
             onRestored={() => {
+              setBacklinksRevision((value) => value + 1);
               void Promise.all([refreshNotes(true), refreshDatabases(), refreshStatus()]);
             }}
             onVaultWorkChange={setVaultWorkInFlight}
@@ -893,7 +894,10 @@ export default function App() {
       </main>
 
       <CommandPalette
-        open={commandOpen}
+        key={status?.vault.path ?? 'vault-loading'}
+        vaultKey={status?.vault.path ?? ''}
+        revision={searchRevision}
+        open={commandOpen && !vaultSwitching && !vaultWorkInFlight}
         onOpenChange={setCommandOpen}
         onCreateNote={() => void createNote()}
         onOpenNote={(id) => void openNoteById(id)}

@@ -7,6 +7,7 @@ import type {
 } from '../../src/ui-server/dto';
 import { api, ApiError } from './api';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { isBackupRequestCurrent } from './backupRequest';
 import {
@@ -75,6 +76,7 @@ function PathList({ paths }: { paths: string[] }) {
 export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRestoreSectionProps) {
   const validateRequestRef = useRef(0);
   const previewRequestRef = useRef(0);
+  const confirmRef = useRef<HTMLDivElement>(null);
   const [targetDir, setTargetDir] = useState('');
   const [creating, setCreating] = useState(false);
   const [createResult, setCreateResult] = useState<BackupReport | null>(null);
@@ -97,6 +99,12 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
     onActivityChange?.(active);
     return () => onActivityChange?.(false);
   }, [active, onActivityChange]);
+
+  useEffect(() => {
+    if (state.phase === 'confirming' || state.phase === 'failed') {
+      confirmRef.current?.focus();
+    }
+  }, [state.phase]);
 
   function onSourceChange(value: string): void {
     // Invalidate responses for the previous source immediately. Clearing their
@@ -417,7 +425,9 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
           state.phase === 'restoring' ||
           state.phase === 'failed' ? (
             <div
-              className="space-y-2.5 rounded-md border bg-muted/40 px-3 py-3"
+              ref={confirmRef}
+              tabIndex={-1}
+              className="space-y-2.5 rounded-md border bg-muted/40 px-3 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/80"
               role="group"
               aria-label="Confirm restore"
             >
@@ -464,20 +474,20 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
                 </AlertBlock>
               )}
               {state.failure?.kind !== 'conflict' ? null : (
-                <label className="flex items-start gap-2 text-[11px] leading-relaxed">
-                  <input
-                    type="checkbox"
+                <div className="flex items-start gap-2 text-[11px] leading-relaxed">
+                  <Checkbox
+                    id="restore-overwrite"
                     checked={state.overwrite}
-                    onChange={(event) =>
-                      dispatch({ type: 'set-overwrite', value: event.target.checked })
+                    onCheckedChange={(checked) =>
+                      dispatch({ type: 'set-overwrite', value: checked === true })
                     }
                     disabled={busy}
-                    className="mt-0.5 size-3.5 shrink-0"
+                    className="mt-0.5"
                   />
-                  <span>
+                  <label htmlFor="restore-overwrite" className="cursor-pointer">
                     Overwrite existing notes and definitions that conflict (off by default)
-                  </span>
-                </label>
+                  </label>
+                </div>
               )}
               <div className="flex flex-wrap gap-2 pt-0.5">
                 {state.failure?.kind === 'partial-write' ? (

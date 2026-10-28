@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { SearchResultContext } from './SearchResultContext';
 import { PageIcon } from './PageIcon';
 
 const EXPANDED_KEY = 'nodus-page-tree-expanded';
@@ -166,10 +167,15 @@ export function PageTree({
     const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-search-result="true"]')];
     const index = rows.indexOf(row);
     if (index === -1) return;
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
-      const next = event.key === 'ArrowDown' ? index + 1 : index - 1;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? index + 1 : index - 1;
       rows[Math.min(Math.max(next, 0), rows.length - 1)]?.focus();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.currentTarget.closest('aside')?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+      onClearSearch();
     }
   };
 
@@ -217,11 +223,9 @@ export function PageTree({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3">
         {error === null ? null : (
-          <div className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
+          <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
             <div>{error}</div>
-            <button type="button" className="mt-1 underline underline-offset-2" onClick={onRetry}>
-              Retry
-            </button>
+            <Button type="button" variant="link" size="xs" onClick={onRetry}>{isSearching ? 'Retry search' : 'Retry'}</Button>
           </div>
         )}
 
@@ -232,19 +236,20 @@ export function PageTree({
             ))}
           </div>
         ) : isSearching ? (
-          results.length === 0 ? (
+          error !== null ? null : results.length === 0 ? (
             <div className="px-2 py-8 text-center">
               <Search className="mx-auto mb-2 size-4 text-muted-foreground" />
               <p className="text-xs font-medium">No matches</p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Try a title, path, or phrase from the note body.
+                Try a title, alias, path, or phrase from the note body.
               </p>
               <Button type="button" variant="ghost" size="xs" className="mt-2" onClick={onClearSearch}>
                 Clear search
               </Button>
             </div>
           ) : (
-            <div className="space-y-0.5" onKeyDown={handleSearchResultsKeyDown}>
+            <div className="flex flex-col gap-0.5" aria-label="Search results" onKeyDown={handleSearchResultsKeyDown}>
+              <p role="status" className="px-2 py-1 text-[11px] text-muted-foreground">{results.length === 50 ? 'Top 50 matches' : `${results.length} ${results.length === 1 ? 'match' : 'matches'}`}</p>
               {results.map((result) => (
                 <SearchResultRow
                   key={result.id}
@@ -325,15 +330,16 @@ function TreeLevel({
         const noteCount = countNotes(folder);
         return (
           <div key={folder.path} role="none">
-            <button
+            <Button
               type="button"
+              variant="ghost"
               role="treeitem"
               aria-expanded={open}
               aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
               aria-level={depth + 1}
               aria-label={`${folder.name}, ${noteCount} ${noteCount === 1 ? 'page' : 'pages'}`}
               className={cn(
-                'flex h-7 w-full items-center gap-1.5 rounded-[4px] pr-2 text-left text-[13px] text-sidebar-foreground/85 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
+                'h-7 w-full justify-start gap-1.5 rounded-[4px] pr-2 text-left text-[13px] font-normal text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
                 folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
               )}
               style={{ paddingLeft: `${6 + depth * 16}px` }}
@@ -348,7 +354,7 @@ function TreeLevel({
                 <Folder className="size-4 shrink-0 text-muted-foreground" />
               )}
               <span className="truncate">{folder.name}</span>
-            </button>
+            </Button>
             {open ? (
               <div role="group">
                 <TreeLevel
@@ -372,15 +378,15 @@ function TreeLevel({
 
       {notes.map((note) => (
         <div key={note.id} role="none" className="group flex min-w-0 items-center rounded-[4px]">
-          <button
+          <Button
             type="button"
+            variant="ghost"
             role="treeitem"
             aria-selected={note.id === selectedId}
             aria-level={depth + 1}
             className={cn(
-              'flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[4px] pr-1 text-left text-[13px] transition-colors',
+              'h-7 min-w-0 flex-1 shrink justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal',
               'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
               note.id === selectedId
                 ? 'bg-success/12 font-medium text-sidebar-foreground'
                 : 'text-sidebar-foreground/85',
@@ -391,7 +397,7 @@ function TreeLevel({
           >
             <PageIcon icon={note.icon} className="size-4 shrink-0 text-[13px]" />
             <span className="truncate">{note.title}</span>
-          </button>
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -449,12 +455,13 @@ function SearchResultRow({
   onOpen: (id: string) => void;
 }) {
   return (
-    <button
+    <Button
+      variant="ghost"
       type="button"
       data-search-result="true"
       aria-label={`Open ${result.title}`}
       className={cn(
-        'flex w-full flex-col rounded-[4px] px-2 py-1.5 text-left transition-colors',
+        'h-auto w-full items-stretch flex-col whitespace-normal rounded-[4px] px-2 py-1.5 text-left',
         'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/80',
         selected && 'bg-success/12 text-sidebar-foreground',
@@ -465,9 +472,10 @@ function SearchResultRow({
         <PageIcon icon={result.icon} className="size-4 text-[13px]" />
         <span className="truncate text-[12.5px] font-medium">{result.title}</span>
       </span>
+      <span className="block max-w-full truncate pl-[22px] text-[10px] text-muted-foreground">{result.path}</span>
       <span className="mt-0.5 line-clamp-2 pl-[22px] text-[11px] leading-snug text-muted-foreground">
-        {result.snippet}
+        <SearchResultContext result={result} />
       </span>
-    </button>
+    </Button>
   );
 }

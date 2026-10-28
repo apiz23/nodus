@@ -85,4 +85,8 @@ describe('editor layout and title field', () => {
     expect(markup).toContain('pointer-events-none absolute inset-0 block truncate');
     expect(markup).toContain(note.title);
   });
+
+  it('contains editor scroll chaining at the viewport edge', () => {
+    expect(render(false)).toContain('overscroll-contain');
+  });
 });
