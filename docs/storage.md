@@ -100,7 +100,7 @@ All storage failures are `StorageError`, which is separate from the Phase 1 `Nod
 Guarantees:
 
 - A reader never observes a half-written file at the target path.
-- A failed write removes its temporary file.
+- On a caught write failure, Nodus attempts to remove its temporary file. Cleanup can fail; abnormal termination can leave a `.nodus-tmp-*` sibling for manual inspection.
 - No note content is deleted unless the operation explicitly deletes or replaces it.
 
 Not guaranteed:
@@ -117,9 +117,36 @@ Phase 1 has no revision field, and this phase does **not** invent one: no new fr
 - With `expectedHash`, the vault re-hashes the file immediately before the write, while holding a shared per-real-root mutation lock within the process and an exclusive cross-process lock for Nodus writers. A mismatch throws `STALE_WRITE` with `details.currentHash`, and no write occurs. `moveNote` and `deleteNote` accept the same option and check the source file.
 - `FileSystemVault.readNoteWithHash(id)` returns the note, its text, and the hash computed from the same bytes that were parsed, in one read. The local UI passes that hash back as `expectedHash`, replacing its old separate read-compare-write.
 - Two Nodus server processes using the same vault cannot interleave mutations: one holds `.nodus-vault-write.lock`; another receives `CONFLICT` and may retry after the lock is released. Creates, saves, moves, deletes, imports, restores, and vault snapshots used for backup/export share this lock.
-- The root-level `.nodus-vault-write.lock` name is reserved for Nodus. Lock files are created with exclusive-create semantics. If a process crashes, writes and snapshots that need the lock fail with `CONFLICT`; ordinary reads remain available. Stop every Nodus server using the vault, inspect the lock owner metadata if needed, remove the exact lock file, then retry. Nodus does not automatically reclaim stale locks because breaking a lock while its owner is paused could permit concurrent writes.
+- The root-level `.nodus-vault-write.lock` name is reserved for Nodus. Exclusive creation (`wx+`, mode `0600`, subject to OS permissions) arbitrates cooperating writers. The file contains version, PID, hostname, acquisition time, and a random ownership token. The owner flushes this metadata before starting the vault operation. It retains the open handle through release, checks the exact owner bytes and the path's device/inode identity, rejects symlinks or replacements, then unlinks and closes the handle. A process-local queue also serializes operations on the canonical real root.
+- Existing locks always produce `CONFLICT`, including empty, malformed, old, and apparently abandoned locks. Age, PID, hostname, and token are diagnostic evidence; none authorizes automatic reclamation. Slow or paused owners retain their lock. Ordinary reads and `checkHealth()` remain available, but mutations and snapshots used by backup/export require the lock.
 
 **Residual race window (not eliminated).** POSIX and Windows provide no atomic compare-and-swap on a path: no API accepts "rename only if the file still hashes to X". An external editor or process that does not honor `.nodus-vault-write.lock` can still change a file between our final hash and `rename`. This lock coordinates Nodus processes on a local filesystem; it does not coordinate other programs, other machines, or network/synchronized filesystem clients. The hash check narrows but does not eliminate the external-writer race.
+
+### Lock recovery
+
+Nodus does not steal locks, check PID liveness to reclaim them, or automatically recover after a crash. PID reuse, host identity, process suspension, and filesystem behavior make those checks insufficient. The protocol depends on every cooperating process leaving another owner's lock untouched. Node provides no portable atomic compare-and-unlink: ownership checks detect an observed replacement but cannot prevent a non-cooperating writer replacing the path between the final check and unlink. Manual recovery must prevent all writers from running or restarting throughout the procedure.
+
+| Failure | Behavior |
+|---|---|
+| Exclusive creation fails because the lock exists | `CONFLICT`; no vault operation starts and the existing path is untouched. |
+| Creation fails with a permission or filesystem error | `STORAGE_FAILURE`; no vault operation starts. |
+| Owner metadata write or flush fails | `STORAGE_FAILURE`; no vault operation starts. The handle is closed if possible, and Nodus deliberately does not unlink the path because ownership may be unverifiable. An incomplete lock can remain. |
+| Operation fails and release succeeds | The original operation error is returned. Normal lock release does not roll back any completed writes. |
+| Ownership bytes, file identity, or file type changes | Release fails; Nodus leaves the observed path in place and reports failure. This detects interference; it cannot undo interference that already occurred during the operation. |
+| Release or handle close fails after an operation | Failure is returned even if data was written. The message says the operation may have completed. The lock may remain, or may already be gone if unlink succeeded before close failed. Inspect before retrying. |
+| Operation and release both fail | Both causes are retained. An original `PARTIAL_WRITE` stays `PARTIAL_WRITE`; affected paths, IDs, and other structured diagnostics survive, with the lock path and cleanup diagnostic added. |
+| Process is killed or crashes while holding the lock | Normal cleanup does not run. The lock and temporary siblings can remain; subsequent Nodus writers and snapshots fail closed. No automatic rollback or restart recovery occurs. |
+
+Conditional manual recovery:
+
+1. Record the canonical vault root, error, and reported affected paths. Stop every Nodus server, preview/dev process, script, and background task using that root; disable automatic restart. Confirm the owning process has exited using the terminal or process supervisor that launched it, and account for every other potential writer. Metadata age or a missing/reused PID alone is insufficient. If any writer or host remains unaccounted for, leave the lock untouched.
+2. While writers remain stopped, inspect the exact `.nodus-vault-write.lock` path. Confirm it is a regular file under the intended root. Unexpected links, directories, changed ownership, or changing contents require investigation rather than deletion. Keep a copy of the lock metadata. An empty or malformed file can result from failed initialization; it does not prove abandonment.
+3. Copy the entire stopped vault, including hidden lock and temporary files, to a separate recovery directory outside the vault. This is a filesystem preservation copy, not a manifest-validated Nodus backup. The normal backup API cannot take its snapshot while the lock remains.
+4. Inspect affected note/database paths, duplicate IDs from interrupted moves, and `.nodus-tmp-*` siblings against the preservation copy. Caught errors report affected paths; abrupt termination has no durable list of completed changes. A target can contain its old or new complete contents; multi-file operations may have applied only some changes. Preserve temporary files until their contents have been compared. Power-loss durability remains dependent on the OS/filesystem.
+5. Only after confirming abandonment and keeping every writer stopped, remove the exact, unchanged regular lock file from that vault. Do not remove other paths, use wildcard cleanup, or race a server restart. If its identity or contents change during inspection, stop and investigate. There is no safe live lock-recovery API.
+6. Start one Nodus instance. Inspect storage health (`checkHealth()` or `/api/status`) and repair reported content/duplicate-ID problems using the preservation copy. Reopen affected notes and verify their contents before further edits. Do not blindly replay a failed import, restore, or save; validate and preview any new restore/import plan against the current state.
+
+Verified on local macOS: real subprocess contention, SIGKILL at the atomic writer's pre-rename flush barrier, preservation of the original note and leftover temporary file, two new processes rejecting the abandoned lock, and explicit recovery after all test children have exited. Deterministic fault injection covers metadata initialization, acquisition permissions, ownership changes, malformed metadata, unlink/close failures, and preservation of partial-write diagnostics. Windows, Linux, network filesystems, synchronized folders, machine power loss, and hostile external lock-path replacement during the final check/unlink window remain unverified or outside the coordination guarantee.
 
 Import and restore never overwrite by default. They abort with `CONFLICT` before writing unless `{ overwrite: true }` is passed.
 
@@ -291,6 +318,6 @@ Do not build a cloud adapter or claim anywhere-access until those exist.
 - Hidden directories are invisible, including notes a user might place there.
 - Symbolic links are unsupported.
 - Paths that collide by case are rejected even on case-sensitive filesystems, to keep vaults portable.
-- Optional `expectedHash` narrows, but does not eliminate, the check-then-write race: there is still no OS-level compare-and-swap, no cross-process file locking, no trash, and no distributed transactions.
+- Optional `expectedHash` narrows, but does not eliminate, the check-then-write race: there is no OS-level compare-and-swap or locking enforced against non-cooperating writers, no trash, and no distributed transactions. The lock file coordinates cooperating Nodus processes only.
 - Database definitions have no views, relations, rows, or query execution. Those remain deferred.
 - The `databases/` directory is a reserved namespace owned by Nodus.

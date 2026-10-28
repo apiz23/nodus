@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { open, readFile, unlink } from 'node:fs/promises';
+import { lstat, open, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StorageError, storageFailure } from '../errors.js';
@@ -45,16 +45,17 @@ async function withProcessLock<T>(root: string, operation: () => Promise<T>): Pr
     acquiredAt: new Date().toISOString(),
     token: randomUUID(),
   };
+  const ownerBytes = Buffer.from(`${JSON.stringify(owner)}\n`, 'utf8');
 
   let handle: FileHandle;
   try {
     // Exclusive creation is the cross-process arbitration point on local filesystems.
-    handle = await open(path, 'wx', 0o600);
+    handle = await open(path, 'wx+', 0o600);
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') {
       throw new StorageError(
         'CONFLICT',
-        `Another Nodus process may be using this vault, or a previous process left a stale lock. Stop all Nodus servers using the vault; if none are running, remove "${VAULT_PROCESS_LOCK_FILE}" and retry.`,
+        `Another Nodus process may be using this vault, or an earlier failure left a lock. No operation started. Do not remove "${VAULT_PROCESS_LOCK_FILE}" based on its age or PID; follow the manual recovery procedure in docs/storage.md#lock-recovery.`,
         { path: VAULT_PROCESS_LOCK_FILE, details: { paths: [VAULT_PROCESS_LOCK_FILE] } },
       );
     }
@@ -62,20 +63,22 @@ async function withProcessLock<T>(root: string, operation: () => Promise<T>): Pr
   }
 
   try {
-    await handle.writeFile(`${JSON.stringify(owner)}\n`, 'utf8');
+    await handle.writeFile(ownerBytes);
     await handle.sync();
   } catch (error) {
-    let cleanupFailed = false;
-    await handle.close().catch(() => { cleanupFailed = true; });
-    await unlink(path).catch(() => { cleanupFailed = true; });
-    if (cleanupFailed) {
-      throw new StorageError(
-        'STORAGE_FAILURE',
-        `Could not initialize or clean up "${VAULT_PROCESS_LOCK_FILE}". Stop all Nodus servers using the vault, inspect the lock file, and remove it before retrying.`,
-        { cause: error, path: VAULT_PROCESS_LOCK_FILE, details: { paths: [VAULT_PROCESS_LOCK_FILE] } },
-      );
+    let cause = error;
+    try {
+      await handle.close();
+    } catch (closeError) {
+      cause = new AggregateError([error, closeError], 'Lock initialization and handle cleanup failed');
     }
-    throw storageFailure(error, 'Write vault process lock', VAULT_PROCESS_LOCK_FILE);
+    // Incomplete metadata cannot prove ownership. In particular, never unlink
+    // a path that may have been replaced while initialization was failing.
+    throw new StorageError(
+      'STORAGE_FAILURE',
+      `Could not initialize "${VAULT_PROCESS_LOCK_FILE}"; no vault operation started. Nodus did not remove the lock path. Follow docs/storage.md#lock-recovery before further writes.`,
+      { cause, path: VAULT_PROCESS_LOCK_FILE, details: { paths: [VAULT_PROCESS_LOCK_FILE] } },
+    );
   }
 
   let result: T | undefined;
@@ -89,12 +92,26 @@ async function withProcessLock<T>(root: string, operation: () => Promise<T>): Pr
   }
 
   try {
-    await releaseProcessLock(path, handle, owner.token);
+    await releaseProcessLock(path, handle, ownerBytes);
   } catch (error) {
+    const original = operationError instanceof StorageError ? operationError : undefined;
+    const paths = [...new Set([
+      ...(original?.details?.paths ?? []),
+      ...(original?.path === undefined ? [] : [original.path]),
+      VAULT_PROCESS_LOCK_FILE,
+    ])];
     throw new StorageError(
-      'STORAGE_FAILURE',
-      `Could not release "${VAULT_PROCESS_LOCK_FILE}"; the operation ${succeeded ? 'may have completed' : 'also failed'}. Stop all Nodus servers using the vault, inspect the affected data, then remove the lock file before retrying.`,
-      { cause: error, path: VAULT_PROCESS_LOCK_FILE, details: { paths: [VAULT_PROCESS_LOCK_FILE] } },
+      original?.code === 'PARTIAL_WRITE' ? 'PARTIAL_WRITE' : 'STORAGE_FAILURE',
+      `Could not release "${VAULT_PROCESS_LOCK_FILE}"; the operation ${succeeded ? 'may have completed' : `also failed: ${describe(operationError)}`}. Do not blindly retry. Follow docs/storage.md#lock-recovery and inspect the affected data.`,
+      {
+        cause: succeeded ? error : new AggregateError([operationError, error], 'Vault operation and lock release failed'),
+        path: VAULT_PROCESS_LOCK_FILE,
+        details: {
+          ...original?.details,
+          paths,
+          issues: [...(original?.details?.issues ?? []), `Lock release failed: ${describe(error)}`],
+        },
+      },
     );
   }
 
@@ -102,26 +119,42 @@ async function withProcessLock<T>(root: string, operation: () => Promise<T>): Pr
   return result as T;
 }
 
-async function releaseProcessLock(path: string, handle: FileHandle, token: string): Promise<void> {
-  await handle.close();
-  let owner: unknown;
+async function releaseProcessLock(path: string, handle: FileHandle, ownerBytes: Buffer): Promise<void> {
+  let failure: unknown;
+  let failed = false;
   try {
-    owner = JSON.parse(await readFile(path, 'utf8'));
-  } catch (error) {
-    throw storageFailure(error, 'Verify vault process lock', VAULT_PROCESS_LOCK_FILE);
-  }
-  if (
-    typeof owner !== 'object' || owner === null ||
-    !('token' in owner) || owner.token !== token
-  ) {
-    throw new StorageError('CONFLICT', `Ownership of "${VAULT_PROCESS_LOCK_FILE}" changed during the operation`, {
-      path: VAULT_PROCESS_LOCK_FILE,
-      details: { paths: [VAULT_PROCESS_LOCK_FILE] },
-    });
-  }
-  try {
+    // Read through the still-open owner handle, not through a possibly replaced
+    // path. Keep it open until unlink so the original inode cannot be recycled.
+    const contents = Buffer.alloc(ownerBytes.length);
+    const { bytesRead } = await handle.read(contents, 0, contents.length, 0);
+    const held = await handle.stat({ bigint: true });
+    const named = await lstat(path, { bigint: true });
+    if (
+      !named.isFile() || named.dev !== held.dev || named.ino !== held.ino ||
+      held.size !== BigInt(ownerBytes.length) || bytesRead !== ownerBytes.length ||
+      !contents.equals(ownerBytes)
+    ) {
+      throw new StorageError('CONFLICT', `Ownership of "${VAULT_PROCESS_LOCK_FILE}" changed during the operation`, {
+        path: VAULT_PROCESS_LOCK_FILE,
+        details: { paths: [VAULT_PROCESS_LOCK_FILE] },
+      });
+    }
+    // No portable compare-and-unlink exists. Cooperating Nodus processes never
+    // replace a lock; manual recovery must quiesce every writer first.
     await unlink(path);
   } catch (error) {
-    throw storageFailure(error, 'Remove vault process lock', VAULT_PROCESS_LOCK_FILE);
+    failed = true;
+    failure = error;
   }
+  try {
+    await handle.close();
+  } catch (error) {
+    if (failed) throw new AggregateError([failure, error], 'Lock release and handle cleanup failed');
+    throw error;
+  }
+  if (failed) throw failure;
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
