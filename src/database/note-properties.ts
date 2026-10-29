@@ -1,11 +1,11 @@
 import { isUuidV4 } from '../domain/ids.js';
 import type { Note } from '../domain/note.js';
-import type { DatabaseDefinition, Property, PropertyType } from './schema.js';
+import { isDerivedProperty, type DatabaseDefinition, type Property, type PropertyType } from './schema.js';
 
 export const NOTE_PROPERTIES_FORMAT = 'nodus-note-properties';
 export const NOTE_PROPERTIES_VERSION = 1;
 
-export type NotePropertyValue = string | number | boolean | string[];
+export type NotePropertyValue = string | number | boolean | string[] | null;
 
 export type StructuredDataIssueCode =
   | 'INVALID_NAMESPACE'
@@ -14,7 +14,8 @@ export type StructuredDataIssueCode =
   | 'MISSING_PROPERTY'
   | 'TYPE_MISMATCH'
   | 'INVALID_VALUE'
-  | 'MISSING_OPTION';
+  | 'MISSING_OPTION'
+  | 'MISSING_TARGET' | 'INCOMPATIBLE_TARGET' | 'INVALID_CONFIGURATION' | 'CIRCULAR_ROLLUP' | 'DERIVED_VALUE' | 'ROLLUP_ERROR';
 
 export interface StructuredDataIssue {
   noteId: string;
@@ -52,6 +53,20 @@ export type SetNotePropertyResult =
   | { ok: true; extraFrontmatter: Record<string, unknown> }
   | { ok: false; issues: StructuredDataIssue[] }
   | { ok: false; confirmationRequired: true };
+
+/** Establish membership without inventing an authoritative value for a derived-only schema. */
+export function addNoteDatabaseMembership(note: NoteIdentity, schemas: ReadonlyMap<string, DatabaseDefinition>, databaseId: string, confirmed: boolean): SetNotePropertyResult {
+  const projection = projectNoteProperties(note, schemas);
+  if (projection.issues.length) return { ok: false, issues: projection.issues };
+  if (!schemas.has(databaseId)) return { ok: false, issues: [issue(note, 'MISSING_DATABASE', 'Database definition is missing', databaseId)] };
+  if (!confirmed) return { ok: false, confirmationRequired: true };
+  if (projection.rows.some((row) => row.databaseId === databaseId)) return { ok: true, extraFrontmatter: note.extraFrontmatter };
+  const existing = note.extraFrontmatter.nodus_data as { databases: Record<string, unknown> } | undefined;
+  return { ok: true, extraFrontmatter: { ...note.extraFrontmatter, nodus_data: {
+    format: NOTE_PROPERTIES_FORMAT, version: NOTE_PROPERTIES_VERSION,
+    databases: { ...existing?.databases, [databaseId]: {} },
+  } } };
+}
 
 type NoteIdentity = Pick<Note, 'id' | 'path' | 'extraFrontmatter'>;
 
@@ -174,6 +189,7 @@ export function projectNoteProperties(
         continue;
       }
 
+      if (isDerivedProperty(property)) { issues.push(issue(note, 'DERIVED_VALUE', 'Stored derived value is ignored; remove it from Markdown to repair this note', databaseId, propertyId)); continue; }
       const validation = validatePropertyValue(property, value);
       if (validation.issue !== undefined) {
         issues.push(
@@ -206,7 +222,9 @@ export function setNotePropertyValue(
   input: SetNotePropertyInput,
 ): SetNotePropertyResult {
   const projection = projectNoteProperties(note, schemas);
-  if (projection.issues.length > 0) return { ok: false, issues: projection.issues };
+  const repairingRelation = schemas.get(input.databaseId)?.properties.find((property) => property.id === input.propertyId)?.type === 'relation';
+  const blocking = projection.issues.filter((issue) => !(repairingRelation && issue.databaseId === input.databaseId && issue.propertyId === input.propertyId && ['TYPE_MISMATCH', 'INVALID_VALUE'].includes(issue.code)));
+  if (blocking.length > 0) return { ok: false, issues: blocking };
 
   const schema = schemas.get(input.databaseId);
   if (schema === undefined) {
@@ -240,6 +258,7 @@ export function setNotePropertyValue(
     };
   }
 
+  if (isDerivedProperty(property)) return { ok: false, issues: [issue(note, 'DERIVED_VALUE', 'Reverse relations and rollups are read-only', input.databaseId, input.propertyId)] };
   const validation = input.remove === true
     ? { value: undefined, issue: undefined }
     : validatePropertyValue(property, input.value);
@@ -301,6 +320,13 @@ function validatePropertyValue(
   | { value: NotePropertyValue; issue?: never }
   | { issue: { code: 'TYPE_MISMATCH' | 'INVALID_VALUE' | 'MISSING_OPTION'; message: string }; value?: never } {
   switch (property.type satisfies PropertyType) {
+    case 'rollup': return invalidValue(property, 'is derived and read-only');
+    case 'relation': {
+      if (value === null) return { value: null };
+      const ids = property.relation?.cardinality === 'one' ? [value] : value;
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !isUuidV4(id)) || new Set(ids).size !== ids.length) return invalidValue(property, 'must reference unique stable note UUIDs with the configured cardinality');
+      return { value: property.relation?.cardinality === 'one' ? ids[0] as string : [...ids] as string[] };
+    }
     case 'text':
       return typeof value === 'string'
         ? { value }

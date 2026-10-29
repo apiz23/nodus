@@ -2,9 +2,9 @@ import { NodusError } from '../domain/errors.js';
 import { isUuidV4 } from '../domain/ids.js';
 
 export const DATABASE_FORMAT = 'nodus-database';
-export const DATABASE_FORMAT_VERSION = 1;
+export const DATABASE_FORMAT_VERSION = 2;
 
-export const PROPERTY_TYPES = ['text', 'number', 'checkbox', 'date', 'select', 'multi-select'] as const;
+export const PROPERTY_TYPES = ['text', 'number', 'checkbox', 'date', 'select', 'multi-select', 'relation', 'rollup'] as const;
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
 export interface SelectOption {
@@ -17,7 +17,13 @@ export interface Property {
   name: string;
   type: PropertyType;
   options?: SelectOption[];
+  relation?: { databaseId: string; cardinality: 'one' | 'many'; reversePropertyId?: string };
+  rollup?: { relationPropertyId: string; operation: RollupOperation; targetPropertyId?: string; condition?: { propertyId: string; value: string | number | boolean } };
 }
+export const ROLLUP_OPERATIONS = ['count', 'conditional-count', 'sum', 'completed-task-count', 'completion-percentage'] as const;
+export type RollupOperation = typeof ROLLUP_OPERATIONS[number];
+export function isDerivedProperty(property: Property): boolean { return property.type === 'rollup' || !!property.relation?.reversePropertyId; }
+export function databaseVersion(database: DatabaseDefinition): number { return database.properties.some((p) => p.type === 'relation' || p.type === 'rollup') ? 2 : 1; }
 
 export interface DatabaseDefinition {
   id: string;
@@ -26,7 +32,7 @@ export interface DatabaseDefinition {
 }
 
 const ENVELOPE_KEYS = ['format', 'version', 'id', 'name', 'properties'];
-const PROPERTY_KEYS = ['id', 'name', 'type', 'options'];
+const PROPERTY_KEYS = ['id', 'name', 'type', 'options', 'relation', 'rollup'];
 const OPTION_KEYS = ['id', 'name'];
 
 export function parseDatabase(json: string): DatabaseDefinition {
@@ -55,7 +61,7 @@ export function parseDatabase(json: string): DatabaseDefinition {
   const name = requireName(data.name, 'database name');
   if (!Array.isArray(data.properties)) throw invalidDatabase('properties must be an array');
 
-  const properties = data.properties.map((property, index) => parseProperty(property, index));
+  const properties = data.properties.map((property, index) => parseProperty(property, index, version));
   assertUnique(
     properties.map((property) => property.id),
     'property id',
@@ -71,7 +77,7 @@ export function parseDatabase(json: string): DatabaseDefinition {
 export function serializeDatabase(database: DatabaseDefinition): string {
   const envelope = {
     format: DATABASE_FORMAT,
-    version: DATABASE_FORMAT_VERSION,
+    version: databaseVersion(database),
     id: database.id,
     name: database.name,
     properties: database.properties.map((property) => ({
@@ -79,6 +85,8 @@ export function serializeDatabase(database: DatabaseDefinition): string {
       name: property.name,
       type: property.type,
       ...(property.options === undefined ? {} : { options: property.options }),
+      ...(property.relation === undefined ? {} : { relation: property.relation }),
+      ...(property.rollup === undefined ? {} : { rollup: property.rollup }),
     })),
   };
   const json = `${JSON.stringify(envelope, null, 2)}\n`;
@@ -86,7 +94,7 @@ export function serializeDatabase(database: DatabaseDefinition): string {
   return json;
 }
 
-function parseProperty(value: unknown, index: number): Property {
+function parseProperty(value: unknown, index: number, version: number): Property {
   const where = `properties[${index}]`;
   if (!isPlainObject(value)) throw invalidDatabase(`${where} must be an object`);
   rejectUnknownKeys(value, PROPERTY_KEYS, where);
@@ -96,6 +104,38 @@ function parseProperty(value: unknown, index: number): Property {
   const type = value.type;
   if (!isPropertyType(type)) {
     throw invalidDatabase(`Unsupported property type "${String(type)}" on property "${name}"`);
+  }
+  if ((type === 'relation' || type === 'rollup') && version < 2) throw invalidDatabase('Relations and rollups require database version 2');
+  if (type !== 'relation' && value.relation !== undefined) throw invalidDatabase('relation configuration requires a relation property');
+  if (type !== 'rollup' && value.rollup !== undefined) throw invalidDatabase('rollup configuration requires a rollup property');
+  if (type === 'relation') {
+    if (value.options !== undefined || !isPlainObject(value.relation)) throw invalidDatabase('Relation requires relation configuration and no options');
+    const config = value.relation;
+    rejectUnknownKeys(config, ['databaseId', 'cardinality', 'reversePropertyId'], 'relation');
+    const databaseId = requireUuid(config.databaseId, 'relation databaseId');
+    if (config.cardinality !== 'one' && config.cardinality !== 'many') throw invalidDatabase('Relation cardinality must be one or many');
+    const reversePropertyId = config.reversePropertyId === undefined ? undefined : requireUuid(config.reversePropertyId, 'reversePropertyId');
+    if (reversePropertyId && config.cardinality !== 'many') throw invalidDatabase('Reverse relations must have many cardinality');
+    return { id, name, type, relation: { databaseId, cardinality: config.cardinality, ...(reversePropertyId ? { reversePropertyId } : {}) } };
+  }
+  if (type === 'rollup') {
+    if (value.options !== undefined || !isPlainObject(value.rollup)) throw invalidDatabase('Rollup requires rollup configuration and no options');
+    const config = value.rollup;
+    rejectUnknownKeys(config, ['relationPropertyId', 'operation', 'targetPropertyId', 'condition'], 'rollup');
+    if (!(ROLLUP_OPERATIONS as readonly unknown[]).includes(config.operation)) throw invalidDatabase('Unsupported rollup operation');
+    const relationPropertyId = requireUuid(config.relationPropertyId, 'relationPropertyId');
+    const operation = config.operation as RollupOperation;
+    const targetPropertyId = config.targetPropertyId === undefined ? undefined : requireUuid(config.targetPropertyId, 'targetPropertyId');
+    if (['sum', 'completed-task-count', 'completion-percentage'].includes(operation) !== !!targetPropertyId) throw invalidDatabase('Sum and completion rollups require a target property; count operations do not');
+    let condition: NonNullable<Property['rollup']>['condition'];
+    if (operation === 'conditional-count') {
+      if (!isPlainObject(config.condition)) throw invalidDatabase('Conditional count requires a condition');
+      rejectUnknownKeys(config.condition, ['propertyId', 'value'], 'condition');
+      const value = config.condition.value;
+      if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw invalidDatabase('Condition value must be a finite scalar');
+      condition = { propertyId: requireUuid(config.condition.propertyId, 'condition propertyId'), value: value as string | number | boolean };
+    } else if (config.condition !== undefined) throw invalidDatabase('Only conditional count accepts a condition');
+    return { id, name, type, rollup: { relationPropertyId, operation, ...(targetPropertyId ? { targetPropertyId } : {}), ...(condition ? { condition } : {}) } };
   }
 
   if (type === 'select' || type === 'multi-select') {

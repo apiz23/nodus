@@ -1,3 +1,4 @@
+import { RelationValue } from '../ui/src/RelationControl';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -73,3 +74,13 @@ describe('database property controls and display', () => {
 
 const IDS_DB_A = '77777777-7777-4777-8777-777777777777';
 const IDS_DB_B = '88888888-8888-4888-8888-888888888888';
+
+it('escapes untrusted related-record labels and never renders missing targets as navigation buttons', () => {
+  const html = renderToStaticMarkup(createElement(RelationValue, { onOpen: () => {}, references: [
+    { id: OPTION_A, title: '<img src=x onerror=alert(1)>', path: 'safe.md', status: 'resolved' },
+    { id: OPTION_B, title: '<script>missing</script>', status: 'missing' },
+  ] }));
+  expect(html).toContain('&lt;img'); expect(html).toContain('&lt;script&gt;');
+  expect(html).not.toContain('<img'); expect(html).not.toContain('<script>');
+  expect(html.match(/<button/g)).toHaveLength(1);
+});

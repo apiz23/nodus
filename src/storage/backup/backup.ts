@@ -119,7 +119,7 @@ export async function createBackup(
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: DATABASE_FORMAT_VERSION, databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION },
+      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION },
       counts: { notes, databases, databaseViews },
       files,
     };
@@ -590,6 +590,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (version === 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
     if (formats.databaseView > DATABASE_VIEW_VERSION) throw new StorageError('UNSUPPORTED_VERSION', `Database view format version ${formats.databaseView} is newer than supported version ${DATABASE_VIEW_VERSION}`, { path: BACKUP_MANIFEST });
   }
+  if (formats && formats.database > DATABASE_FORMAT_VERSION) throw new StorageError('UNSUPPORTED_VERSION', 'Backup requires a newer database format', { path: BACKUP_MANIFEST });
   if (version === 2 && formats?.backup !== version) issues.push('formats.backup must match manifest version 2');
 
   if (digest !== undefined && issues.length === 0) {

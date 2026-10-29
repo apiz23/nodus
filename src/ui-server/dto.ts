@@ -26,7 +26,7 @@ export type UiPropertyType =
   | 'checkbox'
   | 'date'
   | 'select'
-  | 'multi-select';
+  | 'multi-select' | 'relation' | 'rollup';
 
 export interface UiSelectOption {
   id: string;
@@ -38,6 +38,8 @@ export interface UiProperty {
   name: string;
   type: UiPropertyType;
   options?: UiSelectOption[];
+  relation?: import('../database/schema.js').Property['relation'];
+  rollup?: import('../database/schema.js').Property['rollup'];
 }
 
 export interface UiNoteSummary {
@@ -71,6 +73,7 @@ export interface UiDatabase {
 export type UiDatabaseDefinition = Pick<UiDatabase, 'id' | 'name' | 'properties'>;
 
 export interface UiDatabaseRow extends NoteDatabaseRow {
+  relations?: Record<string, import('../database/relations.js').RelationReference[]>;
   title: string;
   updatedAt: string;
   /** Raw note hash used as the conditional property-update revision. */
@@ -80,6 +83,7 @@ export interface UiDatabaseRow extends NoteDatabaseRow {
 }
 
 export interface UiDatabaseRowsResponse {
+  relationCandidates?: Record<string, import('../database/relations.js').RelationReference[]>;
   databaseId: string;
   /** Raw schema hash from the same root-locked snapshot as the projected rows. */
   schemaHash: string;

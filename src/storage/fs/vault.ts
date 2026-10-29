@@ -19,6 +19,8 @@ import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase, serializeDatabase } from '../../database/schema.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
 import { resolveLink } from '../../links/wikilink.js';
+import { addNoteDatabaseMembership, setNotePropertyValue, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
+import { relationWriteIssue } from '../../database/relations.js';
 import { isUuidV4 } from '../../domain/ids.js';
 import type { Note } from '../../domain/note.js';
 import { validateNote } from '../../domain/note.js';
@@ -164,6 +166,28 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       }
       // Publish only complete successful snapshots; removed paths are evicted.
       this.noteSnapshot = next;
+      return result;
+    });
+  }
+
+  /** Relation target validation and the conditional source write share one root lock. */
+  async setNoteProperty(id: string, input: SetNotePropertyInput | { databaseId: string; membershipOnly: true; confirmCreate: boolean }, options: { expectedHash: string; now: string }): Promise<SetNotePropertyResult> {
+    return withVaultRootLock(this.root, async () => {
+      const parsed = await this.parseNotesStrict();
+      const current = parsed.find(({ note }) => note.id === id);
+      if (!current) throw NOTE_NOT_FOUND(id);
+      if (sha256Hex(current.bytes) !== options.expectedHash) throw staleWrite(current.note.path, sha256Hex(current.bytes));
+      const schemas = new Map((await this.parseDatabasesStrict()).map(({ database }) => [database.id, database]));
+      const result = 'membershipOnly' in input ? addNoteDatabaseMembership(current.note, schemas, input.databaseId, input.confirmCreate) : setNotePropertyValue(current.note, schemas, input);
+      if (!result.ok) return result;
+      const property = 'propertyId' in input ? schemas.get(input.databaseId)!.properties.find((property) => property.id === input.propertyId)! : undefined;
+      const updated = { ...current.note, extraFrontmatter: result.extraFrontmatter, updatedAt: options.now };
+      const notes = parsed.map(({ note }) => note.id === id ? updated : note);
+      const problem = property && 'propertyId' in input ? relationWriteIssue(property, notes, schemas, input.remove ? null : input.value) : undefined;
+      if (problem) return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: property!.id, code: 'INCOMPATIBLE_TARGET', message: problem }] };
+      const absolute = await this.validateNoteTarget(updated.path);
+      await this.assertUnchanged(absolute, updated.path, options.expectedHash);
+      await this.writeDocument(updated.path, this.serializeNoteInput(updated));
       return result;
     });
   }

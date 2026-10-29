@@ -866,9 +866,9 @@ describe('local UI API', () => {
       original.extraFrontmatter.nodus_data = propertiesNamespace({ [DB1]: { [PROP1]: 'Old' } });
       await vault.createNote(original);
       const otherWriter = await FileSystemVault.open(vaultPath);
-      const listDatabases = FileSystemVault.prototype.listDatabases;
+      const setProperty = FileSystemVault.prototype.setNoteProperty;
       let injected = false;
-      const race = vi.spyOn(FileSystemVault.prototype, 'listDatabases').mockImplementation(async function (this: FileSystemVault) {
+      const race = vi.spyOn(FileSystemVault.prototype, 'setNoteProperty').mockImplementation(async function (this: FileSystemVault, ...args) {
         if (!injected) {
           injected = true;
           const latest = await otherWriter.readNoteWithHash(N1);
@@ -877,7 +877,7 @@ describe('local UI API', () => {
             { expectedHash: latest.hash },
           );
         }
-        return listDatabases.call(this);
+        return setProperty.apply(this, args);
       });
       const started = await startApi(vaultPath);
       try {
@@ -917,7 +917,7 @@ describe('local UI API', () => {
       const rawPath = join(vaultPath, original.path);
       const started = await startApi(vaultPath);
       const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const write = vi.spyOn(FileSystemVault.prototype, 'replaceNote').mockRejectedValue(new Error('injected write failure'));
+      const write = vi.spyOn(FileSystemVault.prototype, 'setNoteProperty').mockRejectedValue(new Error('injected write failure'));
       try {
         const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${N1}`);
         const before = await readFile(rawPath);
@@ -1575,7 +1575,7 @@ describe('local UI API', () => {
             }],
           },
         },
-        { label: 'unsupported version', schema: { ...propertyDatabase, version: 2 } },
+        { label: 'unsupported version', schema: { ...propertyDatabase, version: 3 } },
       ];
       try {
         for (const [index, item] of invalidSchemas.entries()) {

@@ -147,6 +147,9 @@ export const api = {
       body: jsonBody(input),
     });
   },
+  addDatabaseNote(databaseId: string, noteId: string, baseHash: string): Promise<UiNotePropertiesResponse> {
+    return request(`/api/databases/${databaseId}/rows`, { method: 'POST', body: JSON.stringify({ noteId, baseHash, confirmCreate: true }) });
+  },
 
   discovery(refresh = false): Promise<UiDiscoveryResponse> {
     return request(`/api/discovery${refresh ? '?refresh=true' : ''}`);

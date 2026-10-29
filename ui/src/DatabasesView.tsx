@@ -1,3 +1,8 @@
+import { hasBlockingRowIssues } from './database-table';
+import { RelationControl, RelationValue } from './RelationControl';
+import { RelationSchemaFields } from './RelationSchemaFields';
+import { isDerivedProperty } from '../../src/database/schema';
+import type { RelationReference } from '../../src/database/relations';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, ChevronRight, Columns3, Database, ListFilter, Pencil, Plus, RefreshCw, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -52,6 +57,7 @@ import { PROPERTY_TYPES, type DatabaseDefinition, type Property, type PropertyTy
 import type {
   UiDatabase,
   UiDatabaseRowsResponse,
+  UiDatabaseRow,
   UiNoteSummary,
 } from '../../src/ui-server/dto';
 import {
@@ -118,6 +124,8 @@ function initialValue(property: Property): unknown {
       return false;
     case 'select':
       return property.options?.[0]?.id ?? '';
+    case 'relation': return property.relation?.cardinality === 'one' ? null : [];
+    case 'rollup': return null;
     case 'multi-select':
       return [];
   }
@@ -128,7 +136,8 @@ function valueForInput(property: Property, value: unknown): unknown {
 }
 
 export function formatPropertyValue(property: Property, value: unknown): string {
-  if (value === undefined) return '—';
+  if (value === undefined || value === null) return '—';
+  if (property.type === 'rollup' && property.rollup?.operation === 'completion-percentage') return `${Number(value).toFixed(1)}%`;
   if (property.type === 'checkbox') return value === true ? 'Yes' : 'No';
   if (property.type === 'select') {
     return property.options?.find((option) => option.id === value)?.name ?? String(value);
@@ -141,7 +150,8 @@ export function formatPropertyValue(property: Property, value: unknown): string 
   return String(value);
 }
 
-function toApiValue(property: Property, value: unknown): string | number | boolean | string[] {
+function toApiValue(property: Property, value: unknown): string | number | boolean | string[] | null {
+  if (property.type === 'relation') return value as string | string[] | null;
   if (property.type === 'number') {
     if (typeof value !== 'string' || value.trim() === '') throw new Error('Enter a finite number.');
     const numberValue = Number(value);
@@ -247,12 +257,15 @@ export function PropertyControl({
   value,
   label,
   onChange,
+  relationOptions,
 }: {
   property: Property;
+  relationOptions?: RelationReference[];
   value: unknown;
   label: string;
   onChange: (value: unknown) => void;
 }) {
+  if (property.type === 'relation') return <RelationControl property={property} value={value} label={label} options={relationOptions} onChange={onChange} />;
   if (property.type === 'select' || property.type === 'multi-select') {
     const options = property.options ?? [];
     if (options.length > SEARCHABLE_OPTIONS_THRESHOLD) {
@@ -335,7 +348,7 @@ export function PropertyControl({
     );
   }
 
-  const type = property.type === 'number' ? 'number' : property.type === 'date' ? 'date' : 'text';
+  const type = (property.type === 'number' || property.type === 'rollup') ? 'number' : property.type === 'date' ? 'date' : 'text';
   return (
     <Input
       type={type}
@@ -631,6 +644,8 @@ export function DatabasesView({
     const hasOptions = type === 'select' || type === 'multi-select';
     updateSchemaProperty(index, {
       type,
+      relation: type === 'relation' ? { databaseId: databases[0]?.id ?? schemaDraft!.id, cardinality: 'many' } : undefined,
+      rollup: type === 'rollup' ? { relationPropertyId: schemaDraft!.properties.find((item) => item.type === 'relation')?.id ?? '', operation: 'count' } : undefined,
       ...(hasOptions ? { options: current.options ?? [] } : { options: undefined }),
     });
   }
@@ -713,6 +728,7 @@ export function DatabasesView({
 
   function beginEditing(noteId: string, property: Property, value: unknown): void {
     const row = currentRowData?.rows.find((item) => item.noteId === noteId);
+    if (isDerivedProperty(property)) return;
     if (row === undefined) return;
     setActionError(null);
     setActionNotice(null);
@@ -721,8 +737,14 @@ export function DatabasesView({
     setEditing({ noteId, propertyId: property.id, draft: valueForInput(property, value), source: 'row', baseHash: row.contentHash });
   }
 
+  function renderRelatedValue(row: UiDatabaseRow, property: Property) {
+    return <div className="flex flex-col gap-1"><RelationValue references={row.relations?.[property.id]} onOpen={openLayoutNote} />
+      {!isDerivedProperty(property) ? <Button size="xs" variant="outline" disabled={saving || editing !== null || hasBlockingRowIssues(row, property)} aria-label={`Edit ${property.name} for ${row.title}`} onClick={() => beginEditing(row.noteId, property, row.values[property.id])}>Edit relations</Button> : <span className="text-xs text-muted-foreground">Reverse · read-only</span>}
+    </div>;
+  }
+
   function openLayoutNote(id: string): void {
-    if (editing !== null) { setActionError('Save or cancel your card edit before opening a note.'); return; }
+    if (editing !== null) { setActionError('Save or cancel your property edit before opening a note.'); return; }
     onOpenNote(id);
   }
 
@@ -738,7 +760,7 @@ export function DatabasesView({
 
   function beginAdd(noteId: string): void {
     setCandidateId(noteId);
-    const property = selected?.properties[0] ?? null;
+    const property = selected?.properties.find((item) => !isDerivedProperty(item)) ?? null;
     setCandidatePropertyId(property?.id ?? null);
     setEditing(property === null ? null : {
       noteId,
@@ -758,6 +780,23 @@ export function DatabasesView({
     if (property !== undefined && candidateId !== null) {
       setEditing({ noteId: candidateId, propertyId, draft: initialValue(property), source: 'add' });
     }
+  }
+
+  async function submitMembership(): Promise<void> {
+    if (!selected || !candidate || !confirmedAdd || saving || !currentRowData) return;
+    const generation = mutationGeneration.current;
+    const databaseId = selected.id;
+    setSaving(true); setActionError(null); setActionNotice(null);
+    try {
+      const original = await api.noteProperties(candidate.id);
+      if (!mounted.current || generation !== mutationGeneration.current) return;
+      await api.addDatabaseNote(databaseId, candidate.id, original.contentHash);
+      const rows = await api.databaseRows(databaseId, selected.contentHash);
+      if (!mounted.current || generation !== mutationGeneration.current) return;
+      setRowData(rows); setCandidateId(null); setAddOpen(false); setConfirmedAdd(false);
+      setActionNotice('Note added to the database. Derived values were not stored.');
+    } catch (cause) { if (mounted.current && generation === mutationGeneration.current) setActionError(cause instanceof Error ? cause.message : 'Could not add membership. Refresh before retrying.'); }
+    finally { if (mounted.current && generation === mutationGeneration.current) setSaving(false); }
   }
 
   async function submitEdit(): Promise<void> {
@@ -827,6 +866,14 @@ export function DatabasesView({
       setCandidateId(null);
       setConfirmedAdd(false);
       setActionNotice('Property saved.');
+      if (selected.properties.some((item) => item.type === 'relation' || item.type === 'rollup')) {
+        try {
+          const refreshed = await api.databaseRows(databaseId, selected.contentHash);
+          if (isCurrentView()) setRowData(refreshed);
+        } catch (cause) {
+          if (isCurrentView()) setRowsError(`Property saved, but derived values could not be refreshed: ${cause instanceof Error ? cause.message : 'Refresh the database.'}`);
+        }
+      }
       restoreCardFocus(editing.noteId);
     } catch (cause) {
       if (isCurrentView()) {
@@ -928,7 +975,7 @@ export function DatabasesView({
       <ScrollArea className="min-h-0 flex-1">
         <div className="px-4 py-5 sm:px-6">
           {loading ? (
-            <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
               <Skeleton className="h-52 rounded-lg" />
               <Skeleton className="h-80 rounded-lg" />
             </div>
@@ -944,12 +991,12 @@ export function DatabasesView({
               </Button>
             </div>
           ) : selected === null ? null : (
-            <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:items-start">
+            <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)] xl:items-start">
               <aside className="overflow-hidden" aria-label="Database definitions">
                 <div className="border-b px-2 py-2 text-[11px] font-medium text-muted-foreground">
                   {databases.length} {databases.length === 1 ? 'definition' : 'definitions'}
                 </div>
-                <div className="flex gap-1 overflow-x-auto py-1 lg:block lg:space-y-0.5 lg:overflow-visible">
+                <div className="flex gap-1 overflow-x-auto py-1 xl:block xl:space-y-0.5 xl:overflow-visible">
                   {databases.map((database) => (
                     <DatabaseSelectorItem
                       key={database.id}
@@ -966,7 +1013,7 @@ export function DatabasesView({
                 <header className="flex flex-wrap items-start justify-between gap-3 border-b px-1 py-4">
                   <div className="min-w-0">
                     <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">{selected.path}</div>
-                    <h2 id="database-title" className="truncate text-lg font-semibold tracking-tight">{selected.name}</h2>
+                    <h2 id="database-title" className="truncate text-lg font-semibold tracking-tight" title={selected.name}>{selected.name}</h2>
                     <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
                       {rowsLoading && currentRowData === null
                         ? 'Loading rows…'
@@ -977,7 +1024,7 @@ export function DatabasesView({
                     <Button type="button" size="sm" variant="outline" onClick={() => openSchemaEditor(false)} disabled={schemaSaving}>
                       Edit schema
                     </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={() => setReloadVersion((value) => value + 1)} disabled={rowsLoading} title="Reload rows from disk">
+                    <Button type="button" size="sm" variant="outline" onClick={() => setReloadVersion((value) => value + 1)} disabled={rowsLoading || saving} title="Reload rows from disk">
                       <RefreshCw data-icon="inline-start" /> Refresh
                     </Button>
                     <Button
@@ -985,9 +1032,9 @@ export function DatabasesView({
                       size="sm"
                       aria-expanded={addOpen}
                       aria-controls="database-add-note"
-                      title={selected.properties.length === 0 ? 'Add a property before adding notes' : notes.length === 0 ? 'Create a note first' : undefined}
+                      title={notes.length === 0 ? 'Create a note first' : undefined}
                       onClick={() => { setAddOpen((open) => !open); setActionError(null); }}
-                      disabled={selected.properties.length === 0 || notes.length === 0 || viewsLoading}
+                      disabled={notes.length === 0 || viewsLoading}
                     >
                       <Plus data-icon="inline-start" /> Add note
                     </Button>
@@ -1022,7 +1069,7 @@ export function DatabasesView({
                     <CollapsibleTrigger asChild>
                       <Button type="button" variant="ghost" size="sm" className="h-auto w-full justify-between gap-2 whitespace-normal px-0 py-0 text-left font-medium hover:bg-transparent">
                         <span>
-                          {currentDiagnostics.length} structured-data {currentDiagnostics.length === 1 ? 'diagnostic' : 'diagnostics'}; affected values are preserved and editing is blocked for affected notes.
+                          {currentDiagnostics.length} structured-data {currentDiagnostics.length === 1 ? 'diagnostic' : 'diagnostics'}; source values are preserved. Invalid stored values can block editing; missing relation targets can be removed.
                         </span>
                         <ChevronDown className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-180" aria-hidden="true" />
                       </Button>
@@ -1084,23 +1131,23 @@ export function DatabasesView({
                       {candidate ? (
                         <div className="flex min-w-0 flex-col gap-3">
                           <div className="min-w-0 text-xs"><span className="text-muted-foreground">Selected note</span><p className="truncate font-medium">{candidate.title}</p></div>
-                          <PropertyChooser
-                            properties={selected.properties}
+                          {selected.properties.some((item) => !isDerivedProperty(item)) ? <PropertyChooser
+                            properties={selected.properties.filter((item) => !isDerivedProperty(item))}
                             value={candidatePropertyId}
                             onChange={changeCandidateProperty}
-                          />
+                          /> : <p className="text-xs text-muted-foreground">This adds membership only; reverse and rollup values remain computed.</p>}
                           {candidateProperty && editing?.source === 'add' ? (
                             <div className="flex flex-col gap-1 text-xs font-medium">
                               {candidateProperty.name}
-                              <PropertyControl property={candidateProperty} value={editing.draft} label={`${candidateProperty.name} value for ${candidate.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
+                              <PropertyControl relationOptions={currentRowData?.relationCandidates?.[candidateProperty.relation?.databaseId ?? '']} property={candidateProperty} value={editing.draft} label={`${candidateProperty.name} value for ${candidate.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
                             </div>
                           ) : null}
                           <Button type="button" variant={confirmedAdd ? 'secondary' : 'outline'} size="sm" aria-pressed={confirmedAdd} onClick={() => setConfirmedAdd((value) => !value)}>
                             {confirmedAdd ? <Check data-icon="inline-start" /> : null}
                             {confirmedAdd ? 'Adding this note is confirmed' : `Confirm add to ${selected.name}`}
                           </Button>
-                          <Button type="button" size="sm" disabled={!confirmedAdd || candidateProperty === null || saving || rowsLoading} onClick={() => void submitEdit()}>
-                            {saving ? 'Adding…' : 'Add note and save property'}
+                          <Button type="button" size="sm" disabled={!confirmedAdd || saving || rowsLoading} onClick={() => void (candidateProperty ? submitEdit() : submitMembership())}>
+                            {saving ? 'Adding…' : candidateProperty ? 'Add note and save property' : 'Add note to database'}
                           </Button>
                         </div>
                       ) : <p className="self-center text-xs text-muted-foreground">Choose a note to add.</p>}
@@ -1226,6 +1273,7 @@ export function DatabasesView({
                                       </Select>
                                       <div className="flex min-w-0 flex-1 flex-col gap-1">
                                         <FilterValueControl
+                                          relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']}
                                           property={property}
                                           value={filter.value}
                                           label={`Filter ${index + 1} value`}
@@ -1331,7 +1379,7 @@ export function DatabasesView({
 
                 {viewConfiguration.type !== 'table' && editing?.source === 'row' ? <section ref={cardEditorRef} tabIndex={-1} aria-label="Edit card property" className="my-3 flex flex-col gap-2 rounded-md border p-3 focus-visible:ring-2 focus-visible:ring-ring">
                   <h3 className="text-sm font-medium">{selected.properties.find((property) => property.id === editing.propertyId)?.name} for {currentRowData?.rows.find((row) => row.noteId === editing.noteId)?.title}</h3>
-                  {selected.properties.filter((property) => property.id === editing.propertyId).map((property) => <PropertyControl key={property.id} property={property} value={editing.draft} label={`Edit card ${property.name}`} onChange={(draft) => setEditing({ ...editing, draft, remove: false })} />)}
+                  {selected.properties.filter((property) => property.id === editing.propertyId).map((property) => <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} key={property.id} property={property} value={editing.draft} label={`Edit card ${property.name}`} onChange={(draft) => setEditing({ ...editing, draft, remove: false })} />)}
                   {editing.remove ? <p className="text-xs text-muted-foreground">Saving will clear this value and keep the note in the database.</p> : null}
                   <div className="flex flex-wrap gap-2"><Button size="sm" disabled={saving || stale} onClick={() => void submitEdit()}>Save card</Button><Button size="sm" variant="outline" disabled={saving} onClick={() => setEditing({ ...editing, remove: true })}>Clear value</Button><Button size="sm" variant="ghost" disabled={saving} onClick={() => { restoreCardFocus(editing.noteId); setEditing(null); }}>Cancel card edit</Button></div>
                 </section> : null}
@@ -1341,65 +1389,68 @@ export function DatabasesView({
                 ) : rowsError !== null ? (
                   <div className="my-4"><ErrorNotice message={rowsError} onRetry={() => setReloadVersion((value) => value + 1)} /></div>
                 ) : currentRowData === null ? null : viewConfiguration.type === 'kanban' && layoutProperty?.type === 'select' ? (
-                  <KanbanView rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} />
+                  <KanbanView rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
                 ) : viewConfiguration.type === 'calendar' && layoutProperty?.type === 'date' ? (
-                  <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
+                  <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
                 ) : displayRows.length ? (
-                  <div className="mx-1 my-4 overflow-hidden rounded-md border">
-                    <Table>
-                      <TableCaption className="sr-only">
-                        {selected.name} rows. {displayRows.length} of {currentRowData.rows.length} shown.
-                      </TableCaption>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="min-w-40">Note</TableHead>
-                          {visibleProperties.map((property) => <TableHead key={property.id} className="min-w-36">{property.name}</TableHead>)}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {displayRows.map((row) => (
-                          <TableRow key={row.noteId}>
-                            <TableHead scope="row" className="h-auto min-w-40 max-w-56 p-2 align-top font-normal whitespace-normal">
-                              <Button type="button" variant="link" size="sm" className="h-auto max-w-full justify-start truncate p-0 font-medium" onClick={() => onOpenNote(row.noteId)}>{row.title}</Button>
-                              <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.path}</span>
-                              {row.issues.length > 0 ? <Badge variant="destructive" className="mt-1">Needs attention</Badge> : null}
-                            </TableHead>
-                            {visibleProperties.map((property) => {
-                              const isEditing = editing?.source === 'row' && editing.noteId === row.noteId && editing.propertyId === property.id;
-                              const displayValue = formatPropertyValue(property, row.values[property.id]);
-                              return (
-                                <TableCell key={property.id} className="min-w-36 align-top">
-                                  {isEditing && editing ? (
-                                    <div className="flex min-w-36 flex-col gap-2">
-                                      <PropertyControl property={property} value={editing.draft} label={`${property.name} for ${row.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
-                                      <div className="flex gap-1">
-                                        <Button type="button" size="xs" disabled={saving || stale} onClick={() => void submitEdit()}>{saving ? 'Saving…' : 'Save'}</Button>
-                                        <Button type="button" size="xs" variant="ghost" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button>
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="group/edit flex h-auto min-h-7 w-full items-center justify-between gap-1.5 px-1.5 py-1 text-left font-normal whitespace-normal"
-                                      disabled={row.issues.length > 0 || saving || viewsLoading}
-                                      aria-label={`Edit ${property.name} for ${row.title}`}
-                                      title={row.issues.length > 0 ? 'Resolve structured-data diagnostics before editing this note' : `Edit ${property.name}`}
-                                      onClick={() => beginEditing(row.noteId, property, row.values[property.id])}
-                                    >
-                                      <span className={cn('min-w-0 break-words text-xs', row.values[property.id] === undefined && 'text-muted-foreground')}>{displayValue}</span>
-                                      <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/edit:opacity-70 group-focus-visible/edit:opacity-70 max-sm:opacity-60" aria-hidden="true" />
-                                    </Button>
-                                  )}
-                                </TableCell>
-                              );
-                            })}
+                  <>
+                    <p className="mx-1 mt-4 text-[11px] text-muted-foreground xl:hidden">Scroll sideways to see every property column.</p>
+                    <div className="mx-1 my-4 overflow-hidden rounded-md border">
+                      <Table className="w-full min-w-[52rem] table-fixed">
+                        <TableCaption className="sr-only">
+                          {selected.name} rows. {displayRows.length} of {currentRowData.rows.length} shown.
+                        </TableCaption>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-[24%] whitespace-normal">Note</TableHead>
+                            {visibleProperties.map((property) => <TableHead key={property.id} className={cn('whitespace-normal break-words', propertyColumnClass(property))}>{property.name}</TableHead>)}
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                        </TableHeader>
+                        <TableBody>
+                          {displayRows.map((row) => (
+                            <TableRow key={row.noteId}>
+                              <TableHead scope="row" className="h-auto w-[24%] p-2 align-top font-normal whitespace-normal">
+                                <Button type="button" variant="link" size="sm" className="h-auto max-w-full justify-start truncate p-0 font-medium" title={row.title} onClick={() => openLayoutNote(row.noteId)}>{row.title}</Button>
+                                <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.path}</span>
+                                {row.issues.length > 0 ? <Badge variant="destructive" className="mt-1">Needs attention</Badge> : null}
+                              </TableHead>
+                              {visibleProperties.map((property) => {
+                                const isEditing = editing?.source === 'row' && editing.noteId === row.noteId && editing.propertyId === property.id;
+                                const displayValue = formatPropertyValue(property, row.values[property.id]);
+                                return (
+                                  <TableCell key={property.id} className="min-w-0 align-top whitespace-normal">
+                                    {isEditing && editing ? (
+                                      <div className="flex min-w-0 flex-col gap-2">
+                                        <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} property={property} value={editing.draft} label={`${property.name} for ${row.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
+                                        <div className="flex gap-1">
+                                          <Button type="button" size="xs" disabled={saving || stale} onClick={() => void submitEdit()}>{saving ? 'Saving…' : 'Save'}</Button>
+                                          <Button type="button" size="xs" variant="ghost" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button>
+                                        </div>
+                                      </div>
+                                    ) : property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'rollup' ? <span aria-label={`${property.name} for ${row.title}`} className="text-xs">{displayValue}</span> : (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="group/edit flex h-auto min-h-7 w-full items-center justify-between gap-1.5 px-1.5 py-1 text-left font-normal whitespace-normal"
+                                        disabled={hasBlockingRowIssues(row, property) || saving || viewsLoading}
+                                        aria-label={`Edit ${property.name} for ${row.title}`}
+                                        title={hasBlockingRowIssues(row, property) ? 'Resolve structured-data diagnostics before editing this note' : `Edit ${property.name}`}
+                                        onClick={() => beginEditing(row.noteId, property, row.values[property.id])}
+                                      >
+                                        <span className={cn('min-w-0 text-xs', property.type === 'date' || property.type === 'number' ? 'whitespace-nowrap' : 'break-words', row.values[property.id] === undefined && 'text-muted-foreground')}>{displayValue}</span>
+                                        <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/edit:opacity-70 group-focus-visible/edit:opacity-70 max-sm:opacity-60" aria-hidden="true" />
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </>
                 ) : (
                   <div className="mx-1 my-4 flex min-h-28 flex-col items-center justify-center rounded-md border border-dashed px-4 py-5 text-center">
                     <h3 className="text-sm font-medium">{currentRowData.rows.length > 0 ? 'No rows match these filters' : notes.length === 0 ? 'No notes in this vault yet' : 'No notes in this database yet'}</h3>
@@ -1412,7 +1463,7 @@ export function DatabasesView({
                     </p>
                     {currentRowData.rows.length > 0 ? (
                       <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setFilters([])}>Clear filters</Button>
-                    ) : notes.length > 0 && selected.properties.length > 0 ? (
+                    ) : notes.length > 0 ? (
                       <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => { setAddOpen(true); setActionError(null); }}>
                         <Plus data-icon="inline-start" /> Add note
                       </Button>
@@ -1458,7 +1509,7 @@ export function DatabasesView({
                     <section className="flex flex-col gap-3" aria-label="Database properties">
                       {schemaDraft.properties.length === 0 ? (
                         <p className="rounded-md border border-dashed px-3 py-3 text-xs text-muted-foreground">
-                          No properties yet. Add at least one property so notes can store structured values.
+                          No properties yet. Notes can still join this database with explicit membership.
                         </p>
                       ) : null}
                       {schemaDraft.properties.map((property, index) => (
@@ -1496,6 +1547,7 @@ export function DatabasesView({
                               )}
                             </div>
                           </div>
+                          <RelationSchemaFields property={property} database={schemaDraft} databases={databases} onChange={(update) => updateSchemaProperty(index, update)} />
                           {(property.type === 'select' || property.type === 'multi-select') ? (
                             <div className="flex flex-col gap-2">
                               <div className="text-xs font-medium">Options <span className="font-normal text-muted-foreground">(option IDs are stable)</span></div>
@@ -1607,7 +1659,7 @@ export function DatabaseSelectorItem({
       type="button"
       variant="ghost"
       className={cn(
-        'h-auto min-w-[190px] shrink justify-start gap-2 rounded-[4px] whitespace-normal px-2 py-1.5 text-left font-normal lg:w-full lg:min-w-0',
+        'h-auto min-w-[190px] shrink justify-start gap-2 rounded-[4px] whitespace-normal px-2 py-1.5 text-left font-normal xl:w-full xl:min-w-0',
         selected && 'bg-success/12 hover:bg-success/15',
       )}
       onClick={() => onSelect(database.id)}
@@ -1632,6 +1684,19 @@ export function DatabaseSelectorItem({
   );
 }
 
+function propertyColumnClass(property: Property): string {
+  switch (property.type) {
+    case 'text': return 'w-[22%]';
+    case 'select':
+    case 'multi-select':
+    case 'relation': return 'w-[15%]';
+    case 'date':
+    case 'rollup': return 'w-[13%]';
+    case 'number': return 'w-[11%]';
+    case 'checkbox': return 'w-[10%]';
+  }
+}
+
 function filterOperatorLabel(operator: DatabaseFilterOperator): string {
   const labels: Record<DatabaseFilterOperator, string> = {
     contains: 'contains',
@@ -1648,6 +1713,7 @@ function filterOperatorLabel(operator: DatabaseFilterOperator): string {
 
 function FilterValueControl({
   property,
+  relationOptions,
   value,
   label,
   invalid,
@@ -1656,6 +1722,7 @@ function FilterValueControl({
   onChange,
 }: {
   property: Property;
+  relationOptions?: RelationReference[];
   value: unknown;
   label: string;
   invalid: boolean;
@@ -1663,6 +1730,7 @@ function FilterValueControl({
   className?: string;
   onChange: (value: unknown) => void;
 }) {
+  if (property.type === 'relation') return <RelationControl inline property={{ ...property, relation: { ...property.relation!, cardinality: 'one' } }} value={value} label={label} options={relationOptions} onChange={onChange} />;
   if (property.type === 'checkbox') {
     const current = value === true ? 'true' : value === false ? 'false' : undefined;
     return (
@@ -1706,7 +1774,7 @@ function FilterValueControl({
     );
   }
 
-  const inputType = property.type === 'number' ? 'number' : property.type === 'date' ? 'date' : 'text';
+  const inputType = (property.type === 'number' || property.type === 'rollup') ? 'number' : property.type === 'date' ? 'date' : 'text';
   const inputValue = typeof value === 'number'
     ? Number.isFinite(value) ? value : ''
     : typeof value === 'string' ? value : '';
@@ -1721,7 +1789,7 @@ function FilterValueControl({
       aria-describedby={describedBy}
       onChange={(event) => {
         const raw = event.currentTarget.value;
-        onChange(property.type === 'number' ? (raw === '' ? '' : Number.isFinite(Number(raw)) ? Number(raw) : Number.NaN) : raw);
+        onChange((property.type === 'number' || property.type === 'rollup') ? (raw === '' ? '' : Number.isFinite(Number(raw)) ? Number(raw) : Number.NaN) : raw);
       }}
     />
   );

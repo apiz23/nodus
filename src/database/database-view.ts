@@ -108,7 +108,8 @@ export function validateViewReferences(view: DatabaseView, database: DatabaseDef
 function filterFits(property: Property, operator: ViewFilterOperator, value: unknown): boolean {
   const matches = (operators: ViewFilterOperator[], type: string) => operators.includes(operator) && property.type === type;
   if (matches(['contains', 'equals'], 'text')) return typeof value === 'string' && (operator === 'equals' || value.length > 0);
-  if (matches(['equals', 'greater', 'less'], 'number')) return typeof value === 'number' && Number.isFinite(value);
+  if (property.type === 'relation') return (property.relation?.cardinality === 'one' ? operator === 'is' : operator === 'includes') && typeof value === 'string' && isUuidV4(value);
+  if (matches(['equals', 'greater', 'less'], 'number') || matches(['equals', 'greater', 'less'], 'rollup')) return typeof value === 'number' && Number.isFinite(value);
   if (matches(['is'], 'checkbox')) return typeof value === 'boolean';
   if (matches(['equals', 'before', 'after'], 'date')) return typeof value === 'string' && validDate(value);
   if (matches(['is'], 'select') || matches(['includes'], 'multi-select')) return typeof value === 'string';

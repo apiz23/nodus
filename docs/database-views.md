@@ -50,3 +50,9 @@ Calendar creation is two explicit API operations: create a note, then assign its
 ## Focused verification
 
 `pnpm test:database-views` runs actual browser interaction tests against a dedicated strict loopback Vite process and temporary vault. It checks table persistence, board moves, value clearing, duplicate/rename/delete, dated creation, and stale-view draft handling. It requires Node 24+ and the installed Playwright Chromium browser. It has no screenshot or pixel assertions and cleans up its own process/browser/temporary vault.
+
+## Relations and rollups
+
+Relation filters use stable note IDs: `is` for a single relation and `includes` for multiple/reverse relations. Relation sorting uses current record titles, then stable row IDs for ties. Missing references remain filterable by their stored IDs. Rollups support numeric `equals`, `greater`, and `less` filters and numeric sorting; null/unavailable values sort last in either direction and do not match numeric filters.
+
+Table, Kanban, and Calendar consume the same derived rows and filters. Cards display related-record links and rollups, with relation editing controls on forward fields. Kanban grouping remains Select-based and Calendar placement remains Date-based. Reverse relations and rollups cannot be used as writable grouping/date fields.

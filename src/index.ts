@@ -98,3 +98,6 @@ export type {
 export { buildLinkIndex, createLinkIndexCache, type LinkIndex, type IndexedLink, type IndexedNote } from './links/link-index.js';
 
 export { buildSearchIndex, searchIndex, type SearchIndex, type SearchResult, type SearchMatch, type SearchField } from './search/search-index.js';
+
+export { projectRelations, configurationIssues, type RelationReference, type RelatedRow } from './database/relations.js';
+export { ROLLUP_OPERATIONS, databaseVersion, isDerivedProperty, type RollupOperation } from './database/schema.js';

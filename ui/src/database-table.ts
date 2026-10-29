@@ -1,3 +1,4 @@
+import { isUuidV4 } from '../../src/domain/ids.js';
 import type { Property } from '../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../src/ui-server/dto.js';
 import type { UiDatabase } from '../../src/ui-server/dto.js';
@@ -20,7 +21,9 @@ export function databaseIdentityLabel(database: Pick<UiDatabase, 'id' | 'name' |
 export function filterOperators(property: Property): DatabaseFilterOperator[] {
   switch (property.type) {
     case 'text': return ['contains', 'equals'];
+    case 'rollup':
     case 'number': return ['equals', 'greater', 'less'];
+    case 'relation': return property.relation?.cardinality === 'one' ? ['is'] : ['includes'];
     case 'checkbox': return ['is'];
     case 'date': return ['equals', 'before', 'after'];
     case 'select': return ['is'];
@@ -30,6 +33,8 @@ export function filterOperators(property: Property): DatabaseFilterOperator[] {
 
 export function initialFilterValue(property: Property): unknown {
   switch (property.type) {
+    case 'relation': return '';
+    case 'rollup':
     case 'text':
     case 'number':
     case 'date': return '';
@@ -44,6 +49,8 @@ export function isValidFilter(property: Property, operator: string, value: unkno
   switch (property.type) {
     case 'text':
       return typeof value === 'string' && (operator === 'equals' || value.length > 0);
+    case 'relation': return typeof value === 'string' && isUuidV4(value);
+    case 'rollup':
     case 'number': return typeof value === 'number' && Number.isFinite(value);
     case 'checkbox': return typeof value === 'boolean';
     case 'date': return typeof value === 'string' && isCalendarDate(value);
@@ -68,25 +75,25 @@ export function filterDatabaseRows(
 
   return rows.filter((row) => active.every(({ filter, property }) => {
     const actual = row.values[property.id];
-    if (actual === undefined) return false;
+    if (actual === undefined || actual === null) return false;
     switch (filter.operator) {
       case 'contains':
         return property.type === 'text' && typeof actual === 'string'
           && actual.toLocaleLowerCase().includes((filter.value as string).toLocaleLowerCase());
       case 'equals':
         if (property.type === 'text') return typeof actual === 'string' && actual === filter.value;
-        if (property.type === 'number') return typeof actual === 'number' && actual === filter.value;
+        if ((property.type === 'number' || property.type === 'rollup')) return typeof actual === 'number' && actual === filter.value;
         if (property.type === 'date') return typeof actual === 'string' && isCalendarDate(actual) && actual === filter.value;
         return false;
-      case 'greater': return property.type === 'number' && typeof actual === 'number' && Number.isFinite(actual) && actual > (filter.value as number);
-      case 'less': return property.type === 'number' && typeof actual === 'number' && Number.isFinite(actual) && actual < (filter.value as number);
+      case 'greater': return (property.type === 'number' || property.type === 'rollup') && typeof actual === 'number' && Number.isFinite(actual) && actual > (filter.value as number);
+      case 'less': return (property.type === 'number' || property.type === 'rollup') && typeof actual === 'number' && Number.isFinite(actual) && actual < (filter.value as number);
       case 'is':
         if (property.type === 'checkbox') return typeof actual === 'boolean' && actual === filter.value;
-        if (property.type === 'select') return typeof actual === 'string' && actual === filter.value;
+        if (property.type === 'select' || property.type === 'relation') return typeof actual === 'string' && actual === filter.value;
         return false;
       case 'before': return property.type === 'date' && typeof actual === 'string' && isCalendarDate(actual) && actual < (filter.value as string);
       case 'after': return property.type === 'date' && typeof actual === 'string' && isCalendarDate(actual) && actual > (filter.value as string);
-      case 'includes': return property.type === 'multi-select' && Array.isArray(actual) && actual.includes(filter.value as string);
+      case 'includes': return (property.type === 'multi-select' || property.type === 'relation') && Array.isArray(actual) && actual.includes(filter.value as string);
     }
   }));
 }
@@ -130,7 +137,8 @@ export function selectDatabaseRows(
 function sortableValue(row: UiDatabaseRow, property: Property | undefined, field: DatabaseSortField): string | number | boolean | undefined {
   if (field === 'title' || property === undefined) return row.title || undefined;
   const value = row.values[property.id];
-  if (property.type === 'number') return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  if (property.type === 'relation') return row.relations?.[property.id]?.map((ref) => ref.title ?? ref.id).sort().join(', ') || undefined;
+  if ((property.type === 'number' || property.type === 'rollup')) return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
   if (property.type === 'checkbox') return typeof value === 'boolean' ? value : undefined;
   if (property.type === 'text') return typeof value === 'string' ? value : undefined;
   if (property.type === 'date') return typeof value === 'string' && isCalendarDate(value) ? value : undefined;
@@ -148,3 +156,5 @@ function isCalendarDate(value: string): boolean {
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+
+export function hasBlockingRowIssues(row: UiDatabaseRow, property?: Property): boolean { return row.issues.some((issue) => !['MISSING_TARGET', 'INCOMPATIBLE_TARGET', 'INVALID_CONFIGURATION', 'CIRCULAR_ROLLUP', 'ROLLUP_ERROR'].includes(issue.code) && !(property?.type === 'relation' && issue.propertyId === property.id && ['TYPE_MISMATCH', 'INVALID_VALUE'].includes(issue.code))); }

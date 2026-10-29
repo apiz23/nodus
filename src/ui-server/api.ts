@@ -1,3 +1,4 @@
+import { compatibleRelationTarget, projectRelations } from '../database/relations.js';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -9,11 +10,6 @@ import {
   type DatabaseDefinition,
 } from '../database/schema.js';
 import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, parseDatabaseView, validateViewReferences } from '../database/database-view.js';
-import {
-  projectNoteProperties,
-  setNotePropertyValue,
-  type StructuredDataIssue,
-} from '../database/note-properties.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { parseNote } from '../format/note-format.js';
@@ -282,6 +278,20 @@ export function createLocalApiMiddleware(
     }
 
     const databaseRowsMatch = /^\/api\/databases\/([^/]+)\/rows$/.exec(path);
+    if (method === 'POST' && databaseRowsMatch !== null) {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['noteId', 'baseHash', 'confirmCreate'], 'request');
+      const databaseId = requireUuid(decodeURIComponent(databaseRowsMatch[1] ?? ''), 'databaseId');
+      const noteId = requireUuid(body.noteId, 'noteId');
+      if (body.confirmCreate !== true) throw new ApiError(409, 'CONFIRMATION_REQUIRED', 'Explicitly confirm adding this note to the database.');
+      const vault = await getVault();
+      let result;
+      try { result = await vault.setNoteProperty(noteId, { databaseId, membershipOnly: true, confirmCreate: true }, { expectedHash: requireHash(body.baseHash), now: clock() }); }
+      catch (error) { throw toStaleApiError(error, 'adding database membership'); }
+      if (!result.ok) throw new ApiError(422, 'STRUCTURED_DATA_INVALID', 'Membership was not changed.', 'issues' in result ? { structuredDataIssues: result.issues } : undefined);
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, await readLocalNoteProperties(vault, noteId));
+    }
     if (method === 'GET' && databaseRowsMatch !== null) {
       const expectedSchemaHash = url.searchParams.get('schemaHash') ?? undefined;
       return sendJson(
@@ -427,14 +437,15 @@ async function readLocalNoteProperties(
   vault: FileSystemVault,
   id: string,
 ): Promise<UiNotePropertiesResponse> {
-  const { note, hash } = await vault.readNoteWithHash(id);
-  const projection = projectNoteProperties(note, await readDatabaseDefinitions(vault));
-  return {
-    noteId: note.id,
-    path: note.path,
-    contentHash: hash,
-    ...projection,
-  };
+  const entries = await vault.snapshot();
+  const entry = entries.find((entry) => entry.kind === 'note' && entry.id === id);
+  if (!entry) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
+  const schemas = new Map(entries.filter((entry) => entry.kind === 'database').map((entry) => [entry.id, parseDatabase(entry.text)]));
+  const notes = entries.filter((entry) => entry.kind === 'note').map((entry) => parseNote(entry.text, entry.path));
+  const graph = projectRelations(notes, schemas);
+  return { noteId: id, path: entry.path, contentHash: sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8')),
+    rows: [...(graph.rows.get(id)?.values() ?? [])].map(({ noteId, path, databaseId, values }) => ({ noteId, path, databaseId, values })), issues: graph.diagnostics.filter((issue) => issue.noteId === id) };
+
 }
 
 async function setLocalNoteProperty(
@@ -452,24 +463,13 @@ async function setLocalNoteProperty(
     throw new ApiError(400, 'INVALID_INPUT', 'confirmCreate must be a boolean');
   }
 
-  const current = await vault.readNoteWithHash(id);
-  if (current.hash !== baseHash) {
-    throw new ApiError(
-      409,
-      'STALE_WRITE',
-      'This note changed on disk. Reload it before updating structured data.',
-      { currentHash: current.hash },
-    );
-  }
-
-  const schemas = await readDatabaseDefinitions(vault);
-  const result = setNotePropertyValue(current.note, schemas, {
-    databaseId,
-    propertyId,
-    value: body.value,
+  let result;
+  try { result = await vault.setNoteProperty(id, {
+    databaseId, propertyId, value: body.value,
     ...(body.remove === true ? { remove: true } : {}),
     ...(body.confirmCreate === undefined ? {} : { confirmCreate: body.confirmCreate }),
-  });
+  }, { expectedHash: baseHash, now: clock() }); }
+  catch (error) { throw toStaleApiError(error, 'updating structured data'); }
   if (!result.ok) {
     if ('confirmationRequired' in result) {
       throw new ApiError(
@@ -486,35 +486,7 @@ async function setLocalNoteProperty(
     );
   }
 
-  try {
-    await vault.replaceNote(
-      {
-        ...current.note,
-        updatedAt: clock(),
-        extraFrontmatter: result.extraFrontmatter,
-      },
-      { expectedHash: baseHash },
-    );
-  } catch (error) {
-    throw toStaleApiError(error, 'updating structured data');
-  }
-
-  const stored = await vault.readNoteWithHash(id);
-  const projection = projectNoteProperties(stored.note, schemas);
-  return {
-    noteId: stored.note.id,
-    path: stored.note.path,
-    contentHash: stored.hash,
-    ...projection,
-  };
-}
-
-async function readDatabaseDefinitions(
-  vault: FileSystemVault,
-): Promise<Map<string, DatabaseDefinition>> {
-  const summaries = await vault.listDatabases();
-  const definitions = await Promise.all(summaries.map(({ id }) => vault.readDatabase(id)));
-  return new Map(definitions.map((definition) => [definition.id, definition]));
+  return readLocalNoteProperties(vault, id);
 }
 
 async function listDatabaseRows(
@@ -546,25 +518,20 @@ async function listDatabaseRows(
     if (entry.kind === 'database') schemas.set(entry.id, parseDatabase(entry.text));
   }
 
-  const rows: UiDatabaseRowsResponse['rows'] = [];
-  const diagnostics: StructuredDataIssue[] = [];
-  for (const entry of entries) {
-    if (entry.kind !== 'note') continue;
-    const note = parseNote(entry.text, entry.path);
-    const projection = projectNoteProperties(note, schemas);
-    diagnostics.push(...projection.issues);
-    const projected = projection.rows.find((row) => row.databaseId === databaseId);
-    if (projected === undefined) continue;
-    rows.push({
-      ...projected,
-      title: note.title,
-      updatedAt: note.updatedAt,
-      contentHash: sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8')),
-      issues: projection.issues,
-    });
-  }
+  const notes = entries.filter((entry) => entry.kind === 'note').map((entry) => parseNote(entry.text, entry.path));
+  const graph = projectRelations(notes, schemas);
+  const hashes = new Map(entries.filter((entry) => entry.kind === 'note').map((entry) => [entry.id, sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8'))]));
+  const rows = notes.flatMap((note) => {
+    const row = graph.rows.get(note.id)?.get(databaseId);
+    return row ? [{ ...row, title: note.title, updatedAt: note.updatedAt, contentHash: hashes.get(note.id)! }] : [];
+  });
+  const diagnostics = graph.diagnostics;
 
-  return { databaseId, schemaHash, rows, diagnostics };
+  const relationCandidates: NonNullable<UiDatabaseRowsResponse['relationCandidates']> = {};
+  for (const property of schemas.get(databaseId)!.properties) if (property.type === 'relation') {
+    relationCandidates[property.relation!.databaseId] = notes.filter((note) => compatibleRelationTarget(graph.rows.get(note.id)?.get(property.relation!.databaseId))).map((note) => ({ id: note.id, title: note.title, path: note.path, status: 'resolved' }));
+  }
+  return { databaseId, schemaHash, rows, diagnostics, relationCandidates };
 }
 
 async function createLocalNote(
@@ -803,9 +770,9 @@ function requireDatabaseInput(value: unknown): DatabaseDefinition {
   }
   try {
     // The API has historically accepted the definition without the on-disk
-    // envelope. Validate it as a complete v1 schema before the storage
+    // envelope. Validate it as a complete supported schema before the storage
     // serializer can project it into its canonical representation. Explicit
-    // envelope fields are accepted only when they describe the supported v1.
+    // envelope fields are accepted only when they describe a supported version.
     return parseDatabase(JSON.stringify({
       format: DATABASE_FORMAT,
       version: DATABASE_FORMAT_VERSION,
@@ -815,7 +782,7 @@ function requireDatabaseInput(value: unknown): DatabaseDefinition {
     throw new ApiError(
       400,
       'INVALID_INPUT',
-      error instanceof Error ? error.message : 'database is not a valid version 1 schema.',
+      error instanceof Error ? error.message : 'database is not a valid supported schema.',
     );
   }
 }
@@ -842,6 +809,8 @@ function toUiDatabase(database: DatabaseDefinition, hash: string): UiDatabase {
       id: property.id,
       name: property.name,
       type: property.type,
+      ...(property.relation ? { relation: property.relation } : {}),
+      ...(property.rollup ? { rollup: property.rollup } : {}),
       ...(property.options === undefined
         ? {}
         : { options: property.options.map((option) => ({ id: option.id, name: option.name })) }),

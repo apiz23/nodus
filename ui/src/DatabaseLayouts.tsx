@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { hasBlockingRowIssues } from './database-table';
+import type { ReactNode } from 'react';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +12,7 @@ import { calendarRows, kanbanColumns, monthDays, shiftMonth, todayDate } from '.
 
 interface LayoutProps {
   rows: UiDatabaseRow[];
+  renderValue?: (row: UiDatabaseRow, property: Property) => ReactNode;
   property: Property;
   visibleProperties: Property[];
   disabled: boolean;
@@ -18,12 +21,12 @@ interface LayoutProps {
   formatValue: (property: Property, value: unknown) => string;
 }
 
-function NoteCard({ row, property, visibleProperties, disabled, onOpen, onEdit, formatValue }: Omit<LayoutProps, 'rows'> & { row: UiDatabaseRow }) {
+function NoteCard({ row, property, visibleProperties, disabled, onOpen, onEdit, formatValue, renderValue }: Omit<LayoutProps, 'rows'> & { row: UiDatabaseRow }) {
   return <article aria-label={row.title} className="min-w-0 rounded-md border bg-card p-3">
     <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal p-0 text-left" onClick={() => onOpen(row.noteId)}>{row.title}</Button>
-    {visibleProperties.length ? <dl className="my-2 flex flex-col gap-1 text-xs">{visibleProperties.map((item) => <div key={item.id} className="min-w-0"><dt className="text-muted-foreground">{item.name}</dt><dd className="break-words">{formatValue(item, row.values[item.id])}</dd></div>)}</dl> : null}
+    {visibleProperties.length ? <dl className="my-2 flex flex-col gap-1 text-xs">{visibleProperties.map((item) => <div key={item.id} className="min-w-0"><dt className="text-muted-foreground">{item.name}</dt><dd className="break-words">{renderValue ? renderValue(row, item) : formatValue(item, row.values[item.id])}</dd></div>)}</dl> : null}
     {row.issues.length ? <Badge variant="destructive">Needs attention</Badge> : null}
-    <Button size="xs" variant="outline" className="mt-2" disabled={disabled || row.issues.length > 0} aria-label={`${property.type === 'select' ? 'Move' : 'Change date for'} ${row.title}`} onClick={() => onEdit(row, property)}>{property.type === 'select' ? 'Move card' : 'Change date'}</Button>
+    <Button size="xs" variant="outline" className="mt-2" disabled={disabled || hasBlockingRowIssues(row)} aria-label={`${property.type === 'select' ? 'Move' : 'Change date for'} ${row.title}`} onClick={() => onEdit(row, property)}>{property.type === 'select' ? 'Move card' : 'Change date'}</Button>
   </article>;
 }
 
