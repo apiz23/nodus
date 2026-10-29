@@ -28,6 +28,7 @@ import {
 } from '../storage/index.js';
 import { backlinksByTarget } from '../links/backlinks.js';
 import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
+import { graphFromLinkIndex } from '../links/graph.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
 import { buildSearchIndex, normalizeSearch, searchIndex } from '../search/search-index.js';
 type BacklinkIndex = { markDirty(): void };
@@ -190,6 +191,10 @@ export function createLocalApiMiddleware(
         ambiguous: index.links.filter((link) => link.resolution.status === 'ambiguous'),
         orphans: index.orphanNotes,
       });
+    }
+    if (method === 'GET' && path === '/api/graph') {
+      const { links } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, graphFromLinkIndex(links));
     }
     if (method === 'POST' && path === '/api/discovery/create') {
       const body = await readJson(req);

@@ -4,6 +4,7 @@ import type {
   RestorePreview,
   UiBacklinksResponse,
   UiDiscoveryResponse,
+  UiNoteGraph,
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
@@ -153,6 +154,9 @@ export const api = {
 
   discovery(refresh = false): Promise<UiDiscoveryResponse> {
     return request(`/api/discovery${refresh ? '?refresh=true' : ''}`);
+  },
+  graph(refresh = false): Promise<UiNoteGraph> {
+    return request(`/api/graph${refresh ? '?refresh=true' : ''}`);
   },
   createLinkTarget(target: string): Promise<{ note: UiNote }> {
     return request('/api/discovery/create', { method: 'POST', body: jsonBody({ target }) });

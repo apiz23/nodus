@@ -7,6 +7,7 @@ import {
   FolderClosed,
   FolderOpen,
   Moon,
+  Network,
   Plus,
   Search,
   Settings,
@@ -64,6 +65,7 @@ interface SidebarProps {
 const navItems = [
   { id: 'notes' as const, label: 'All notes', icon: FileText },
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
+  { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'databases' as const, label: 'Databases', icon: Database },
 ];
 

@@ -96,6 +96,7 @@ export type {
 } from './sync/contracts.js';
 
 export { buildLinkIndex, createLinkIndexCache, type LinkIndex, type IndexedLink, type IndexedNote } from './links/link-index.js';
+export { graphFromLinkIndex, type GraphNode, type GraphEdge, type NoteGraph } from './links/graph.js';
 
 export { buildSearchIndex, searchIndex, type SearchIndex, type SearchResult, type SearchMatch, type SearchField } from './search/search-index.js';
 

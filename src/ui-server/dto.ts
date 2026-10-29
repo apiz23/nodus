@@ -250,3 +250,5 @@ export interface UiDiscoveryResponse {
   ambiguous: import('../links/link-index.js').IndexedLink[];
   orphans: import('../links/link-index.js').IndexedNote[];
 }
+
+export type UiNoteGraph = import('../links/graph.js').NoteGraph;

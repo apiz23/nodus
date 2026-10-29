@@ -13,6 +13,7 @@ import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
 import { Editor } from './Editor';
 import { DiscoveryView } from './DiscoveryView';
+import { GraphView } from './GraphView';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
 import { Sidebar } from './Sidebar';
@@ -838,6 +839,15 @@ export default function App() {
             onCreated={async () => { await Promise.all([refreshNotes(true), refreshStatus()]); setBacklinksRevision((value) => value + 1); }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+          />
+        ) : null}
+
+        {view === 'graph' ? (
+          <GraphView
+            key={status?.vault.path ?? 'vault-loading'}
+            revision={backlinksRevision}
+            initialNoteId={selectedNoteId}
+            onOpenNote={(id) => void openNoteById(id)}
           />
         ) : null}
 

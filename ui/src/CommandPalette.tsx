@@ -4,6 +4,7 @@ import {
   Compass,
   FileText,
   Moon,
+  Network,
   Plus,
   Settings,
   Sun,
@@ -97,6 +98,10 @@ export function CommandPalette({
               <CommandItem value="discovery unresolved wiki links orphan notes" onSelect={() => run(() => onView('discovery'))}>
                 <Compass />
                 Knowledge discovery
+              </CommandItem>
+              <CommandItem value="local graph links connections explore" onSelect={() => run(() => onView('graph'))}>
+                <Network />
+                Local graph
               </CommandItem>
               <CommandItem value="databases" onSelect={() => run(() => onView('databases'))}>
                 <Database />
