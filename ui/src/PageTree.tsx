@@ -216,7 +216,7 @@ export function PageTree({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="mb-1 px-2 pt-1">
         <span className="text-[12px] font-medium text-muted-foreground">Pages</span>
       </div>

@@ -18,6 +18,7 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(initialNoteId);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const request = useRef(0);
@@ -103,8 +104,8 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
               <defs><marker id="graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,7 L7,3.5 z" className="fill-muted-foreground" /></marker></defs>
               <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
                 {visible.edges.map((edge) => <path key={`${edge.sourceId}:${edge.targetId}`} d={edgePath(edge)} fill="none" className="stroke-muted-foreground/45" strokeWidth={Math.min(4, 1 + Math.log2(edge.linkCount))} markerEnd="url(#graph-arrow)"><title>{nodeById.get(edge.sourceId)?.title} links to {nodeById.get(edge.targetId)?.title}{edge.linkCount > 1 ? ` (${edge.linkCount} wiki links)` : ''}{edge.snippets[0] ? `: ${edge.snippets[0]}` : ''}</title></path>)}
-                {positions.map((node) => <g key={node.id} data-graph-node="true" role="button" tabIndex={0} aria-label={`Select ${node.title}`} aria-pressed={selectedId === node.id} onClick={() => selectNode(node.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); } }} className="cursor-pointer outline-none">
-                  <circle cx={node.x} cy={node.y} r={node.id === focusId ? 12 : 9} className={node.id === selectedId ? 'fill-primary stroke-ring' : 'fill-secondary stroke-border'} strokeWidth="2" />
+                {positions.map((node) => <g key={node.id} data-graph-node="true" role="button" tabIndex={0} aria-label={`Select ${node.title}`} aria-pressed={selectedId === node.id} onClick={() => selectNode(node.id)} onFocus={() => setFocusedId(node.id)} onBlur={() => setFocusedId(null)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); } }} className="cursor-pointer outline-none">
+                  <circle cx={node.x} cy={node.y} r={node.id === focusId ? 12 : 9} className={node.id === selectedId ? 'fill-primary stroke-ring' : node.id === focusedId ? 'fill-secondary stroke-ring' : 'fill-secondary stroke-border'} strokeWidth={node.id === focusedId ? 4 : 2} />
                   <text x={node.x} y={node.y + 25} textAnchor="middle" className="fill-foreground text-[12px]">{labelFor(node.title)}</text>
                   <title>{node.title} · {node.path}</title>
                 </g>)}

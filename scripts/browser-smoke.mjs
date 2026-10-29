@@ -172,7 +172,15 @@ async function main() {
     await title.waitFor({ state: 'visible' });
     await title.fill('Browser smoke first note');
     await body.fill('Real browser save survives reload.');
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByText('Unsaved', { exact: true }).waitFor({ state: 'visible' });
+    const shortcutDialogs = [];
+    const dismissUnexpectedDialog = async (dialog) => { shortcutDialogs.push(dialog.message()); await dialog.dismiss(); };
+    page.on('dialog', dismissUnexpectedDialog);
+    await page.keyboard.press('Control+n');
+    assert.deepEqual(shortcutDialogs, [], 'The global New note shortcut interrupted Markdown editing');
+    assert.equal(await title.inputValue(), 'Browser smoke first note');
+    page.off('dialog', dismissUnexpectedDialog);
+    await page.keyboard.press('Control+s');
     await page.getByText('Saved', { exact: true }).waitFor({ state: 'visible' });
 
     const firstNote = await titleAndBody(title, body);
@@ -628,6 +636,11 @@ async function main() {
     await page.getByRole('button', { name: 'New database' }).click();
     const createSchemaSheet = page.getByRole('dialog', { name: 'New database schema' });
     await createSchemaSheet.waitFor({ state: 'visible' });
+    const databaseNameInput = page.getByRole('textbox', { name: 'Database name' });
+    await databaseNameInput.focus();
+    await page.keyboard.press('Control+k');
+    assert.equal(await page.getByRole('dialog', { name: 'Command palette' }).count(), 0, 'The global command palette interrupted a schema dialog');
+    assert.equal(await databaseNameInput.evaluate((element) => element === document.activeElement), true, 'The shortcut moved focus out of the schema dialog');
     const createSheetBox = await createSchemaSheet.boundingBox();
     assert(createSheetBox, 'Schema Sheet has no layout box');
     assert(createSheetBox.width >= 600 && createSheetBox.width <= 700, `Desktop schema Sheet width is unexpected: ${createSheetBox.width}`);

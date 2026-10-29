@@ -140,6 +140,11 @@ try {
   const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
   await page.keyboard.press(`${modifier}+k`);
   const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.waitFor({ state: 'visible' });
+  await page.keyboard.press(`${modifier}+k`);
+  await palette.waitFor({ state: 'hidden' });
+  await page.keyboard.press(`${modifier}+k`);
+  await palette.waitFor({ state: 'visible' });
   const paletteInput = palette.getByRole('combobox');
   await paletteInput.fill('planning');
   await palette.getByRole('option', { name: 'Open Alias destination', exact: true }).waitFor();

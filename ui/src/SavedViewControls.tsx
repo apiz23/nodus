@@ -147,37 +147,41 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
 
   return <section aria-label="Saved database views" className="my-3 flex flex-col gap-2">
     <div className="flex flex-wrap items-center gap-2">
-      <label className="text-xs" htmlFor={`saved-view-${database.id}`}>View</label>
-      <Select
-        value={active?.view.id ?? NO_VIEW}
-        disabled={disabled}
-        onValueChange={(value) => {
-          const id = value === NO_VIEW ? '' : value;
-          if (dirty || hasNoteDraft) askConfirmation({ switchTo: id }); else switchTo(id);
-        }}
-      >
-        <SelectTrigger ref={selectorRef} id={`saved-view-${database.id}`} className="w-56 max-w-full" aria-label="View">
-          <SelectValue placeholder="Unsaved table" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={NO_VIEW}>Unsaved table</SelectItem>
-          {views.map((item) => (
-            <SelectItem key={item.view.id} value={item.view.id}>
-              {item.view.name} · {item.view.type ?? 'table'} · {item.view.id.slice(0, 8)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+        <label className="shrink-0 text-xs" htmlFor={`saved-view-${database.id}`}>View</label>
+        <Select
+          value={active?.view.id ?? NO_VIEW}
+          disabled={disabled}
+          onValueChange={(value) => {
+            const id = value === NO_VIEW ? '' : value;
+            if (dirty || hasNoteDraft) askConfirmation({ switchTo: id }); else switchTo(id);
+          }}
+        >
+          <SelectTrigger ref={selectorRef} id={`saved-view-${database.id}`} className="min-w-0 flex-1 sm:w-56 sm:flex-none" aria-label="View" title={active?.view.name ?? "Unsaved table"}>
+            <SelectValue placeholder="Unsaved table" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_VIEW}>Unsaved table</SelectItem>
+            {views.map((item) => (
+              <SelectItem key={item.view.id} value={item.view.id}>
+                {item.view.name} · {item.view.type ?? 'table'} · {item.view.id.slice(0, 8)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <Button size="sm" variant="outline" disabled={writeDisabled} onClick={() => openDialog('create')}>New view</Button>
       {active ? <>
         <Button size="sm" disabled={writeDisabled || stale || !dirty} onClick={() => void write('save')}>{saving ? 'Saving…' : 'Save view'}</Button>
-        <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => openDialog('rename')}>Rename view</Button>
-        <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => openDialog('duplicate')}>Duplicate view</Button>
-        <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => askConfirmation('delete')}>Delete view</Button>
-        <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reload')}>Reload saved view</Button>
-        <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reset')}>Reset view settings</Button>
       </> : null}
     </div>
+    {active ? <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+      <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => openDialog('rename')}>Rename view</Button>
+      <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => openDialog('duplicate')}>Duplicate view</Button>
+      <Button size="sm" variant="ghost" disabled={writeDisabled || stale} onClick={() => askConfirmation('delete')}>Delete view</Button>
+      <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reload')}>Reload saved view</Button>
+      <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reset')}>Reset view settings</Button>
+    </div> : null}
     {loading ? <p role="status" className="text-xs text-muted-foreground">Loading saved views…</p> : null}
     {dirty ? <p role="status" className="text-xs text-muted-foreground">View settings have unsaved changes.</p> : null}
     {notice ? <p role="status" className="text-xs text-muted-foreground">{notice}</p> : null}

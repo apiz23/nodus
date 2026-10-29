@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import { hasBlockingRowIssues } from './database-table';
 import type { ReactNode } from 'react';
-import { Plus } from 'lucide-react';
+import { useState } from 'react';
+import { CalendarClock, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -30,11 +30,27 @@ function NoteCard({ row, property, visibleProperties, disabled, onOpen, onEdit, 
   </article>;
 }
 
+function CompactCard({ row, property, visibleProperties, disabled, onOpen, onEdit, formatValue, renderValue }: Omit<LayoutProps, 'rows'> & { row: UiDatabaseRow }) {
+  const summaryProperties = visibleProperties.filter((item) => item.id !== property.id);
+  return <article aria-label={row.title} className="min-w-0 rounded-sm border bg-card px-1.5 py-1">
+    <div className="flex items-start gap-1">
+      <Button data-note-open={row.noteId} variant="link" size="xs" className="h-auto min-w-0 flex-1 justify-start whitespace-normal break-words p-0 text-left text-[11px] leading-snug" title={row.title} onClick={() => onOpen(row.noteId)}><span className="line-clamp-2">{row.title}</span></Button>
+      <Button size="icon-xs" variant="ghost" className="size-5 shrink-0" disabled={disabled || hasBlockingRowIssues(row)} aria-label={`Change date for ${row.title}`} title="Change date" onClick={() => onEdit(row, property)}><CalendarClock className="size-3" /></Button>
+    </div>
+    {summaryProperties.length ? <dl className="mt-1 flex min-w-0 flex-col gap-0.5 px-0.5 text-[10px]">
+      {summaryProperties.map((item) => <div key={item.id} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-1">
+        <dt className="text-muted-foreground">{item.name}</dt>
+        <dd className="min-w-0 break-words">{renderValue ? renderValue(row, item) : formatValue(item, row.values[item.id])}</dd>
+      </div>)}
+    </dl> : null}
+  </article>;
+}
+
 export function KanbanView(props: LayoutProps) {
   const columns = kanbanColumns(props.rows, props.property);
   return <section aria-label={`Kanban grouped by ${props.property.name}`} className="my-4 flex gap-3 overflow-x-auto pb-3">
     {columns.map((column) => <section key={column.id} aria-label={`${column.name} column`} className="flex w-64 shrink-0 flex-col gap-2 rounded-md bg-muted/40 p-2">
-      <h3 className="flex items-center justify-between px-1 py-2 text-sm font-medium">{column.name}<Badge variant="secondary">{column.rows.length}</Badge></h3>
+      <h3 className="flex min-w-0 items-center justify-between gap-2 px-1 py-2 text-sm font-medium"><span className="min-w-0 truncate" title={column.name}>{column.name}</span><Badge variant="secondary" className="shrink-0">{column.rows.length}</Badge></h3>
       {column.rows.map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}
       {column.rows.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">No notes</p> : null}
     </section>)}
@@ -47,24 +63,37 @@ export function CalendarView(props: LayoutProps & { onCreate: (date: string) => 
   const days = monthDays(month);
   const { dated, undated } = calendarRows(props.rows, props.property.id);
   const monthLabel = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${month}-01T00:00:00.000Z`));
+  const datedGroups = [...dated.entries()].sort(([left], [right]) => left.localeCompare(right));
+  const dateLabel = (date: string) => new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00.000Z`));
   return <section aria-label={`Calendar by ${props.property.name}`} className="my-4 flex min-w-0 flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
-      <Button size="sm" variant="outline" aria-label="Previous month" onClick={() => setMonth((value) => shiftMonth(value, -1))}>Previous</Button>
-      <h3 className="text-sm font-medium" aria-live="polite">{monthLabel}</h3>
-      <Button size="sm" variant="outline" aria-label="Next month" onClick={() => setMonth((value) => shiftMonth(value, 1))}>Next</Button>
+      <div className="flex items-center gap-1">
+        <Button size="icon-sm" variant="outline" aria-label="Previous month" onClick={() => setMonth((value) => shiftMonth(value, -1))}><ChevronLeft /></Button>
+        <h3 className="min-w-32 text-center text-sm font-medium" aria-live="polite">{monthLabel}</h3>
+        <Button size="icon-sm" variant="outline" aria-label="Next month" onClick={() => setMonth((value) => shiftMonth(value, 1))}><ChevronRight /></Button>
+      </div>
       <Button size="sm" variant="ghost" onClick={() => setMonth(today.slice(0, 7))}>Today</Button>
-      <label className="flex items-center gap-2 text-xs">Month<Input type="month" className="w-40" value={month} onChange={(event) => { const value = event.currentTarget.value; if (monthDays(value).length) setMonth(value); }} /></label>
+      <label className="flex min-w-0 items-center gap-2 text-xs">Month<Input type="month" className="w-40 max-w-full" value={month} onChange={(event) => { const value = event.currentTarget.value; if (monthDays(value).length) setMonth(value); }} /></label>
     </div>
-    <div className="rounded-md border">
-      <Table className="min-w-[630px] table-fixed text-xs" aria-label={monthLabel}>
-        <TableHeader><TableRow>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <TableHead key={day} scope="col" className="p-2 font-medium text-muted-foreground">{day}</TableHead>)}</TableRow></TableHeader>
-        <TableBody>{Array.from({ length: days.length / 7 }, (_, week) => <TableRow key={week}>{days.slice(week * 7, week * 7 + 7).map((date, index) => <TableCell key={date ?? `blank-${index}`} className="h-28 border-t border-r p-1 align-top last:border-r-0">
-          {date === null ? null : <div className="flex flex-col gap-1">
+    <div className="hidden rounded-md border lg:block">
+      <Table className="w-full table-fixed text-xs" aria-label={monthLabel}>
+        <TableHeader><TableRow>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <TableHead key={day} scope="col" className="p-2 font-medium whitespace-normal text-muted-foreground">{day}</TableHead>)}</TableRow></TableHeader>
+        <TableBody>{Array.from({ length: days.length / 7 }, (_, week) => <TableRow key={week}>{days.slice(week * 7, week * 7 + 7).map((date, index) => <TableCell key={date ?? `blank-${index}`} className="border-t border-r p-1 align-top whitespace-normal last:border-r-0">
+          {date === null ? <div className="min-h-28" aria-hidden="true" /> : <div className="flex min-h-28 flex-col gap-1">
             <div className="flex items-center justify-between"><time dateTime={date} aria-current={date === today ? 'date' : undefined} className="px-1 font-medium">{Number(date.slice(8))}</time><Button size="icon-xs" variant="ghost" disabled={props.disabled} aria-label={`Create note on ${date}`} onClick={() => props.onCreate(date)}><Plus /></Button></div>
-            {(dated.get(date) ?? []).map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}
+            {(dated.get(date) ?? []).map((row) => <CompactCard key={row.noteId} {...props} row={row} />)}
           </div>}
         </TableCell>)}</TableRow>)}</TableBody>
       </Table>
+    </div>
+    <div role="region" className="flex flex-col gap-4 lg:hidden" aria-label={`${monthLabel} agenda`}>
+      {datedGroups.length === 0 ? <p className="rounded-md border border-dashed px-3 py-4 text-xs text-muted-foreground">No dated notes this month.</p> : datedGroups.map(([date, rows]) => <section key={date} className="flex flex-col gap-2" aria-label={dateLabel(date)}>
+        <div className="flex items-center justify-between gap-2 border-b pb-1.5">
+          <h4 className="text-xs font-medium">{dateLabel(date)}<span className="ml-2 font-normal text-muted-foreground">{rows.length} {rows.length === 1 ? 'note' : 'notes'}</span></h4>
+          <Button size="xs" variant="ghost" disabled={props.disabled} aria-label={`Create note on ${date}`} onClick={() => props.onCreate(date)}><Plus data-icon="inline-start" /> Add</Button>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">{rows.map((row) => <CompactCard key={row.noteId} {...props} row={row} />)}</div>
+      </section>)}
     </div>
     <section aria-label="Undated notes" className="flex flex-col gap-2"><h3 className="text-sm font-medium">Undated notes ({undated.length})</h3>
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{undated.map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}</div>

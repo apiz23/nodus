@@ -647,8 +647,18 @@ export default function App() {
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
       if (modal !== null) return;
+      const target = event.target instanceof Element ? event.target : null;
       const key = event.key.toLowerCase();
+      const togglePalette = commandOpen && key === 'k' && target !== null && target.closest('[data-slot="command"]') !== null;
+      if (event.defaultPrevented && !togglePalette) return;
+      const insideDialog = target !== null && target.closest('[role="dialog"], [role="alertdialog"], [data-slot="sheet-content"]') !== null;
+      if (insideDialog && !togglePalette) return;
+      const textEntry = isTextEntryTarget(target);
+      const inEditor = target !== null && target.closest('[aria-label="Editor"]') !== null;
       if (key === 'k') {
+        // Keep form and CodeMirror shortcuts intact. The sidebar search remains
+        // an intentional launch point for the command palette.
+        if (textEntry && target !== searchRef.current && !inEditor && !togglePalette) return;
         event.preventDefault();
         if (!commandOpen && document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
@@ -658,11 +668,13 @@ export default function App() {
       }
       if (commandOpen) return;
       if (key === 'n') {
+        if (textEntry) return;
         event.preventDefault();
         void createNote();
         return;
       }
       if (key === 's') {
+        if (textEntry && !inEditor) return;
         event.preventDefault();
         void saveNote();
       }
@@ -945,5 +957,12 @@ export default function App() {
         onConfirm={() => void confirmDelete()}
       />
     </div>
+  );
+}
+
+function isTextEntryTarget(target: Element | null): boolean {
+  return target !== null && (
+    target instanceof HTMLElement && target.isContentEditable
+    || target.closest('input, textarea, select, [role="textbox"], [contenteditable="true"]') !== null
   );
 }

@@ -30,7 +30,9 @@ try {
   await page.getByRole('button', { name: 'Local graph', exact: true }).click();
   await page.getByRole('heading', { name: 'Local graph', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Select Graph Source' }).waitFor();
-  await page.getByRole('button', { name: 'Select Graph Source' }).focus();
+  const sourceNode = page.getByRole('button', { name: 'Select Graph Source' });
+  await sourceNode.focus();
+  assert.equal(await sourceNode.locator('circle').getAttribute('stroke-width'), '4', 'Keyboard focus should be visible on graph nodes');
   await page.keyboard.press('Enter');
   await page.getByRole('heading', { name: 'Incoming links (1)', exact: true }).waitFor();
   await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
