@@ -26,7 +26,7 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(base);
+  await page.goto(`${base}/app`);
   await page.getByRole('button', { name: 'Local graph', exact: true }).click();
   await page.getByRole('heading', { name: 'Local graph', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Select Graph Source' }).waitFor();

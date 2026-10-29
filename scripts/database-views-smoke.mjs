@@ -72,7 +72,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error' && !/(409 \(Conflict\)|500 \(Internal Server Error\))/.test(message.text())) errors.push(message.text()); });
   page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/api/') && response.status() >= 400) failures.push([response.request().method(), new URL(response.url()).pathname, response.status()]); });
-  await page.goto(base);
+  await page.goto(`${base}/app`);
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
   const controls = page.getByRole('region', { name: 'Saved database views' });

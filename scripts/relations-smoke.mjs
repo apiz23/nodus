@@ -43,7 +43,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(base);
+  await page.goto(`${base}/app`);
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
   const choose = async (label, name) => {

@@ -111,7 +111,7 @@ pnpm dev
 NODUS_VAULT=/path/to/your/vault pnpm dev
 ```
 
-Open `http://127.0.0.1:5173`. If `NODUS_VAULT` is omitted, the server uses `./vault` and creates it on first use.
+Open `http://127.0.0.1:5173` for the public landing page, or `http://127.0.0.1:5173/app` for the local workspace. If `NODUS_VAULT` is omitted, the server uses `./vault` and creates it on first use.
 
 Production-style local preview:
 
@@ -120,7 +120,7 @@ pnpm build
 pnpm preview
 ```
 
-Open `http://127.0.0.1:4173`.
+Open `http://127.0.0.1:4173` for the landing page, or `http://127.0.0.1:4173/app` for the workspace.
 
 The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, title/alias/path/content search with deterministic ranking, backlinks and ambiguous linked mentions, command palette (`Ctrl/Cmd+K`), and a limited database browser/schema editor. Users can create schemas, add typed properties, rename schemas/properties/options, and add select options while retaining stable IDs. Existing property types and options cannot be removed from the UI. The browser discovers notes with explicit membership, displays and edits supported typed properties, requires confirmation when adding a note to a database, and provides sorting, typed filters, and column visibility saved through named Table, Kanban, and Calendar views. Relations support record selection/navigation and derived reverse fields. Rollups support count, conditional count, numeric sum, completed-task count, and completion percentage. Graph UI is not implemented. The app preserves frontmatter fields and stable UUIDs; note and schema saves check raw file hashes and refuse to overwrite an external edit.
 

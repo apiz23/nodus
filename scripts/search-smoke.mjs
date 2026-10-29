@@ -41,7 +41,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(base);
+  await page.goto(`${base}/app`);
   const search = page.getByRole('searchbox', { name: 'Search notes', exact: true });
   const rows = page.locator('[data-search-result="true"]');
   const waitRows = async (count) => page.waitForFunction((n) => document.querySelectorAll('[data-search-result="true"]').length === n, count);

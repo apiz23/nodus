@@ -27,7 +27,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(base);
+  await page.goto(`${base}/app`);
   await page.getByRole('button', { name: 'Discovery', exact: true }).click();
   await page.getByRole('heading', { name: 'Unresolved links (1)' }).waitFor();
   assert(await page.getByText('[[Future|the idea]]', { exact: true }).isVisible());

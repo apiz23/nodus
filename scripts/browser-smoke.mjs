@@ -160,8 +160,41 @@ async function main() {
       }
     });
 
-    const navigation = await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    assert.equal(navigation?.status(), 200, 'Nodus UI did not load');
+    const landingNavigation = await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    assert.equal(landingNavigation?.status(), 200, 'Nodus landing page did not load');
+    await page.getByRole('heading', { level: 1, name: 'Your knowledge. Your files. Your rules.' }).waitFor({ state: 'visible' });
+    assert.equal(
+      await page.getByRole('link', { name: 'Explore Nodus' }).getAttribute('href'),
+      '/app',
+      'Landing primary CTA does not point at the workspace route',
+    );
+    assert.equal(
+      await page.getByRole('link', { name: 'View on GitHub' }).getAttribute('href'),
+      'https://github.com/apiz23/nodus',
+      'Landing GitHub link does not match the configured repository',
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      true,
+      'Landing page overflows the desktop viewport',
+    );
+
+    assert.match(await page.title(), /Nodus/, 'Landing page title is missing the product name');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { level: 1, name: 'Your knowledge. Your files. Your rules.' }).waitFor({ state: 'visible' });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      true,
+      'Landing page overflows a narrow viewport',
+    );
+    await page.getByRole('button', { name: 'Open menu' }).click();
+    await page.getByRole('menuitem', { name: 'Features' }).waitFor({ state: 'visible' });
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.getByRole('link', { name: 'Explore Nodus' }).click();
+    await page.waitForURL(`${baseUrl}/app`);
     await page.getByRole('heading', { name: 'Open a note to begin' }).waitFor({ state: 'visible' });
     await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
 
