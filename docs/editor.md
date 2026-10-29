@@ -36,6 +36,7 @@ The mode is local to the editor session and does not change the note or mark it 
 - The CodeMirror content node is a labeled multiline textbox.
 - Source mode exposes raw Markdown for assistive-technology and editing use.
 - Decoration work is limited to visible ranges; the full document is not rendered into DOM nodes. Wiki-link resolution scans visible line ranges and excludes code through the syntax tree.
+- Wiki-link title/alias lookup is built once per note-summary snapshot and reused across editor transactions. Updated summaries replace the resolver, so renames, aliases, and deleted targets retain the normal resolution rules.
 - Large-note performance is guarded by keeping the live decoration pass viewport-scoped. Measured here: a 100 KB note and an 850 KB note were both usable; the 850 KB note had a single very long line and took about 1.7 seconds to open. A 1 MB note remains unverified; use Source mode if the live editor is not responsive.
 
 ## Fallback

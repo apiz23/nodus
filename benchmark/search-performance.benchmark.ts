@@ -3,10 +3,16 @@ import { cpus, freemem, platform, release, totalmem } from 'node:os';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import { createNote } from '../src/domain/note.js';
 import { serializeNote } from '../src/format/note-format.js';
+import * as noteFormat from '../src/format/note-format.js';
+import * as scanner from '../src/storage/fs/scan.js';
+import * as safePath from '../src/storage/fs/safe-path.js';
+import * as search from '../src/search/search-index.js';
+import * as links from '../src/links/link-index.js';
+import { FileSystemVault } from '../src/storage/fs/vault.js';
 
 const NOW = '2026-10-25T12:00:00Z';
 const RESULT_LIMIT = 50;
@@ -16,6 +22,8 @@ const iterations = readPositiveInteger(process.env.NODUS_SEARCH_BENCH_ITERATIONS
 const warmups = readNonNegativeInteger(process.env.NODUS_SEARCH_BENCH_WARMUPS, 1);
 const timeoutMs = readPositiveInteger(process.env.NODUS_SEARCH_BENCH_TIMEOUT_MS, 120_000);
 const jsonOutput = process.env.NODUS_SEARCH_BENCH_JSON === '1';
+const profileEnabled = process.env.NODUS_SEARCH_BENCH_PROFILE === '1';
+const profiles: Array<{ size: number; phases: Awaited<ReturnType<typeof profileLifecycle>> }> = [];
 
 interface Scenario {
   name: string;
@@ -142,6 +150,8 @@ describe('production search performance', () => {
       } catch (error) {
         errors.push({ size, scenario: 'repeated identical query', message: errorMessage(error) });
       }
+      // Separate instrumented API instance: spies never affect the primary samples.
+      if (profileEnabled) profiles.push({ size, phases: await profileLifecycle(vaultPath, size) });
     }
 
     const finalMemory = {
@@ -149,7 +159,7 @@ describe('production search performance', () => {
       processRssAfterMiB: Math.round(process.memoryUsage().rss / 1024 / 1024),
     };
     if (jsonOutput) {
-      process.stdout.write(`${JSON.stringify({ environment, finalMemory, configuration: { sizes, warmups, iterations, timeoutMs }, firstRequests, measurements, errors }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ environment, finalMemory, configuration: { sizes, warmups, iterations, timeoutMs }, firstRequests, measurements, profiles, errors }, null, 2)}\n`);
     } else {
       process.stdout.write('\nSearch benchmark results (latency includes local HTTP request + production scan/parse/search):\n');
       process.stdout.write('notes | scenario                    | returned/total | median ms | p95 ms | min ms | max ms\n');
@@ -166,6 +176,7 @@ describe('production search performance', () => {
       process.stdout.write(`Process memory after benchmark (approximate): ${JSON.stringify(finalMemory)}\n`);
       process.stdout.write(`Warmups: ${warmups}; measured iterations: ${iterations}; timeout: ${timeoutMs} ms\n`);
       if (errors.length > 0) process.stdout.write(`Errors: ${JSON.stringify(errors)}\n`);
+      if (profileEnabled) process.stdout.write(`Lifecycle profiles: ${JSON.stringify(profiles)}\n`);
     }
 
     expect(errors, `Search benchmark failures: ${JSON.stringify(errors)}`).toEqual([]);
@@ -226,9 +237,9 @@ async function startApi(vaultPath: string): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function timedSearch(base: string, query: string): Promise<{ ids: string[]; elapsedMs: number }> {
+async function timedSearch(base: string, query: string, refresh = false): Promise<{ ids: string[]; elapsedMs: number }> {
   const start = process.hrtime.bigint();
-  const response = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}`, {
+  const response = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}${refresh ? '&refresh=true' : ''}`, {
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`Search API returned HTTP ${response.status}`);
@@ -240,6 +251,71 @@ async function timedSearch(base: string, query: string): Promise<{ ids: string[]
     ids: body.results.map((result) => result.id!),
     elapsedMs: Number(process.hrtime.bigint() - start) / 1_000_000,
   };
+}
+
+async function profileLifecycle(vaultPath: string, size: number) {
+  const base = await startApi(vaultPath);
+  const empty = () => ({ snapshotMs: 0, scanMs: 0, guardedReadMs: 0, guardMs: 0,
+    parseMs: 0, linkIndexMs: 0, searchIndexMs: 0, readCalls: 0, parseCalls: 0 });
+  let totals = empty();
+  const originalSnapshot = FileSystemVault.prototype.snapshotNotes;
+  // Instrument the existing guarded read without changing storage behavior.
+  const reads = FileSystemVault.prototype as unknown as { readBytesAt(absolute: string, path: string): Promise<Buffer> };
+  const originalRead = reads.readBytesAt;
+  const originalScan = scanner.walkVault;
+  const originalGuard = safePath.assertNotSymlink;
+  const originalParse = noteFormat.parseNote;
+  const originalLinks = links.buildLinkIndex;
+  const originalSearch = search.buildSearchIndex;
+  const spies = [
+    vi.spyOn(FileSystemVault.prototype, 'snapshotNotes').mockImplementation(async function (this: FileSystemVault) {
+      const start = performance.now();
+      try { return await originalSnapshot.call(this); } finally { totals.snapshotMs += performance.now() - start; }
+    }),
+    vi.spyOn(reads, 'readBytesAt').mockImplementation(async function (this: typeof reads, ...args) {
+      const start = performance.now(); totals.readCalls++;
+      try { return await originalRead.apply(this, args); } finally { totals.guardedReadMs += performance.now() - start; }
+    }),
+    vi.spyOn(scanner, 'walkVault').mockImplementation(async (...args) => {
+      const start = performance.now();
+      try { return await originalScan(...args); } finally { totals.scanMs += performance.now() - start; }
+    }),
+    vi.spyOn(safePath, 'assertNotSymlink').mockImplementation(async (...args) => {
+      const start = performance.now();
+      try { return await originalGuard(...args); } finally { totals.guardMs += performance.now() - start; }
+    }),
+    vi.spyOn(noteFormat, 'parseNote').mockImplementation((...args) => {
+      const start = performance.now(); totals.parseCalls++;
+      try { return originalParse(...args); } finally { totals.parseMs += performance.now() - start; }
+    }),
+    vi.spyOn(links, 'buildLinkIndex').mockImplementation((...args) => {
+      const start = performance.now();
+      try { return originalLinks(...args); } finally { totals.linkIndexMs += performance.now() - start; }
+    }),
+    vi.spyOn(search, 'buildSearchIndex').mockImplementation((...args) => {
+      const start = performance.now();
+      try { return originalSearch(...args); } finally { totals.searchIndexMs += performance.now() - start; }
+    }),
+  ];
+  const phases: Array<ReturnType<typeof empty> & { phase: string; elapsedMs: number }> = [];
+  const measure = async (phase: string, refresh = false, expectedReads = size) => {
+    totals = empty();
+    const result = await timedSearch(base, 'knowledge', refresh);
+    expect(result.ids).toEqual(expectedIds(SCENARIOS[0]!, size));
+    expect(totals.readCalls).toBe(expectedReads);
+    phases.push({ phase, elapsedMs: result.elapsedMs, ...totals });
+  };
+  try {
+    await measure('first snapshot (OS cache uncontrolled)');
+    await measure('warm query', false, 0);
+    await measure('explicit rebuild', true);
+    const start = performance.now();
+    const created = await fetch(`${base}/api/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Mutation benchmark' }) });
+    expect(created.status).toBe(201);
+    const mutationMs = performance.now() - start;
+    await measure('after create invalidation', false, size + 1);
+    return { phases, mutationMs };
+  } finally { for (const spy of spies.reverse()) spy.mockRestore(); }
 }
 
 function expectedIds(scenario: Scenario, count: number): string[] {

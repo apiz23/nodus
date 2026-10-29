@@ -74,6 +74,8 @@ export function sha256Hex(bytes: Buffer | string): string {
  */
 export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   readonly root: string;
+  // Derived note-only snapshots never participate in authoritative reads or writes.
+  private noteSnapshot = new Map<string, { hash: string; note: Note }>();
 
   private constructor(root: string) {
     this.root = root;
@@ -127,9 +129,43 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return withVaultRootLock(this.root, () => this.createNoteUnlocked(note));
   }
 
-  /** Consistent note-only snapshot for derived discovery indexes. */
+  /** Root-locked, byte-verified snapshot for derived search/discovery indexes. */
   async snapshotNotes(): Promise<Note[]> {
-    return withVaultRootLock(this.root, () => this.listNoteDetails());
+    return withVaultRootLock(this.root, async () => {
+      const { entries } = await walkVault(this.root);
+      const notes = entries.filter((entry) => entry.kind === 'note');
+      const next = new Map<string, { hash: string; note: Note }>();
+      const seen = new Map<string, string>();
+      const result: Note[] = [];
+      // Bound open files and memory, overlap I/O, and drain a whole batch before
+      // throwing so no reads outlive the root lock. Errors stay in path order.
+      for (let offset = 0; offset < notes.length; offset += 8) {
+        const batch = notes.slice(offset, offset + 8);
+        const reads = await Promise.allSettled(batch.map((entry) => this.readBytes(entry)));
+        for (const [index, read] of reads.entries()) {
+          const entry = batch[index]!;
+          let note: Note;
+          try {
+            if (read.status === 'rejected') throw read.reason;
+            const hash = sha256Hex(read.value);
+            const previous = this.noteSnapshot.get(entry.path);
+            // Always re-read/hash bytes: same-size edits with preserved timestamps
+            // must not be hidden, even after an explicit refresh or restore.
+            note = previous?.hash === hash ? previous.note : parseNote(decodeVaultText(read.value, entry.path), entry.path);
+            next.set(entry.path, { hash, note });
+          } catch (error) { throw wrapContentError(error, entry.path); }
+          const duplicate = seen.get(note.id);
+          if (duplicate !== undefined) throw new StorageError('DUPLICATE_ID', `Note ID "${note.id}" is used by both "${duplicate}" and "${entry.path}"`,
+            { details: { ids: [note.id], paths: [duplicate, entry.path] } });
+          seen.set(note.id, entry.path);
+          // Callers cannot mutate the parsed cache through returned arrays/metadata.
+          result.push(structuredClone(note));
+        }
+      }
+      // Publish only complete successful snapshots; removed paths are evicted.
+      this.noteSnapshot = next;
+      return result;
+    });
   }
 
   /** Recheck resolution and create atomically with respect to all Nodus writers. */

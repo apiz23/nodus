@@ -37,6 +37,12 @@ note creation, save, property edits, move, delete, or restore. It expires after 
 external edits appear on a subsequent query after expiry or explicit refresh. No watcher or
 persistent search database is required; restarting rebuilds everything from Markdown.
 
+On each rebuild the scanner still reads and SHA-256 hashes every note, in bounded batches of
+eight guarded reads under the root lock. Identical bytes reuse a parsed note; changed/new paths
+are parsed again and removed paths are evicted. Timestamps never decide freshness. The parsed
+cache is published only after a successful complete snapshot and callers receive independent
+copies. Normal storage reads, writes, backups, and restores continue to validate Markdown directly.
+
 The UI debounces requests by 180 ms and aborts obsolete requests. Query, vault, and revision keys
 prevent stale responses or previously selected results from appearing in a different query or
 vault. Results refresh after note mutations; unsaved editor drafts are not indexed.

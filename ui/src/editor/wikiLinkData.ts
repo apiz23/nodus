@@ -2,7 +2,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState } from '@codemirror/state';
 import {
   parseWikiLinks,
-  resolveLink,
+  createLinkResolver,
   type LinkableNote,
   type LinkResolution,
 } from '../../../src/links/wikilink.js';
@@ -22,9 +22,9 @@ function toInfo(
   to: number,
   target: string,
   display: string | undefined,
-  notes: readonly LinkableNote[],
+  resolve: (target: string) => LinkResolution,
 ): WikiLinkInfo {
-  const resolution = resolveLink(target, notes);
+  const resolution = resolve(target);
   const base = {
     from,
     to,
@@ -44,8 +44,9 @@ export function collectWikiLinks(
   state: EditorState,
   notes: readonly LinkableNote[],
 ): WikiLinkInfo[] {
+  const resolve = createLinkResolver(notes);
   return parseWikiLinks(state.doc.toString()).map((link) =>
-    toInfo(link.start, link.end, link.target, link.display, notes),
+    toInfo(link.start, link.end, link.target, link.display, resolve),
   );
 }
 
@@ -69,6 +70,7 @@ export function collectWikiLinksInRanges(
   state: EditorState,
   notes: readonly LinkableNote[],
   ranges: readonly { from: number; to: number }[],
+  resolve = createLinkResolver(notes),
 ): WikiLinkInfo[] {
   const links: WikiLinkInfo[] = [];
   const seen = new Set<string>();
@@ -88,7 +90,7 @@ export function collectWikiLinksInRanges(
       if (seen.has(key)) continue;
       seen.add(key);
       links.push(
-        toInfo(absoluteFrom, absoluteTo, link.target, link.display, notes),
+        toInfo(absoluteFrom, absoluteTo, link.target, link.display, resolve),
       );
     }
   }

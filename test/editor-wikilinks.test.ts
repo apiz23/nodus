@@ -76,4 +76,23 @@ describe('wiki-link collection', () => {
     ]);
     expect(links.map((link) => link.target)).toEqual(['Alpha']);
   });
+
+  it('bounds title lookup work for a large vault and a viewport in a large document', () => {
+    let titleReads = 0;
+    const largeVault = Array.from({ length: 10_000 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      get title() { titleReads++; return `Note ${index}`; }, aliases: [],
+    }));
+    const visible = Array.from({ length: 40 }, (_, index) => `[[Note ${index}]]`).join('\n');
+    const doc = `${visible}\n${'Large Markdown paragraph with **formatting**.\n'.repeat(20_000)}`;
+    const start = performance.now();
+    const state = createEditorState({ doc });
+    const links = collectWikiLinksInRanges(state, largeVault, [{ from: 0, to: visible.length }]);
+    const elapsedMs = performance.now() - start;
+    if (process.env.NODUS_EDITOR_PROFILE === '1') process.stdout.write(`${JSON.stringify({ bytes: Buffer.byteLength(doc), notes: largeVault.length, visibleLinks: links.length, titleReads, elapsedMs })}\n`);
+    expect(links).toHaveLength(40);
+    expect(links.every((link) => link.status === 'resolved')).toBe(true);
+    expect(titleReads).toBe(largeVault.length);
+    expect(state.doc.toString()).toBe(doc);
+  });
 });

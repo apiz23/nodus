@@ -8,7 +8,7 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from '@codemirror/view';
-import type { LinkableNote } from '../../../src/links/wikilink.js';
+import { createLinkResolver, type LinkableNote } from '../../../src/links/wikilink.js';
 import {
   collectWikiLinksInRanges,
   wikiLinkLabel,
@@ -88,10 +88,11 @@ function buildWikiLinkDecorations(
   view: EditorView,
   notes: readonly LinkableNote[],
   onOpenNote: (id: string) => void,
+  resolve: ReturnType<typeof createLinkResolver>,
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
 
-  for (const link of collectWikiLinksInRanges(view.state, notes, view.visibleRanges)) {
+  for (const link of collectWikiLinksInRanges(view.state, notes, view.visibleRanges, resolve)) {
     if (intersectsSelection(view.state, link.from, link.to)) continue;
     ranges.push(
       Decoration.replace({
@@ -105,13 +106,15 @@ function buildWikiLinkDecorations(
 
 class WikiLinkPlugin {
   decorations: DecorationSet = Decoration.none;
+  private readonly resolve: ReturnType<typeof createLinkResolver>;
 
   constructor(
     readonly view: EditorView,
     readonly notes: readonly LinkableNote[],
     readonly onOpenNote: (id: string) => void,
   ) {
-    this.decorations = buildWikiLinkDecorations(view, notes, onOpenNote);
+    this.resolve = createLinkResolver(notes);
+    this.decorations = buildWikiLinkDecorations(view, notes, onOpenNote, this.resolve);
   }
 
   update(update: ViewUpdate): void {
@@ -120,6 +123,7 @@ class WikiLinkPlugin {
         update.view,
         this.notes,
         this.onOpenNote,
+        this.resolve,
       );
     }
   }
