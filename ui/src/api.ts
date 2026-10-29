@@ -27,6 +27,7 @@ import type {
   UiVaultPickResult,
   UiVaultStatus,
   UiApiErrorBody,
+  UiFolderImpact,
 } from '../../src/ui-server/dto.js';
 import type { DatabaseView } from '../../src/database/database-view.js';
 
@@ -132,6 +133,26 @@ export const api = {
 
   notes(): Promise<{ notes: UiNoteSummary[] }> {
     return request<{ notes: UiNoteSummary[] }>('/api/notes');
+  },
+
+  folders(): Promise<{ folders: string[] }> {
+    return request<{ folders: string[] }>('/api/folders');
+  },
+
+  createFolder(path: string): Promise<{ path: string }> {
+    return request('/api/folders', { method: 'POST', body: jsonBody({ path }) });
+  },
+
+  moveFolder(fromPath: string, toPath: string): Promise<{ path: string }> {
+    return request('/api/folders/move', { method: 'POST', body: jsonBody({ fromPath, toPath }) });
+  },
+
+  inspectFolder(path: string): Promise<{ impact: UiFolderImpact }> {
+    return request(`/api/folders/impact?path=${encodeURIComponent(path)}`);
+  },
+
+  deleteFolder(path: string, token: string): Promise<{ deleted: true; noteIds: string[] }> {
+    return request('/api/folders', { method: 'DELETE', body: jsonBody({ path, token }) });
   },
 
   note(id: string): Promise<{ note: UiNote }> {

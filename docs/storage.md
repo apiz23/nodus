@@ -158,6 +158,14 @@ Import and restore never overwrite by default. They abort with `CONFLICT` before
 - `moveNote` writes the note at the new path first, then removes the old file. If removal fails, it throws `PARTIAL_WRITE` and leaves both files; `checkHealth` then reports a duplicate ID.
 - Nodes are not rewritten. Phase 1 title links can break on a rename; ID-pinned links survive.
 
+### Folder management
+
+- Folders are ordinary directories in the vault. `listFolders` scans the filesystem, includes empty visible folders, skips hidden paths and Nodus-owned `databases/` and `database-views/` directories, and stores no parallel folder tree.
+- `notes/` is the default note-creation directory and is protected as a namespace; it is not itself shown as a folder. New notes can also be created in any existing visible folder. Folder operations reject paths that would collapse into the same sidebar path as a folder under `notes/`.
+- Create, move, and delete operations use the vault root lock. Folder moves require an existing destination parent and a vacant destination and use a same-vault directory rename. Note contents and attached files move with the directory. Plain Markdown files are first written with explicit Nodus frontmatter so their path-derived IDs remain stable across an application-managed folder move; the body and wiki-link text stay unchanged. If preparation or the rename fails, converted files are rolled back where possible; a rollback failure reports the affected files.
+- Folder deletion is permanent and requires a fresh inventory token. The folder is atomically renamed to a hidden `.nodus-tmp-delete-*` sibling before recursive removal, so a failed cleanup leaves remaining files recoverable at the exact path returned by the error and visible to storage health as an interrupted write. Stop vault writers, copy the vault, then manually recover that reported directory before retrying; Nodus never silently moves it to a trash location.
+- Wiki links are resolved from stable IDs, titles, and aliases, not filesystem paths. Folder moves therefore do not rewrite Markdown links. Database relation IDs and note frontmatter remain intact when a valid note is moved.
+
 ## Vault switching allow-list
 
 `POST /api/vault/open` only accepts directories inside an allow-list of roots:

@@ -5,7 +5,7 @@
  * deliberately contain no filesystem, Node, or relay types.
  */
 
-import type { BackupManifest } from '../storage/contracts.js';
+import type { BackupManifest, FolderImpact } from '../storage/contracts.js';
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
 import type {
   NoteDatabaseRow,
@@ -205,7 +205,11 @@ export interface UiBackupValidationResult {
 
 export interface UiCreateNoteInput {
   title?: string;
+  /** Existing vault-relative folder; omitted uses the default notes directory. */
+  folder?: string;
 }
+
+export type UiFolderImpact = FolderImpact;
 
 export interface UiSaveNoteInput {
   title: string;

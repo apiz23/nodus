@@ -1243,6 +1243,55 @@ describe('local UI API', () => {
     });
   });
 
+  it('manages folders through the local API and protects populated deletion with a fresh inventory', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const createFolder = await json<{ path: string }>(started.base, '/api/folders', {
+          method: 'POST', body: { path: 'Work' },
+        });
+        expect(createFolder.status).toBe(201);
+        await json(started.base, '/api/folders', { method: 'POST', body: { path: 'Archive' } });
+        const created = await json<{ note: UiNote }>(started.base, '/api/notes', {
+          method: 'POST', body: { title: 'API folder note', folder: 'Work' },
+        });
+        expect(created.body.note.path).toBe('Work/api-folder-note.md');
+
+        const moved = await json<{ path: string }>(started.base, '/api/folders/move', {
+          method: 'POST', body: { fromPath: 'Work', toPath: 'Archive/Work' },
+        });
+        expect(moved.status).toBe(200);
+        const note = await json<{ note: UiNote }>(started.base, `/api/notes/${created.body.note.id}`);
+        expect(note.body.note.path).toBe('Archive/Work/api-folder-note.md');
+        expect(note.body.note.id).toBe(created.body.note.id);
+        const folders = await json<{ folders: string[] }>(started.base, '/api/folders');
+        expect(folders.body.folders).toContain('Archive/Work');
+        expect(folders.body.folders).not.toContain('Work');
+
+        const impact = await json<{ impact: { token: string; notes: number } }>(started.base, '/api/folders/impact?path=Archive%2FWork');
+        expect(impact.body.impact.notes).toBe(1);
+        await writeFile(join(vaultPath, 'Archive/Work/late.txt'), 'external change');
+        const stale = await json<{ error: { code: string } }>(started.base, '/api/folders', {
+          method: 'DELETE', body: { path: 'Archive/Work', token: impact.body.impact.token },
+        });
+        expect(stale.status).toBe(409);
+        expect(stale.body.error.code).toBe('STALE_WRITE');
+
+        const refreshed = await json<{ impact: { token: string } }>(started.base, '/api/folders/impact?path=Archive%2FWork');
+        const deleted = await json<{ deleted: true; noteIds: string[] }>(started.base, '/api/folders', {
+          method: 'DELETE', body: { path: 'Archive/Work', token: refreshed.body.impact.token },
+        });
+        expect(deleted.body.deleted).toBe(true);
+        expect(deleted.body.noteIds).toContain(created.body.note.id);
+        const search = await json<{ results: unknown[] }>(started.base, '/api/search?q=API%20folder%20note');
+        expect(search.body.results).toEqual([]);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('refuses to rename a note changed outside the UI', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

@@ -179,6 +179,42 @@ export function createLocalApiMiddleware(
       return sendJson(res, 200, { notes: await listNoteSummaries(await getVault()) });
     }
 
+    if (method === 'GET' && path === '/api/folders') {
+      return sendJson(res, 200, { folders: await (await getVault()).listFolders() });
+    }
+
+    if (method === 'GET' && path === '/api/folders/impact') {
+      const folderPath = requireString(url.searchParams.get('path'), 'path');
+      return sendJson(res, 200, { impact: await (await getVault()).inspectFolder(folderPath) });
+    }
+
+    if (method === 'POST' && path === '/api/folders') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['path'], 'request');
+      const vault = await getVault();
+      await vault.createFolder(requireString(body.path, 'path'));
+      backlinkIndex.markDirty();
+      return sendJson(res, 201, { path: body.path });
+    }
+
+    if (method === 'POST' && path === '/api/folders/move') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['fromPath', 'toPath'], 'request');
+      const vault = await getVault();
+      await vault.moveFolder(requireString(body.fromPath, 'fromPath'), requireString(body.toPath, 'toPath'));
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, { path: body.toPath });
+    }
+
+    if (method === 'DELETE' && path === '/api/folders') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['path', 'token'], 'request');
+      const vault = await getVault();
+      const noteIds = await vault.deleteFolder(requireString(body.path, 'path'), requireString(body.token, 'token'));
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, { deleted: true, noteIds });
+    }
+
     if (method === 'POST' && path === '/api/notes') {
       const body = await readJson(req);
       return sendJson(res, 201, await createLocalNote(await getVault(), body, clock, backlinkIndex));
@@ -548,7 +584,11 @@ async function createLocalNote(
   const title = normalizeTitle(body.title);
   const now = clock();
   const id = randomUUID();
-  const path = await uniqueNotePath(vault, slugify(title));
+  const folder = body.folder === undefined ? 'notes' : requireString(body.folder, 'folder');
+  if (body.folder !== undefined && !(await vault.listFolders()).includes(folder)) {
+    throw new ApiError(404, 'NOT_FOUND', `Folder "${folder}" no longer exists. Refresh the sidebar and try again.`);
+  }
+  const path = await uniqueNotePath(vault, slugify(title), folder);
 
   const note = createNote({ id, title, path, body: '', now });
   await vault.createNote(note);
@@ -907,12 +947,12 @@ async function restoreVaultBackup(
   return restoreBackup(source, vault.root, { overwrite: overwrite === true });
 }
 
-async function uniqueNotePath(vault: FileSystemVault, slug: string): Promise<string> {
+async function uniqueNotePath(vault: FileSystemVault, slug: string, folder = 'notes'): Promise<string> {
   const notes = await vault.listNotes();
   const existing = new Set(notes.map((note) => foldPath(note.path)));
   for (let index = 1; index < 10_000; index += 1) {
     const suffix = index === 1 ? '' : `-${index}`;
-    const path = `notes/${slug}${suffix}.md`;
+    const path = folder ? `${folder}/${slug}${suffix}.md` : `${slug}${suffix}.md`;
     if (!existing.has(foldPath(path))) return path;
   }
   throw new ApiError(409, 'CONFLICT', 'Could not find a free note path');
@@ -1262,6 +1302,7 @@ export function storageStatus(code: string): number {
       return 404;
     case 'CONFLICT':
     case 'DUPLICATE_ID':
+    case 'STALE_WRITE':
       return 409;
     case 'UNSAFE_PATH':
     case 'INVALID_INPUT':

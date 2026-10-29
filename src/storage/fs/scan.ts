@@ -14,6 +14,8 @@ export interface WalkEntry {
 export interface WalkResult {
   entries: WalkEntry[];
   issues: StorageIssue[];
+  /** Visible filesystem directories, including empty folders. */
+  folders: string[];
 }
 
 /**
@@ -25,11 +27,13 @@ export interface WalkResult {
 export async function walkVault(root: string): Promise<WalkResult> {
   const entries: WalkEntry[] = [];
   const issues: StorageIssue[] = [];
+  const folders: string[] = [];
 
-  await walkDirectory(root, '', entries, issues);
+  await walkDirectory(root, '', entries, issues, folders);
 
   entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-  return { entries, issues };
+  folders.sort();
+  return { entries, issues, folders };
 }
 
 async function walkDirectory(
@@ -37,6 +41,7 @@ async function walkDirectory(
   relative: string,
   entries: WalkEntry[],
   issues: StorageIssue[],
+  folders: string[],
 ): Promise<void> {
   let dirents;
   try {
@@ -75,7 +80,8 @@ async function walkDirectory(
         await collectDatabaseViews(childAbsolute, childRelative, entries, issues);
         continue;
       }
-      await walkDirectory(childAbsolute, childRelative, entries, issues);
+      folders.push(childRelative);
+      await walkDirectory(childAbsolute, childRelative, entries, issues, folders);
       continue;
     }
 

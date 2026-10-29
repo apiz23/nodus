@@ -38,3 +38,27 @@ export function validateNotePath(path: string): string {
 
   return path;
 }
+
+/** Validates a vault-relative directory path (without a trailing slash). */
+export function validateFolderPath(path: string): string {
+  const fail = (reason: string): never => {
+    throw new NodusError('UNSAFE_PATH', `Unsafe folder path "${path}": ${reason}`);
+  };
+
+  if (typeof path !== 'string' || path.length === 0) fail('must be a non-empty string');
+  if (path.length > MAX_PATH_LENGTH) fail(`longer than ${MAX_PATH_LENGTH} characters`);
+  if (CONTROL_CHARACTERS.test(path)) fail('contains control characters');
+  if (path.includes('\\')) fail('contains backslashes');
+  if (path.includes(':')) fail('contains a colon');
+  if (path.startsWith('/')) fail('is absolute');
+
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') fail('contains an invalid path segment');
+    if (segment.startsWith('.')) fail('hidden folders are excluded from the vault');
+    if (segment.endsWith(' ') || segment.endsWith('.')) fail('has a segment ending in a space or dot');
+    if (RESERVED_NAMES.has(segment.split('.')[0]?.toUpperCase() ?? '')) {
+      fail('uses a reserved Windows device name');
+    }
+  }
+  return path;
+}

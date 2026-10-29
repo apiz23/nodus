@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type {
   UiDatabase,
+  UiFolderImpact,
   UiNote,
   UiNoteSummary,
   UiVaultStatus,
@@ -57,6 +58,8 @@ export default function App() {
   const [statusError, setStatusError] = useState<string | null>(null);
 
   const [notes, setNotes] = useState<UiNoteSummary[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [folderError, setFolderError] = useState<string | null>(null);
   const [notesLoading, setNotesLoading] = useState(true);
   const [notesError, setNotesError] = useState<string | null>(null);
 
@@ -106,6 +109,7 @@ export default function App() {
   const vaultRequestRef = useRef(0);
   const createInFlightRef = useRef(false);
   const noteMutationInFlightRef = useRef(false);
+  const folderMutationInFlightRef = useRef(false);
   const dirtyRef = useRef(dirty);
   activeNoteRef.current = activeNote;
   dirtyRef.current = dirty;
@@ -158,6 +162,7 @@ export default function App() {
   }
 
   async function refreshNotes(quiet = false): Promise<void> {
+    void refreshFolders();
     const request = vaultRequestRef.current;
     if (!quiet) setNotesLoading(true);
     setNotesError(null);
@@ -171,6 +176,19 @@ export default function App() {
       if (request === vaultRequestRef.current) setNotesError(messageOf(error));
     } finally {
       if (!quiet && request === vaultRequestRef.current) setNotesLoading(false);
+    }
+  }
+
+  async function refreshFolders(): Promise<void> {
+    const request = vaultRequestRef.current;
+    try {
+      const result = await api.folders();
+      if (request === vaultRequestRef.current) {
+        setFolders(result.folders);
+        setFolderError(null);
+      }
+    } catch (error) {
+      if (request === vaultRequestRef.current) setFolderError(messageOf(error));
     }
   }
 
@@ -203,6 +221,7 @@ export default function App() {
     if (
       saveInFlightRef.current ||
       createInFlightRef.current ||
+      folderMutationInFlightRef.current ||
       noteMutationInFlightRef.current ||
       modal !== null ||
       vaultWorkInFlight
@@ -408,8 +427,8 @@ export default function App() {
     }
   }, [databases, selectedDatabaseId]);
 
-  async function createNote(): Promise<void> {
-    if (vaultSwitching || createInFlightRef.current) return;
+  async function createNote(folder?: string): Promise<void> {
+    if (vaultSwitching || vaultWorkInFlight || folderMutationInFlightRef.current || createInFlightRef.current) return;
     if (dirty) {
       const proceed = window.confirm('Discard unsaved changes and create a new note?');
       if (!proceed) return;
@@ -421,7 +440,7 @@ export default function App() {
     setCreating(true);
     setNotesError(null);
     try {
-      const { note } = await api.createNote({ title: 'Untitled note' });
+      const { note } = await api.createNote({ title: 'Untitled note', ...(folder === undefined ? {} : { folder }) });
       setView('notes');
       setQuery('');
       setSidebarOpen(false);
@@ -445,7 +464,7 @@ export default function App() {
   }
 
   async function saveNote(): Promise<void> {
-    if (vaultSwitching || activeNote === null || noteLoading || !dirty || saveState === 'saving' || saveInFlightRef.current) return;
+    if (vaultSwitching || folderMutationInFlightRef.current || activeNote === null || noteLoading || !dirty || saveState === 'saving' || saveInFlightRef.current) return;
     const savedNoteId = activeNote.id;
     const savedRequest = noteRequestRef.current;
     const savedRevision = draftRevisionRef.current;
@@ -641,6 +660,90 @@ export default function App() {
     }
   }
 
+  async function createFolder(path: string): Promise<void> {
+    if (vaultSwitching || vaultWorkInFlight || folderMutationInFlightRef.current || saveInFlightRef.current) throw new Error('Wait for the current vault operation to finish.');
+    folderMutationInFlightRef.current = true;
+    setVaultWorkInFlight(true);
+    try { await api.createFolder(path); }
+    finally { folderMutationInFlightRef.current = false; setVaultWorkInFlight(false); }
+  }
+
+  async function moveFolder(fromPath: string, toPath: string): Promise<boolean> {
+    if (vaultSwitching || vaultWorkInFlight || folderMutationInFlightRef.current || saveInFlightRef.current) throw new Error('Wait for the current vault operation to finish.');
+    const current = activeNoteRef.current;
+    const affected = current !== null && (current.path === fromPath || current.path.startsWith(`${fromPath}/`));
+    const discardDraft = affected && dirtyRef.current;
+    if (discardDraft && !window.confirm('Discard unsaved changes in this folder and move it?')) return false;
+    folderMutationInFlightRef.current = true;
+    setVaultWorkInFlight(true);
+    try {
+      await api.moveFolder(fromPath, toPath);
+      if (affected && current !== null) {
+        noteRequestRef.current += 1;
+        try {
+          const fresh = await api.note(current.id);
+          setActiveNote(fresh.note);
+          setSelectedNoteId(fresh.note.id);
+          setDraftTitle(fresh.note.title);
+          setDraftBody(fresh.note.body);
+          setDraftIcon(fresh.note.icon);
+          setIconTouched(false);
+          setDirty(false);
+          setSaveState('saved');
+          setEditorError(null);
+        } catch (error) {
+          setActiveNote(null);
+          setEditorError(`Folder moved, but the open note could not be reloaded: ${messageOf(error)}`);
+        }
+      }
+      setBacklinksRevision((value) => value + 1);
+      return true;
+    } finally {
+      folderMutationInFlightRef.current = false;
+      setVaultWorkInFlight(false);
+    }
+  }
+
+  async function inspectFolder(path: string): Promise<UiFolderImpact> {
+    return (await api.inspectFolder(path)).impact;
+  }
+
+  async function deleteFolder(path: string, token: string): Promise<string[] | false> {
+    if (vaultSwitching || vaultWorkInFlight || folderMutationInFlightRef.current || saveInFlightRef.current) throw new Error('Wait for the current vault operation to finish.');
+    const current = activeNoteRef.current;
+    const affectsActive = current !== null && (current.path === path || current.path.startsWith(`${path}/`));
+    const selectedPath = notes.find((note) => note.id === selectedNoteId)?.path;
+    const affectsSelected = selectedPath !== undefined && (selectedPath === path || selectedPath.startsWith(`${path}/`));
+    const discardDraft = affectsActive && dirtyRef.current;
+    if (discardDraft && !window.confirm('Discard unsaved changes in this folder and delete its contents?')) return false;
+    folderMutationInFlightRef.current = true;
+    setVaultWorkInFlight(true);
+    try {
+      const result = await api.deleteFolder(path, token);
+      if (affectsActive || affectsSelected) {
+        noteRequestRef.current += 1;
+        setActiveNote(null);
+        setSelectedNoteId(null);
+        setDraftTitle('');
+        setDraftBody('');
+        setDraftIcon(null);
+        setIconTouched(false);
+        setDirty(false);
+        setSaveState('saved');
+        setEditorError(null);
+      }
+      setBacklinksRevision((value) => value + 1);
+      return result.noteIds;
+    } finally {
+      folderMutationInFlightRef.current = false;
+      setVaultWorkInFlight(false);
+    }
+  }
+
+  function onFolderMutation(): void {
+    void Promise.all([refreshNotes(true), refreshStatus()]);
+  }
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (vaultSwitching || vaultWorkInFlight) return;
@@ -729,11 +832,19 @@ export default function App() {
           onQueryChange={setQuery}
           searchRef={searchRef}
           onCreate={() => void createNote()}
+          onCreateInFolder={(folder) => void createNote(folder)}
+          onCreateFolder={createFolder}
+          onMoveFolder={moveFolder}
+          onInspectFolder={inspectFolder}
+          onDeleteFolder={deleteFolder}
+          onFolderMutation={onFolderMutation}
           creating={creating}
           status={status}
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
           notes={notes}
+          folders={folders}
+          folderError={folderError}
           results={searchResults}
           selectedId={selectedNoteId}
           loading={notesLoading}
@@ -753,7 +864,7 @@ export default function App() {
           }}
           onOpenAnotherVault={() => void chooseVault()}
           switchingVault={vaultSwitching || pickingVault || openingVault}
-          navigationLocked={vaultSwitching || pickingVault || openingVault || vaultWorkInFlight}
+          navigationLocked={vaultSwitching || pickingVault || openingVault || vaultWorkInFlight || folderMutationInFlightRef.current}
         />
       )}
 

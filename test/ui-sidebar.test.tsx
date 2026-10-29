@@ -43,10 +43,11 @@ function renderSidebar(
   view: View,
   {
     notes = rootNotes,
+    folders = [],
     selectedId = 'id-alpha',
     collapsed = false,
     open = false,
-  }: { notes?: UiNoteSummary[]; selectedId?: string | null; collapsed?: boolean; open?: boolean } = {},
+  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(
@@ -59,11 +60,19 @@ function renderSidebar(
         onQueryChange: () => {},
         searchRef: { current: null },
         onCreate: () => {},
+        onCreateInFolder: () => {},
+        onCreateFolder: async () => {},
+        onMoveFolder: async () => true,
+        onInspectFolder: async (path) => ({ path, folders: 0, notes: 0, files: 0, token: 'a'.repeat(64), noteIds: [] }),
+        onDeleteFolder: async () => [],
+        onFolderMutation: () => {},
         creating: false,
         status,
         theme: 'light',
         onToggleTheme: () => {},
         notes,
+        folders,
+        folderError: null,
         results: [],
         selectedId,
         loading: false,
@@ -124,10 +133,19 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-current="location"');
   });
 
-  it('renders note-only action menus without adding actions to folders', () => {
-    const markup = renderSidebar('notes', { notes: [...rootNotes, ...nestedNotes] });
+  it('renders empty filesystem folders and discoverable note/folder actions', () => {
+    const markup = renderSidebar('notes', { notes: [], folders: ['Empty', 'notes/Research/Methods'] , selectedId: null });
+    expect(markup).toContain('Empty, 0 pages');
+    expect(markup).toContain('Research, 0 pages');
+    expect(markup).toContain('aria-label="New folder"');
+    expect(markup).toContain('New note');
+    expect(markup).toContain('aria-label="Actions for Empty"');
+  });
+
+  it('renders contextual action menus for both folders and notes', () => {
+    const markup = renderSidebar('notes', { notes: [...rootNotes, ...nestedNotes], folders: ['projects'] });
     expect(markup).toContain('aria-label="Actions for Alpha note"');
-    expect(markup).not.toContain('aria-label="Actions for projects"');
+    expect(markup).toContain('aria-label="Actions for projects"');
   });
 
   it('renders the empty state on Settings when the vault has no pages', () => {

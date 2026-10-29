@@ -198,8 +198,31 @@ async function main() {
     await page.getByRole('heading', { name: 'Open a note to begin' }).waitFor({ state: 'visible' });
     await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
 
-    const createPage = page.getByRole('button', { name: 'New page' }).first();
-    await createPage.click();
+    await page.getByRole('button', { name: 'New folder' }).click();
+    const createFolderDialog = page.getByRole('dialog', { name: 'Create folder' });
+    await createFolderDialog.getByRole('textbox', { name: 'Folder name' }).fill('Project');
+    await createFolderDialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('treeitem', { name: 'Project, 0 pages' }).waitFor();
+
+    await page.getByRole('button', { name: 'New folder' }).click();
+    await page.getByRole('dialog', { name: 'Create folder' }).getByRole('textbox', { name: 'Folder name' }).fill('Temporary');
+    await page.getByRole('dialog', { name: 'Create folder' }).getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for Temporary' }).click();
+    await page.getByRole('menuitem', { name: 'Move folder' }).click();
+    const moveFolderDialog = page.getByRole('dialog', { name: 'Move folder' });
+    await moveFolderDialog.getByRole('combobox', { name: 'Parent folder' }).click();
+    await page.getByRole('option', { name: 'Project', exact: true }).click();
+    await moveFolderDialog.getByRole('button', { name: 'Move folder', exact: true }).click();
+    await page.getByRole('treeitem', { name: 'Project, 0 pages' }).waitFor();
+    await page.getByRole('button', { name: 'Actions for Temporary' }).click();
+    await page.getByRole('menuitem', { name: 'Delete folder' }).click();
+    const deleteEmptyFolder = page.getByRole('alertdialog', { name: 'Delete this folder and its contents?' });
+    await deleteEmptyFolder.getByText(/Contains 0 notes, 0 other files, and 0 nested folders/).waitFor();
+    await deleteEmptyFolder.getByRole('button', { name: 'Delete folder', exact: true }).click();
+    await page.getByRole('treeitem', { name: 'Project, 0 pages' }).waitFor();
+
+    await page.getByRole('button', { name: 'Actions for Project' }).click();
+    await page.getByRole('menuitem', { name: 'New note here' }).click();
     const title = page.getByRole('textbox', { name: 'Note title' });
     const body = page.getByRole('textbox', { name: 'Markdown body' });
     await title.waitFor({ state: 'visible' });
@@ -222,17 +245,23 @@ async function main() {
     const noteList = await notesResponse.json();
     const firstSummary = noteList.notes.find((note) => note.title === firstNote.title);
     assert(firstSummary, 'Saved note did not appear through the local API');
-    assert(firstSummary.path.startsWith('notes/'), 'New note was not stored under the notes directory');
+    assert(firstSummary.path.startsWith('Project/'), 'Folder-scoped note creation used the wrong directory');
     const firstAbsolutePath = resolve(expectedVaultPath, ...firstSummary.path.split('/'));
     assert(firstAbsolutePath.startsWith(`${expectedVaultPath}${sep}`), 'API note path escaped the temporary vault');
     const firstFileContents = await readFile(firstAbsolutePath, 'utf8');
     assert(firstFileContents.includes(firstNote.body), 'Saved Markdown file did not contain the edited body');
 
+    await page.getByRole('button', { name: 'Actions for Project' }).click();
+    await page.getByRole('menuitem', { name: 'Delete folder' }).click();
+    const deletePopulatedFolder = page.getByRole('alertdialog', { name: 'Delete this folder and its contents?' });
+    await deletePopulatedFolder.getByText(/Contains 1 note, 0 other files, and 0 nested folders/).waitFor();
+    await deletePopulatedFolder.getByRole('button', { name: 'Cancel' }).click();
+
     const createSecondResponse = page.waitForResponse((response) =>
       new URL(response.url()).pathname === '/api/notes' &&
       response.request().method() === 'POST',
     );
-    await page.getByRole('button', { name: 'New page' }).first().click();
+    await page.getByRole('button', { name: 'New note', exact: true }).click();
     assert.equal((await createSecondResponse).status(), 201, 'Second note creation API request failed');
     await page.waitForFunction(
       () => document.querySelector('#note-title')?.value === 'Untitled note',

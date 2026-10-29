@@ -16,6 +16,24 @@ export interface DatabaseSummary {
   propertyCount: number;
 }
 
+/** Contents shown before a folder is permanently removed. `token` binds confirmation to this snapshot. */
+export interface FolderImpact {
+  path: string;
+  folders: number;
+  notes: number;
+  files: number;
+  token: string;
+  noteIds: string[];
+}
+
+export interface FolderStore {
+  listFolders(): Promise<string[]>;
+  createFolder(path: string): Promise<void>;
+  moveFolder(fromPath: string, toPath: string): Promise<void>;
+  inspectFolder(path: string): Promise<FolderImpact>;
+  deleteFolder(path: string, expectedToken: string): Promise<string[]>;
+}
+
 export type StorageIssueCode =
   | 'INVALID_CONTENT'
   | 'UNSUPPORTED_VERSION'
@@ -199,7 +217,7 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore {
   readonly root: string;
   /** All valid documents as raw text, notes first, each group sorted by path. */
   snapshot(): Promise<VaultEntry[]>;

@@ -5,6 +5,7 @@ import type {
   DatabaseStore,
   DatabaseSummary,
   DatabaseViewWriteOptions,
+  FolderImpact,
   ImportOptions,
   ImportPlan,
   ImportReport,
@@ -33,6 +34,7 @@ import { databasePath, databaseViewPath, isReservedNotePath } from './layout.js'
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { walkVault, type WalkEntry } from './scan.js';
+import { createVaultFolder, deleteVaultFolder, inspectVaultFolder, listVaultFolders, moveVaultFolder } from './folders.js';
 
 interface ParsedNote {
   note: Note;
@@ -94,6 +96,26 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async listNotes(): Promise<NoteSummary[]> {
     const parsed = await this.parseNotesStrict();
     return parsed.map(({ note }) => summaryOf(note));
+  }
+
+  async listFolders(): Promise<string[]> {
+    return listVaultFolders(this.root);
+  }
+
+  async createFolder(path: string): Promise<void> {
+    return withVaultRootLock(this.root, () => createVaultFolder(this.root, path));
+  }
+
+  async moveFolder(fromPath: string, toPath: string): Promise<void> {
+    return withVaultRootLock(this.root, () => moveVaultFolder(this.root, fromPath, toPath));
+  }
+
+  async inspectFolder(path: string): Promise<FolderImpact> {
+    return inspectVaultFolder(this.root, path);
+  }
+
+  async deleteFolder(path: string, expectedToken: string): Promise<string[]> {
+    return withVaultRootLock(this.root, async () => (await deleteVaultFolder(this.root, path, expectedToken)).noteIds);
   }
 
   /** Returns the full parsed notes, including extra frontmatter. */

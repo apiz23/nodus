@@ -14,7 +14,7 @@ import {
   Sun,
   X,
 } from 'lucide-react';
-import type { UiNoteSummary, UiSearchResult, UiVaultStatus } from '../../src/ui-server/dto';
+import type { UiFolderImpact, UiNoteSummary, UiSearchResult, UiVaultStatus } from '../../src/ui-server/dto';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -38,11 +38,19 @@ interface SidebarProps {
   onQueryChange: (value: string) => void;
   searchRef: RefObject<HTMLInputElement | null>;
   onCreate: () => void;
+  onCreateInFolder: (folder: string) => void;
+  onCreateFolder: (path: string) => Promise<void>;
+  onMoveFolder: (fromPath: string, toPath: string) => Promise<boolean>;
+  onInspectFolder: (path: string) => Promise<UiFolderImpact>;
+  onDeleteFolder: (path: string, token: string) => Promise<string[] | false>;
+  onFolderMutation: () => void;
   creating: boolean;
   status: UiVaultStatus | null;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   notes: UiNoteSummary[];
+  folders: string[];
+  folderError: string | null;
   results: UiSearchResult[];
   selectedId: string | null;
   loading: boolean;
@@ -76,11 +84,19 @@ export function Sidebar({
   onQueryChange,
   searchRef,
   onCreate,
+  onCreateInFolder,
+  onCreateFolder,
+  onMoveFolder,
+  onInspectFolder,
+  onDeleteFolder,
+  onFolderMutation,
   creating,
   status,
   theme,
   onToggleTheme,
   notes,
+  folders,
+  folderError,
   results,
   selectedId,
   loading,
@@ -336,6 +352,8 @@ export function Sidebar({
         {compact ? null : (
           <PageTree
             notes={notes}
+            folders={folders}
+            folderError={folderError}
             results={results}
             query={query}
             selectedId={selectedId}
@@ -343,6 +361,13 @@ export function Sidebar({
             searching={searching}
             error={searchError}
             onCreate={onCreate}
+            onCreateInFolder={onCreateInFolder}
+            onCreateFolder={onCreateFolder}
+            onMoveFolder={onMoveFolder}
+            onInspectFolder={onInspectFolder}
+            onDeleteFolder={onDeleteFolder}
+            onFolderMutation={onFolderMutation}
+            navigationLocked={navigationLocked}
             onOpen={onOpen}
             onRenameNote={onRenameNote}
             onDeleteNote={onDeleteNote}
