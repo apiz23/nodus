@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Columns3,
   Database,
-  FileCode2,
   FileText,
   Folder,
   HardDrive,
@@ -112,13 +111,7 @@ function LandingNav() {
           </a>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Button asChild variant="ghost" size="sm" className="hidden sm:inline-flex">
-            <a href={GITHUB_URL} target="_blank" rel="noreferrer">
-              <GithubMark data-icon="inline-start" />
-              View source
-            </a>
-          </Button>
-          <Button asChild size="sm" className="hidden sm:inline-flex">
+          <Button asChild size="sm" className="hidden h-11 lg:h-10 sm:inline-flex">
             <a href={WORKSPACE_PATH}>
               Open workspace
               <ArrowRight data-icon="inline-end" aria-hidden="true" />
@@ -129,26 +122,26 @@ function LandingNav() {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
-                className="md:hidden"
+                size="icon"
+                className="size-11 md:hidden"
                 aria-label="Open menu"
               >
                 <Menu />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuContent align="end" className="w-56 p-1.5">
               {navLinks.map((link) => (
-                <DropdownMenuItem key={link.href} asChild>
+                <DropdownMenuItem key={link.href} asChild className="min-h-11 gap-2 px-2.5">
                   <a href={link.href}>{link.label}</a>
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
+              <DropdownMenuItem asChild className="min-h-11 gap-2 px-2.5">
                 <a href={GITHUB_URL} target="_blank" rel="noreferrer">
                   GitHub <ArrowUpRight className="ml-auto size-3.5" aria-hidden="true" />
                 </a>
               </DropdownMenuItem>
-              <DropdownMenuItem asChild>
+              <DropdownMenuItem asChild className="min-h-11 gap-2 px-2.5">
                 <a href={WORKSPACE_PATH}>
                   Open workspace <ArrowRight className="ml-auto size-3.5" aria-hidden="true" />
                 </a>
@@ -234,7 +227,7 @@ function PreviewGraph() {
         <Network className="size-3 text-muted-foreground" aria-hidden="true" />
       </div>
       <svg viewBox="0 0 112 112" className="w-full text-muted-foreground/50" aria-hidden="true">
-        <path d="M56 56 26 27M56 56l31-29M56 56 28 85M56 56l32 27M26 27l62-1M28 85l60-1" stroke="currentColor" strokeWidth="1" className="landing-dash" />
+        <path d="M56 56 26 27M56 56l31-29M56 56 28 85M56 56l32 27M26 27l62-1M28 85l60-1" stroke="currentColor" strokeWidth="1" strokeDasharray="3 5" opacity=".6" />
         <circle cx="26" cy="27" r="4" fill="currentColor" opacity=".7" />
         <circle cx="87" cy="26" r="3" fill="currentColor" opacity=".7" />
         <circle cx="28" cy="85" r="3" fill="currentColor" opacity=".7" />
@@ -325,7 +318,7 @@ function ProductPreview() {
         <div
           role="img"
           aria-label="Illustrative preview of the Nodus workspace: a sidebar of Markdown notes, a note called Research index with wiki links and backlinks, a local graph, and a Reading list database in table view."
-          className="overflow-hidden rounded-xl border border-border bg-card shadow-[0_30px_90px_-45px_rgba(43,42,38,0.45),0_2px_6px_-2px_rgba(43,42,38,0.08)]"
+          className="overflow-hidden rounded-xl bg-card shadow-[0_30px_90px_-45px_rgba(43,42,38,0.45),0_2px_6px_-2px_rgba(43,42,38,0.08)]"
         >
           <div className="flex h-9 items-center gap-2 border-b border-border bg-muted/25 px-3">
             <div className="flex items-center gap-1" aria-hidden="true">
@@ -396,7 +389,7 @@ function ProductPreview() {
           </div>
         </div>
       </div>
-      <figcaption className="mt-4 flex items-center gap-2 text-[11px] text-muted-foreground">
+      <figcaption className="mt-4 flex items-center gap-2 text-[12px] leading-5 text-muted-foreground">
         <span className="h-px w-6 bg-border" aria-hidden="true" />
         Illustrative workspace preview. Notes, links, graph, and database views reflect the local app.
       </figcaption>
@@ -407,43 +400,36 @@ function ProductPreview() {
 function Hero() {
   return (
     <section className="relative overflow-hidden">
-      <div className="landing-dot-grid pointer-events-none absolute inset-x-0 top-0 -z-10 h-[620px]" aria-hidden="true" />
-      <div className="pointer-events-none absolute -top-24 right-[-12%] -z-10 size-[420px] rounded-full bg-success/[0.045] blur-3xl" aria-hidden="true" />
-      <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 pt-14 pb-16 sm:pt-20 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:gap-10 lg:pt-24 lg:pb-20">
+      <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 pt-14 pb-16 sm:pt-20 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:gap-10 lg:items-start lg:pt-24 lg:pb-20">
         <div className="min-w-0">
-          <div className="landing-rise mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-2.5 py-1 text-[10px] font-medium tracking-[0.13em] text-muted-foreground uppercase">
-            <span className="size-1.5 rounded-full bg-success" />
-            Local-first knowledge workspace
-          </div>
-          <h1 className="landing-rise landing-delay-1 text-[clamp(2.65rem,6.3vw,4.65rem)] leading-[0.97] font-semibold tracking-[-0.052em] text-balance">
+          <h1 className="landing-rise text-[clamp(2.25rem,8.4vw,3.8rem)] leading-[1] font-semibold tracking-[-0.04em] text-balance">
             <span className="block">Your knowledge.</span>
             <span className="block">Your files.</span>
             <span className="block">Your rules<span className="text-success">.</span></span>
           </h1>
-          <p className="landing-rise landing-delay-2 mt-6 max-w-[48ch] text-[15px] leading-7 text-muted-foreground sm:text-base sm:leading-[1.75]">
+          <p className="landing-rise landing-delay-2 mt-6 max-w-[48ch] text-base leading-7 text-muted-foreground sm:leading-[1.75]">
             A connected knowledge workspace built around Markdown. Link your notes, organize information into powerful databases, and keep control of where your knowledge lives.
           </p>
           <div className="landing-rise landing-delay-3 mt-7 flex flex-wrap items-center gap-3">
-            <Button asChild className="h-10 px-4 text-sm">
+            <Button asChild className="h-11 px-4 text-sm sm:h-10">
               <a href={WORKSPACE_PATH}>
                 Explore Nodus
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
               </a>
             </Button>
-            <Button asChild variant="outline" className="h-10 px-4 text-sm">
+            <Button asChild variant="outline" className="h-11 px-4 text-sm sm:h-10">
               <a href={GITHUB_URL} target="_blank" rel="noreferrer">
                 <GithubMark data-icon="inline-start" />
                 View on GitHub
               </a>
             </Button>
           </div>
-          <div className="landing-rise landing-delay-3 mt-7 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4">
-            <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground">
-              <FileCode2 className="size-3.5" aria-hidden="true" />
-              Markdown in. Markdown out.
-            </span>
+          <div className="landing-rise landing-delay-3 mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4 text-[12.5px] text-muted-foreground">
+            <span>Markdown in. Markdown out.</span>
             <span className="hidden h-3 w-px bg-border sm:block" aria-hidden="true" />
-            <span className="font-mono text-[10.5px] text-muted-foreground">Every note is a .md file you own.</span>
+            <span>
+              Every note is a <span className="font-mono text-[11.5px]">.md</span> file you own.
+            </span>
           </div>
         </div>
         <ProductPreview />
@@ -457,7 +443,7 @@ function PrincipleStrip() {
     { icon: FileText, label: 'Plain files, always' },
     { icon: HardDrive, label: 'Local by default' },
     { icon: ShieldCheck, label: 'No account required' },
-    { icon: GithubMark, label: 'Open source, Apache-2.0' },
+    { icon: GithubMark, label: 'Apache-2.0' },
   ];
 
   return (
@@ -465,7 +451,7 @@ function PrincipleStrip() {
       <div className="mx-auto max-w-6xl px-5">
         <div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4">
           {items.map((item) => (
-            <div key={item.label} className="flex items-center gap-2 bg-background px-3 py-4 text-[11px] text-muted-foreground sm:px-4">
+            <div key={item.label} className="flex items-center gap-2 bg-background px-3 py-4 text-[12.5px] text-muted-foreground sm:px-4">
               <item.icon className="size-3.5 shrink-0 text-success" aria-hidden="true" />
               <span>{item.label}</span>
             </div>
@@ -476,19 +462,22 @@ function PrincipleStrip() {
   );
 }
 
-function SectionLabel({ index, children }: { index: string; children: ReactNode }) {
+function SectionHeader({ title, copy }: { title: string; copy: string }) {
   return (
-    <div className="flex items-center gap-2 font-mono text-[10px] tracking-[0.14em] text-muted-foreground uppercase">
-      <span>{index}</span>
-      <span className="h-px w-5 bg-border" aria-hidden="true" />
-      <span>{children}</span>
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:items-end lg:gap-16">
+      <h2 className="max-w-[20ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
+        {title}
+      </h2>
+      <p className="max-w-[56ch] text-base leading-7 text-muted-foreground">
+        {copy}
+      </p>
     </div>
   );
 }
 
 function KnowledgeMap() {
   return (
-    <div className="relative min-h-[330px] overflow-hidden bg-card p-5 sm:p-7">
+    <div className="relative min-h-[340px] overflow-hidden bg-card p-5 sm:min-h-[330px] sm:p-7">
       <svg viewBox="0 0 400 300" className="absolute inset-0 h-full w-full text-border" preserveAspectRatio="none" aria-hidden="true">
         <path d="M200 152 98 86M200 152l107-68M200 152l-92 82M200 152l100 70" stroke="currentColor" strokeWidth="1" />
         <path d="M98 86 305 62M98 86 108 234" stroke="currentColor" strokeWidth="1" strokeDasharray="3 5" opacity=".6" />
@@ -498,28 +487,28 @@ function KnowledgeMap() {
         <circle cx="108" cy="234" r="3" fill="currentColor" />
         <circle cx="300" cy="222" r="3" fill="currentColor" />
       </svg>
-      <div className="relative mx-auto mt-10 w-fit rounded-lg border border-border bg-background px-3 py-2 shadow-sm">
+      <div className="absolute top-1/2 left-1/2 w-[142px] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-background px-3 py-2">
         <div className="flex items-center gap-2">
           <FileText className="size-3.5 text-success" aria-hidden="true" />
           <span className="text-[12px] font-semibold">Research index</span>
         </div>
         <div className="mt-1 font-mono text-[9px] text-muted-foreground">research-index.md</div>
       </div>
-      <div className="absolute top-[20%] left-[4%] max-w-[120px] rounded-md border border-border bg-background px-2.5 py-1.5 shadow-xs">
+      <div className="absolute top-[9%] left-[2%] w-[112px] rounded-md border border-border bg-background px-2.5 py-1.5 sm:top-[20%] sm:left-[4%] sm:w-auto sm:max-w-[120px]">
         <div className="text-[10px] font-medium">Product brief</div>
         <div className="mt-0.5 font-mono text-[8px] text-muted-foreground">3 links in</div>
       </div>
-      <div className="absolute top-[12%] right-[2%] hidden max-w-[120px] rounded-md border border-border bg-background px-2.5 py-1.5 shadow-xs sm:block">
+      <div className="absolute top-[9%] right-[2%] w-[112px] rounded-md border border-border bg-background px-2.5 py-1.5 sm:top-[12%] sm:right-[2%] sm:w-auto sm:max-w-[120px]">
         <div className="text-[10px] font-medium">Reading list</div>
         <div className="mt-0.5 font-mono text-[8px] text-muted-foreground">database</div>
       </div>
-      <div className="absolute bottom-[7%] left-[2%] max-w-[130px] rounded-md border border-border bg-background px-2.5 py-1.5 shadow-xs">
+      <div className="absolute bottom-[9%] left-[2%] w-[120px] rounded-md border border-border bg-background px-2.5 py-1.5 sm:bottom-[7%] sm:w-auto sm:max-w-[130px]">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <Link2 className="size-3 text-success" aria-hidden="true" /> Backlinks
         </div>
         <div className="mt-1 text-[8.5px] leading-4 text-muted-foreground">Linked from 4 notes</div>
       </div>
-      <div className="absolute right-[3%] bottom-[9%] hidden max-w-[130px] rounded-md border border-border bg-background px-2.5 py-1.5 shadow-xs sm:block">
+      <div className="absolute right-[2%] bottom-[9%] w-[120px] rounded-md border border-border bg-background px-2.5 py-1.5 sm:right-[3%] sm:bottom-[9%] sm:w-auto sm:max-w-[130px]">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <Search className="size-3 text-success" aria-hidden="true" /> Search
         </div>
@@ -550,29 +539,20 @@ function ConnectedKnowledge() {
 
   return (
     <section id="features" className="scroll-mt-20 border-t border-border">
-      <div className="mx-auto max-w-6xl px-5 py-20 sm:py-24">
-        <div className="grid gap-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-16">
-          <SectionLabel index="01">Connected knowledge</SectionLabel>
-          <div>
-            <h2 className="max-w-[18ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
-              Notes that remember each other.
-            </h2>
-            <p className="mt-4 max-w-[56ch] text-sm leading-6 text-muted-foreground sm:text-[15px] sm:leading-7">
-              Nodus keeps Markdown as the source of truth and builds the connections around it. Link freely, then follow the trail through backlinks, search, and the local graph.
-            </p>
-          </div>
-        </div>
+      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
+        <SectionHeader
+          title="Notes that remember each other."
+          copy="Nodus keeps Markdown as the source of truth and builds the connections around it. Link freely, then follow the trail through backlinks, search, and the local graph."
+        />
         <div className="mt-10 grid overflow-hidden rounded-lg border border-border lg:grid-cols-[1.15fr_1fr]">
           <KnowledgeMap />
           <div className="divide-y divide-border border-t border-border bg-background lg:border-t-0 lg:border-l">
             {features.map((feature) => (
-              <div key={feature.title} className="flex gap-4 px-5 py-6 sm:px-7">
-                <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-card">
-                  <feature.icon className="size-4 text-success" aria-hidden="true" />
-                </span>
+              <div key={feature.title} className="flex gap-3 px-5 py-6 sm:px-7">
+                <feature.icon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" />
                 <div>
-                  <h3 className="text-sm font-semibold tracking-tight">{feature.title}</h3>
-                  <p className="mt-1.5 max-w-[42ch] text-[13px] leading-6 text-muted-foreground">{feature.copy}</p>
+                  <h3 className="text-[15px] font-semibold tracking-tight">{feature.title}</h3>
+                  <p className="mt-1.5 max-w-[42ch] text-[15px] leading-6 text-muted-foreground">{feature.copy}</p>
                 </div>
               </div>
             ))}
@@ -599,7 +579,7 @@ function DatabaseShowcase() {
           Reading list
         </div>
         <Badge variant="secondary" className="font-mono text-[9px]">24 rows</Badge>
-        <div className="ml-auto flex items-center gap-0.5 rounded-md bg-muted p-0.5 text-[10px]">
+        <div className="flex w-full items-center gap-0.5 rounded-md bg-muted p-0.5 text-[10px] sm:ml-auto sm:w-auto">
           <span className="inline-flex items-center gap-1 rounded bg-background px-2 py-1 font-medium shadow-xs">
             <Table2 className="size-3" aria-hidden="true" /> Table
           </span>
@@ -655,32 +635,22 @@ function StructuredThinking() {
 
   return (
     <section className="border-t border-border bg-secondary/25">
-      <div className="mx-auto max-w-6xl px-5 py-20 sm:py-24">
-        <div className="grid gap-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-16">
-          <SectionLabel index="02">Structured thinking</SectionLabel>
-          <div>
-            <h2 className="max-w-[20ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
-              Free-form notes. Structured when you need it.
-            </h2>
-            <p className="mt-4 max-w-[56ch] text-sm leading-6 text-muted-foreground sm:text-[15px] sm:leading-7">
-              Turn Markdown notes into a database without locking them inside one. Add typed properties, save the views that fit the work, and connect records across your vault.
-            </p>
-          </div>
-        </div>
+      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
+        <SectionHeader
+          title="Free-form notes. Structured when you need it."
+          copy="Turn Markdown notes into a database without locking them inside one. Add typed properties, save the views that fit the work, and connect records across your vault."
+        />
         <div className="mt-10">
           <DatabaseShowcase />
-          <p className="mt-3 text-[11px] text-muted-foreground">
+          <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
             Illustrative database view. Table, Kanban, and Calendar are saved views over Markdown notes.
           </p>
         </div>
-        <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-10 grid gap-x-10 sm:grid-cols-2 lg:grid-cols-4">
           {features.map((feature) => (
-            <div key={feature.title} className="bg-background px-5 py-5">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="size-3.5 text-success" aria-hidden="true" />
-                <h3 className="text-[13px] font-semibold">{feature.title}</h3>
-              </div>
-              <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{feature.copy}</p>
+            <div key={feature.title} className="border-t border-border py-4">
+              <h3 className="text-[14px] font-semibold">{feature.title}</h3>
+              <p className="mt-1.5 text-[14.5px] leading-6 text-muted-foreground">{feature.copy}</p>
             </div>
           ))}
         </div>
@@ -691,7 +661,7 @@ function StructuredThinking() {
 
 function VaultTree() {
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-[#232220] text-[#e8e5df] shadow-[0_20px_60px_-40px_rgba(43,42,38,0.55)]">
+    <div className="overflow-hidden rounded-lg bg-[#232220] text-[#e8e5df] shadow-[0_20px_60px_-40px_rgba(43,42,38,0.55)]">
       <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5">
         <span className="size-2 rounded-full bg-[#f0736c]/70" />
         <span className="size-2 rounded-full bg-[#d6b26a]/70" />
@@ -723,37 +693,36 @@ function VaultTree() {
 function Ownership() {
   return (
     <section id="philosophy" className="scroll-mt-20 border-t border-border">
-      <div className="mx-auto max-w-6xl px-5 py-20 sm:py-24">
+      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] lg:items-center lg:gap-20">
           <div>
-            <SectionLabel index="03">Your data, your control</SectionLabel>
-            <h2 className="mt-4 max-w-[18ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
+            <h2 className="max-w-[18ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
               Nothing between you and your files.
             </h2>
-            <p className="mt-4 max-w-[56ch] text-sm leading-6 text-muted-foreground sm:text-[15px] sm:leading-7">
+            <p className="mt-4 max-w-[56ch] text-base leading-7 text-muted-foreground">
               Your vault is a folder of ordinary Markdown, portable database definitions, and saved views. Read it in any editor, move it with your filesystem, and back it up on your terms.
             </p>
-            <div className="mt-7 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
-              <div className="bg-background p-4">
-                <div className="flex items-center gap-2 text-[11px] font-semibold">
+            <div className="mt-7 grid gap-5 border-t border-border pt-5 sm:grid-cols-2 sm:gap-8">
+              <div>
+                <div className="flex items-center gap-2 text-[12.5px] font-semibold">
                   <CheckCircle2 className="size-3.5 text-success" aria-hidden="true" />
                   Available today
                 </div>
-                <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
+                <p className="mt-2 text-[14.5px] leading-6 text-muted-foreground">
                   Local vaults, Markdown editing, verified backups, and portable database views.
                 </p>
               </div>
-              <div className="bg-background p-4">
-                <div className="flex items-center gap-2 text-[11px] font-semibold">
+              <div className="border-t border-border pt-4 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-8">
+                <div className="flex items-center gap-2 text-[12.5px] font-semibold">
                   <HardDrive className="size-3.5 text-muted-foreground" aria-hidden="true" />
                   Planned, not shipped
                 </div>
-                <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
+                <p className="mt-2 text-[14.5px] leading-6 text-muted-foreground">
                   Optional storage and sync providers. Sync remains experimental and is not wired into the workspace.
                 </p>
               </div>
             </div>
-            <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-[11px] text-muted-foreground">
+            <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[12.5px] text-muted-foreground">
               <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No telemetry</span>
               <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No account</span>
               <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No network dependency</span>
@@ -761,7 +730,7 @@ function Ownership() {
           </div>
           <div>
             <VaultTree />
-            <p className="mt-3 text-[11px] text-muted-foreground">
+            <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
               Example vault layout. Note bodies and frontmatter stay readable outside Nodus.
             </p>
           </div>
@@ -798,18 +767,11 @@ function Workflow() {
 
   return (
     <section className="border-t border-border bg-card/35">
-      <div className="mx-auto max-w-6xl px-5 py-20 sm:py-24">
-        <div className="grid gap-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-16">
-          <SectionLabel index="04">The workflow</SectionLabel>
-          <div>
-            <h2 className="max-w-[22ch] text-[clamp(2rem,4.2vw,3.25rem)] leading-[1.04] font-semibold tracking-[-0.04em] text-balance">
-              From a thought to a system.
-            </h2>
-            <p className="mt-4 max-w-[56ch] text-sm leading-6 text-muted-foreground sm:text-[15px] sm:leading-7">
-              Start loose. Add structure only where it helps. The note remains Markdown at every step.
-            </p>
-          </div>
-        </div>
+      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
+        <SectionHeader
+          title="From a thought to a system."
+          copy="Start loose. Add structure only where it helps. The note remains Markdown at every step."
+        />
         <div className="relative mt-12">
           <div className="absolute top-4 right-[16%] left-[16%] hidden border-t border-dashed border-border md:block" aria-hidden="true" />
           <ol className="relative grid gap-8 md:grid-cols-3 md:gap-0">
@@ -823,10 +785,10 @@ function Workflow() {
                 </div>
                 <div className="mt-5 flex items-center gap-2">
                   <step.icon className="size-4 text-success" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold tracking-tight">{step.title}</h3>
+                  <h3 className="text-[15px] font-semibold tracking-tight">{step.title}</h3>
                 </div>
-                <p className="mt-2 max-w-[34ch] text-[13px] leading-6 text-muted-foreground">{step.copy}</p>
-                <div className="mt-4 inline-flex rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground">
+                <p className="mt-2 max-w-[34ch] text-[15px] leading-6 text-muted-foreground">{step.copy}</p>
+                <div className="mt-4 inline-flex rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
                   {step.sample}
                 </div>
               </li>
@@ -858,25 +820,21 @@ function OpenSourceCta() {
           <circle cx="524" cy="126" r="3" fill="currentColor" />
         </svg>
         <div className="relative max-w-[620px]">
-          <div className="inline-flex items-center gap-2 rounded-full border border-background/15 px-2.5 py-1 font-mono text-[10px] tracking-[0.12em] text-background/65 uppercase">
-            <GithubMark className="size-3" />
-            Open source
-          </div>
-          <h2 className="mt-5 text-[clamp(2.1rem,4.8vw,3.6rem)] leading-[1.02] font-semibold tracking-[-0.045em] text-balance">
+          <h2 className="text-[clamp(2.1rem,4.8vw,3.6rem)] leading-[1.02] font-semibold tracking-[-0.04em] text-balance">
             Built in the open. Owned by you.
           </h2>
-          <p className="mt-4 max-w-[54ch] text-sm leading-6 text-background/65 sm:text-[15px] sm:leading-7">
+          <p className="mt-4 max-w-[54ch] text-base leading-7 text-background/65">
             Nodus is Apache-2.0 licensed. Read the code, run it locally, inspect the storage model, and help shape what comes next.
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3">
-            <Button asChild className="h-10 bg-background px-4 text-sm text-foreground hover:bg-background/90">
+            <Button asChild className="h-11 bg-background px-4 text-sm text-foreground hover:bg-background/90 sm:h-10">
               <a href={GITHUB_URL} target="_blank" rel="noreferrer">
                 <GithubMark data-icon="inline-start" />
                 Explore the repository
                 <ArrowUpRight data-icon="inline-end" aria-hidden="true" />
               </a>
             </Button>
-            <Button asChild variant="outline" className="h-10 border-background/20 bg-transparent px-4 text-sm text-background hover:bg-background/10 hover:text-background">
+            <Button asChild variant="outline" className="h-11 border-background/20 bg-transparent px-4 text-sm text-background hover:bg-background/10 hover:text-background sm:h-10">
               <a href={WORKSPACE_PATH}>
                 Open the workspace
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
@@ -896,20 +854,20 @@ function LandingFooter() {
         <div className="flex flex-col gap-8 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <Wordmark />
-            <p className="mt-3 max-w-[36ch] text-[12px] leading-5 text-muted-foreground">
+            <p className="mt-3 max-w-[36ch] text-[13px] leading-6 text-muted-foreground">
               A local-first, Markdown-native knowledge workspace. Notes stay portable; structure stays yours.
             </p>
           </div>
-          <nav aria-label="Footer" className="grid grid-cols-2 gap-x-10 gap-y-2 text-[12px]">
-            <a className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="#features">Features</a>
-            <a className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="#philosophy">Philosophy</a>
-            <a className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={WORKSPACE_PATH}>Workspace</a>
-            <a className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+          <nav aria-label="Footer" className="grid grid-cols-2 gap-x-10 gap-y-1 text-[13px]">
+            <a className="inline-flex min-h-11 items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="#features">Features</a>
+            <a className="inline-flex min-h-11 items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="#philosophy">Philosophy</a>
+            <a className="inline-flex min-h-11 items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={WORKSPACE_PATH}>Workspace</a>
+            <a className="inline-flex min-h-11 items-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
           </nav>
         </div>
-        <div className="mt-9 flex flex-col gap-2 border-t border-border pt-5 text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-9 flex flex-col gap-2 border-t border-border pt-5 text-[12px] leading-5 text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>Nodus · Apache-2.0 · Local-first by design</span>
-          <span className="font-mono text-[10px]">Markdown is the format. Your filesystem is the database.</span>
+          <span>Markdown is the format. Your filesystem is the database.</span>
         </div>
       </div>
     </footer>
