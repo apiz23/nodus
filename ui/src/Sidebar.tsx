@@ -166,8 +166,8 @@ export function Sidebar({
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex min-h-0 w-[280px] shrink-0 flex-col gap-2 overflow-hidden border-r border-sidebar-border bg-sidebar px-2.5 py-3 transition-[width,transform] duration-150',
-          compact ? 'md:static md:z-auto md:w-16 md:items-center md:px-2' : 'md:static md:z-auto md:w-[240px]',
+          'fixed inset-y-0 left-0 z-50 flex min-h-0 w-[280px] shrink-0 flex-col gap-2 overflow-hidden border-r border-sidebar-border bg-sidebar px-2.5 py-3 transition-transform duration-150 md:h-full',
+          compact ? 'md:static md:z-auto md:w-full md:items-center md:px-2' : 'md:static md:z-auto md:w-full',
           open ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
         )}
         aria-label="Workspace navigation"

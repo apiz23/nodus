@@ -45,7 +45,7 @@ const hooks = vi.hoisted(() => {
 });
 
 const mockApi = vi.hoisted(() => ({
-  status: vi.fn(), notes: vi.fn(), databases: vi.fn(), note: vi.fn(), saveNote: vi.fn(),
+  status: vi.fn(), notes: vi.fn(), folders: vi.fn(), databases: vi.fn(), note: vi.fn(), saveNote: vi.fn(),
   openVault: vi.fn(), pickVault: vi.fn(),
   search: vi.fn(),
 }));
@@ -110,6 +110,7 @@ beforeEach(() => {
   storedPreferences = new Map();
   mockApi.status.mockResolvedValue(status);
   mockApi.notes.mockResolvedValue({ notes: [] });
+  mockApi.folders.mockResolvedValue({ folders: [] });
   mockApi.databases.mockResolvedValue({ databases: [] });
   mockApi.note.mockImplementation(async (id: string) => ({ note: id === a.id ? a : b }));
   mockApi.saveNote.mockImplementation(async (id: string, input: { body: string }) => ({ note: makeNote(id, input.body, `${id}-saved`) }));
@@ -125,6 +126,23 @@ beforeEach(() => {
   vi.stubGlobal('document', { documentElement: { classList: { toggle: () => {} }, dataset: {} } });
 });
 afterEach(() => { hooks.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it('loads filesystem folders on startup even when there are no notes', async () => {
+  const folders = ['Empty', 'Projects', 'Projects/Research'];
+  mockApi.folders.mockResolvedValue({ folders });
+  await mount();
+  expect(props('test-sidebar')).toMatchObject({ notes: [], folders, folderError: null, loading: false });
+});
+
+it('keeps valid notes visible when startup folder loading fails and recovers on retry', async () => {
+  mockApi.notes.mockResolvedValue({ notes: [a] });
+  mockApi.folders.mockRejectedValueOnce(new Error('Folder listing unavailable'));
+  await mount();
+  expect(props('test-sidebar')).toMatchObject({ notes: [a], folderError: 'Folder listing unavailable' });
+  mockApi.folders.mockResolvedValue({ folders: ['Empty'] });
+  props('test-sidebar').onRetry(); await flush();
+  expect(props('test-sidebar')).toMatchObject({ notes: [a], folders: ['Empty'], folderError: null });
+});
 
 it('debounces search and hides old results when the same query is cleared and entered again', async () => {
   const result = { ...a, snippet: 'Title: synthetic-a' };

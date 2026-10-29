@@ -364,7 +364,7 @@ export function PageTree({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3">
-        {folderError === null ? null : <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">Folders could not be refreshed: {folderError}</div>}
+        {folderError === null ? null : <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">Folders could not be refreshed: {folderError}<Button type="button" variant="link" size="xs" onClick={onRetry}>Retry</Button></div>}
         {error === null ? null : (
           <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
             <div>{error}</div>
@@ -403,18 +403,20 @@ export function PageTree({
               ))}
             </div>
           )
-        ) : notes.length === 0 && folders.length === 0 ? (
-          <div className="px-2 py-8 text-center">
-            <FileText className="mx-auto mb-2 size-4 text-muted-foreground" />
-            <p className="text-xs font-medium">No pages yet</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              Create a Markdown page in this local vault.
-            </p>
-            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onCreate}>
-              <Plus data-icon="inline-start" />
-              New page
-            </Button>
-          </div>
+        ) : tree.notes.length === 0 && tree.folders.size === 0 ? (
+          error !== null || folderError !== null ? null : (
+            <div className="px-2 py-8 text-center">
+              <FileText className="mx-auto mb-2 size-4 text-muted-foreground" />
+              <p className="text-xs font-medium">No pages yet</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                Create a Markdown page in this local vault.
+              </p>
+              <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onCreate}>
+                <Plus data-icon="inline-start" />
+                New page
+              </Button>
+            </div>
+          )
         ) : (
           <div role="tree" aria-label="Pages" onKeyDown={handleTreeKeyDown}>
             <TreeLevel
@@ -537,49 +539,51 @@ function TreeLevel({
         const open = expanded.has(folder.path);
         const noteCount = countNotes(folder);
         return (
-          <div key={folder.path} role="none" className="group flex min-w-0 items-center rounded-[4px]">
-            <Button
-              type="button"
-              variant="ghost"
-              role="treeitem"
-              aria-expanded={open}
-              aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
-              aria-level={depth + 1}
-              aria-label={`${folder.name}, ${noteCount} ${noteCount === 1 ? 'page' : 'pages'}`}
-              className={cn(
-                'h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
-              )}
-              style={{ paddingLeft: `${6 + depth * 16}px` }}
-              onClick={() => { onSelectFolder(folder.path); onToggle(folder.path); }}
-              disabled={navigationLocked}
-            >
-              <ChevronRight
-                className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
-              />
-              {open ? (
-                <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-              ) : (
-                <Folder className="size-4 shrink-0 text-muted-foreground" />
-              )}
-              <span className="truncate">{folder.name}</span>
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="icon-sm" className="size-7 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Actions for ${folder.name}`} title={`Actions for ${folder.name}`} disabled={navigationLocked} onClick={(event) => event.stopPropagation()}><MoreHorizontal /></Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="right" align="start" className="w-48">
-                <DropdownMenuItem onSelect={() => onCreateInFolder(folder.storagePath)}><FilePlus />New note here</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onCreateSubfolder(folder.storagePath)}><FolderPlus />New subfolder</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => onRenameFolder(folder)}><Pencil />Rename folder</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onMoveFolder(folder)}><Folder />Move folder</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}><Trash2 />Delete folder</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+          <div key={folder.path} role="none">
+            <div className="group flex min-w-0 items-center rounded-[4px]">
+              <Button
+                type="button"
+                variant="ghost"
+                role="treeitem"
+                aria-expanded={open}
+                aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
+                aria-level={depth + 1}
+                aria-label={`${folder.name}, ${noteCount} ${noteCount === 1 ? 'page' : 'pages'}`}
+                className={cn(
+                  'h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
+                )}
+                style={{ paddingLeft: `${6 + depth * 16}px` }}
+                onClick={() => { onSelectFolder(folder.path); onToggle(folder.path); }}
+                disabled={navigationLocked}
+              >
+                <ChevronRight
+                  className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
+                />
+                {open ? (
+                  <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <Folder className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <span className="truncate">{folder.name}</span>
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="ghost" size="icon-sm" className="size-7 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Actions for ${folder.name}`} title={`Actions for ${folder.name}`} disabled={navigationLocked} onClick={(event) => event.stopPropagation()}><MoreHorizontal /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="right" align="start" className="w-48">
+                  <DropdownMenuItem onSelect={() => onCreateInFolder(folder.storagePath)}><FilePlus />New note here</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onCreateSubfolder(folder.storagePath)}><FolderPlus />New subfolder</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => onRenameFolder(folder)}><Pencil />Rename folder</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onMoveFolder(folder)}><Folder />Move folder</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}><Trash2 />Delete folder</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             {open ? (
-              <div role="group">
+              <div role="group" className="min-w-0 w-full">
                 <TreeLevel
                   root={folder}
                   depth={depth + 1}
@@ -612,6 +616,7 @@ function TreeLevel({
             variant="ghost"
             role="treeitem"
             aria-selected={note.id === selectedId}
+            aria-label={`${note.title} (${note.path.split('/').at(-1)})`}
             aria-level={depth + 1}
             className={cn(
               'h-7 min-w-0 flex-1 shrink justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal',
@@ -622,10 +627,10 @@ function TreeLevel({
             )}
             style={{ paddingLeft: `${6 + depth * 16 + 18}px` }}
             onClick={() => onOpen(note.id)}
-            title={note.path}
+            title={`${note.title}\n${note.path}`}
           >
             <PageIcon icon={note.icon} className="size-4 shrink-0 text-[13px]" />
-            <span className="truncate">{note.title}</span>
+            <span className="truncate">{note.path.split('/').at(-1)}</span>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

@@ -70,7 +70,7 @@ try {
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('#note-title')?.value === 'Renamed future');
   await request(`/notes/${target.id}`, 'DELETE', { baseHash: renamed.contentHash });
-  await page.getByRole('treeitem', { name: 'Discovery source', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'Discovery source (discovery-source.md)', exact: true }).click();
   await saveSource(`${sourceBody}\n\n`);
   await page.locator('.cm-wikilink-unresolved').filter({ hasText: 'pinned' }).waitFor();
   assert.equal(await page.getByRole('link', { name: 'Open pinned', exact: true }).count(), 0);

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import type { PanelImperativeHandle } from 'react-resizable-panels';
 import { cn } from '@/lib/utils';
 import type {
   UiDatabase,
@@ -30,6 +32,14 @@ type ModalState =
 
 const THEME_KEY = 'nodus-ui-theme';
 const EDITOR_WIDTH_KEY = 'nodus-editor-width';
+const SIDEBAR_WIDTH_KEY = 'nodus-sidebar-width';
+
+function initialSidebarWidth(): number {
+  try {
+    const width = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    return Number.isFinite(width) && width >= 200 && width <= 480 ? width : 240;
+  } catch { return 240; }
+}
 
 function initialTheme(): 'light' | 'dark' {
   const stored = window.localStorage.getItem(THEME_KEY);
@@ -98,6 +108,21 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [desktop, setDesktop] = useState(() => window.matchMedia?.('(min-width: 768px)').matches ?? true);
+  const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const sidebarWidthRef = useRef(initialSidebarWidth());
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(min-width: 768px)');
+    if (!media) return;
+    const update = () => setDesktop(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    sidebarPanelRef.current?.resize(!desktop ? 0 : sidebarCollapsed ? 64 : sidebarWidthRef.current);
+  }, [desktop, sidebarCollapsed, focusMode]);
   const [editorFullWidth, setEditorFullWidth] = useState(initialFullWidth);
   const [vaultSwitching, setVaultSwitching] = useState(false);
   const [vaultWorkInFlight, setVaultWorkInFlight] = useState(false);
@@ -342,12 +367,20 @@ export default function App() {
       setNotesLoading(true);
       setDatabasesLoading(true);
       setStatusLoading(true);
-      const [statusResult, notesResult, databasesResult] = await Promise.allSettled([
+      const [statusResult, notesResult, databasesResult, foldersResult] = await Promise.allSettled([
         api.status(),
         api.notes(),
         api.databases(),
+        api.folders(),
       ]);
       if (cancelled || vaultRequest !== vaultRequestRef.current) return;
+
+      if (foldersResult.status === 'fulfilled') {
+        setFolders(foldersResult.value.folders);
+        setFolderError(null);
+      } else {
+        setFolderError(messageOf(foldersResult.reason));
+      }
 
       if (statusResult.status === 'fulfilled') {
         setStatus(statusResult.value);
@@ -805,24 +838,29 @@ export default function App() {
   }
 
   return (
-    <div
-      className={cn(
-        'flex h-dvh flex-col overflow-hidden bg-background text-foreground md:grid',
-        focusMode
-          ? 'md:grid-cols-1'
-          : sidebarCollapsed
-            ? 'md:grid-cols-[64px_minmax(0,1fr)]'
-            : 'md:grid-cols-[240px_minmax(0,1fr)]',
-        'md:grid-rows-1',
-      )}
-    >
+    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring/80"
       >
         Skip to content
       </a>
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1" disabled={!desktop || sidebarCollapsed || focusMode}>
       {focusMode ? null : (
+        <ResizablePanel
+          id="workspace-sidebar"
+          panelRef={sidebarPanelRef}
+          defaultSize={desktop ? sidebarWidthRef.current : 0}
+          minSize={!desktop ? 0 : sidebarCollapsed ? 64 : 200}
+          maxSize={!desktop ? 0 : sidebarCollapsed ? 64 : 480}
+          groupResizeBehavior="preserve-pixel-size"
+          className="min-h-0 overflow-hidden"
+          onResize={({ inPixels }) => {
+            if (!desktop || sidebarCollapsed || inPixels < 200) return;
+            sidebarWidthRef.current = inPixels;
+            try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(inPixels)); } catch { /* Optional preference. */ }
+          }}
+        >
         <Sidebar
           view={view}
           onView={(next) => {
@@ -866,8 +904,10 @@ export default function App() {
           switchingVault={vaultSwitching || pickingVault || openingVault}
           navigationLocked={vaultSwitching || pickingVault || openingVault || vaultWorkInFlight || folderMutationInFlightRef.current}
         />
+        </ResizablePanel>
       )}
-
+      {focusMode ? null : <ResizableHandle withHandle aria-label="Resize sidebar" className={cn('hidden md:flex', sidebarCollapsed && 'md:hidden')} />}
+      <ResizablePanel id="workspace-content" minSize={0} className="flex h-full min-h-0 flex-col">
       <main
         id="main-content"
         tabIndex={-1}
@@ -1025,6 +1065,8 @@ export default function App() {
           />
         ) : null}
       </main>
+      </ResizablePanel>
+      </ResizablePanelGroup>
 
       <CommandPalette
         key={status?.vault.path ?? 'vault-loading'}

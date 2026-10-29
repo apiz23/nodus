@@ -47,7 +47,9 @@ function renderSidebar(
     selectedId = 'id-alpha',
     collapsed = false,
     open = false,
-  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean } = {},
+    folderError = null,
+    searchError = null,
+  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; searchError?: string | null } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(
@@ -72,12 +74,12 @@ function renderSidebar(
         onToggleTheme: () => {},
         notes,
         folders,
-        folderError: null,
+        folderError,
         results: [],
         selectedId,
         loading: false,
         searching: false,
-        searchError: null,
+        searchError,
         onOpen: () => {},
         onRenameNote: () => {},
         onDeleteNote: () => {},
@@ -151,6 +153,28 @@ describe('Sidebar note tree visibility across main sections', () => {
   it('renders the empty state on Settings when the vault has no pages', () => {
     const markup = renderSidebar('settings', { notes: [], selectedId: null });
     expect(markup).toContain('No pages yet');
+  });
+
+  it('shows Markdown filenames while preserving note titles for accessible navigation', () => {
+    const markup = renderSidebar('notes', { notes: [note('root', 'A different title', 'actual-file.md')] });
+    expect(markup).toContain('>actual-file.md</span>');
+    expect(markup).toContain('aria-label="A different title (actual-file.md)"');
+  });
+
+  it('shows the empty state when only the hidden default notes namespace remains', () => {
+    const markup = renderSidebar('notes', { notes: [], folders: ['notes'], selectedId: null });
+    expect(markup).toContain('No pages yet');
+    expect(markup).not.toContain('role="tree"');
+  });
+
+  it('reports API failures without claiming the vault is empty or hiding known notes', () => {
+    for (const errors of [{ searchError: 'Cannot read notes' }, { folderError: 'Cannot read folders' }]) {
+      const empty = renderSidebar('notes', { notes: [], selectedId: null, ...errors });
+      expect(empty).toContain('role="alert"');
+      expect(empty).toContain('Retry');
+      expect(empty).not.toContain('No pages yet');
+      expect(renderSidebar('notes', errors)).toContain('>alpha.md</span>');
+    }
   });
 
   it('shows a real current-vault switcher with a shortened path and menu trigger', () => {
