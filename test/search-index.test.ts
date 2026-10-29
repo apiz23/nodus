@@ -55,6 +55,36 @@ describe('derived global search index', () => {
     expect(searchIndex(buildSearchIndex([moved]), 'Renamed')[0]?.id).toBe(note(1, 'Any').id);
   });
 
+  it('keeps supplementary Unicode characters intact at both excerpt boundaries', () => {
+    const body = `😀${'x'.repeat(44)}needle${'y'.repeat(89)}😀tail`;
+    const result = searchIndex(buildSearchIndex([note(1, 'Other', body)]), 'needle')[0]!;
+    expect(Buffer.from(result.match.text).toString('utf8')).toBe(result.match.text);
+    expect(result.match.text).toContain('😀');
+    expect(result.match.text.slice(result.match.start, result.match.end)).toBe('needle');
+  });
+
+  it('does not let an obsolete in-flight rebuild replace an invalidated snapshot', async () => {
+    let finishOld!: (notes: ReturnType<typeof note>[]) => void;
+    const old = new Promise<ReturnType<typeof note>[]>((resolve) => { finishOld = resolve; });
+    const load = vi.fn().mockReturnValueOnce(old).mockResolvedValue([note(2, 'New')]);
+    const cache = createSnapshotCache(load, buildSearchIndex);
+    const obsolete = cache.get();
+    cache.markDirty();
+    const current = await cache.get();
+    finishOld([note(1, 'Old')]);
+    await obsolete;
+    expect(await cache.get()).toBe(current);
+    expect(searchIndex(current, 'Old')).toEqual([]);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers when building a loaded snapshot fails', async () => {
+    const build = vi.fn(buildSearchIndex).mockImplementationOnce(() => { throw new Error('build failed'); });
+    const cache = createSnapshotCache(async () => [note(1, 'Recovered')], build);
+    await expect(cache.get()).rejects.toThrow('build failed');
+    expect(searchIndex(await cache.get(), 'Recovered')).toHaveLength(1);
+  });
+
   it('reuses normalized documents across queries and rebuilds after invalidation/expiry', async () => {
     let time = 0;
     const load = vi.fn(async () => [note(1, 'First')]);

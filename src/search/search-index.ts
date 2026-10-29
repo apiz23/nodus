@@ -54,8 +54,16 @@ function matchIn(value: SearchText, query: string, field: SearchField): SearchMa
 }
 
 function context(match: SearchMatch): SearchMatch {
-  const start = Math.max(0, match.start - 45);
-  const end = Math.min(match.text.length, Math.max(match.end, match.start + 1) + 90);
+  let start = Math.max(0, match.start - 45);
+  let end = Math.min(match.text.length, Math.max(match.end, match.start + 1) + 90);
+  // Excerpts use UTF-16 offsets, but must not split an emoji/supplementary character.
+  const splitsCharacter = (offset: number) => {
+    const code = match.text.charCodeAt(offset);
+    const previous = match.text.charCodeAt(offset - 1);
+    return code >= 0xdc00 && code <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff;
+  };
+  if (splitsCharacter(start)) start--;
+  if (splitsCharacter(end)) end++;
   const prefix = start > 0 ? '…' : '';
   return { ...match, text: `${prefix}${match.text.slice(start, end)}${end < match.text.length ? '…' : ''}`,
     start: prefix.length + match.start - start, end: prefix.length + match.end - start };

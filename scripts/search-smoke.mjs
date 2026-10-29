@@ -126,6 +126,17 @@ try {
   await slow.release();
   assert.equal(await page.getByText('STALE RESULT', { exact: true }).count(), 0);
 
+  // Revisiting the same query is a new request, even when its old response is in state.
+  const repeated = await delayedSearch('planning');
+  await search.press('Escape');
+  await search.fill('planning');
+  await repeated.start;
+  assert.equal(await rows.count(), 0, 'Re-entering a query must not expose its previous results while loading');
+  await repeated.release();
+  await rows.filter({ hasText: 'STALE RESULT' }).waitFor();
+  await search.fill('needle');
+  await waitRows(1);
+
   const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
   await page.keyboard.press(`${modifier}+k`);
   const palette = page.getByRole('dialog', { name: 'Command palette' });

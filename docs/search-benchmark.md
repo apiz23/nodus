@@ -10,7 +10,7 @@ The benchmark invokes the production `/api/search` handler and the real filesyst
 
 Default datasets contain 100, 1,000, and 10,000 notes. They use deterministic IDs and content, nested directories, Nodus frontmatter with optional tags and aliases, paragraphs of varied counts, wiki links, a common term in every note, a rare term every 997 notes, a multi-word phrase every 13 notes, and a frequent phrase in two out of three notes. Search results remain capped by the production API at 50.
 
-Scenarios measure common-term, rare-term, no-result, multiple-term, many-match, and repeated identical queries. Each scenario has one warm-up query by default and five measured queries. Results include returned and total expected matches plus median, p95, minimum, and maximum latency. The timed interval includes localhost HTTP, vault traversal and file reads, Markdown parsing, matching, ranking, and JSON response handling. Query-result IDs are checked on warm-up and measured requests.
+Scenarios measure common-term, rare-term, no-result, multiple-term, many-match, and repeated identical queries. Each scenario has one warm-up query by default and five measured queries. Results include returned and total expected matches plus median, p95, minimum, and maximum latency. The timed interval includes localhost HTTP, in-memory matching and ranking, and JSON response handling. Vault traversal, file reads, and Markdown parsing occur on the first request, after snapshot expiry (five seconds), or after invalidation; warm queries reuse the derived snapshot. A timing that crosses expiry includes a rebuild. Query-result IDs are checked on warm-up and measured requests.
 
 Configure larger or shorter runs with environment variables:
 

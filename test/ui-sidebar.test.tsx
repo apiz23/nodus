@@ -5,6 +5,7 @@ import type { UiNoteSummary, UiVaultStatus } from '../src/ui-server/dto';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sidebar } from '@/Sidebar';
 import { SidebarToggle } from '@/SidebarToggle';
+import { SearchResultContext } from '@/SearchResultContext';
 import type { View } from '@/types';
 
 const status: UiVaultStatus = {
@@ -20,6 +21,23 @@ function note(id: string, title: string, path: string): UiNoteSummary {
 
 const rootNotes = [note('id-alpha', 'Alpha note', 'notes/alpha.md'), note('id-beta', 'Beta note', 'notes/beta.md')];
 const nestedNotes = [note('id-alpha', 'Alpha note', 'notes/projects/alpha.md')];
+
+it('renders untrusted search context as escaped text while highlighting the matched characters', () => {
+  const text = '<img src=x onerror=alert(1)> & "needle"';
+  const start = text.indexOf('needle');
+  const html = renderToStaticMarkup(createElement(SearchResultContext, { result: {
+    ...rootNotes[0]!, snippet: text,
+    match: { field: 'content', text, start, end: start + 'needle'.length },
+  } }));
+  expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  expect(html).toContain('&amp;');
+  expect(html).toMatch(/<mark[^>]*>needle<\/mark>/);
+  expect(html).not.toContain('<img');
+  const fallback = renderToStaticMarkup(createElement(SearchResultContext, {
+    result: { ...rootNotes[0]!, snippet: '<script>alert(1)</script>' },
+  }));
+  expect(fallback).toBe('&lt;script&gt;alert(1)&lt;/script&gt;');
+});
 
 function renderSidebar(
   view: View,

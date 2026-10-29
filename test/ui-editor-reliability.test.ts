@@ -27,6 +27,14 @@ const hooks = vi.hoisted(() => {
       const slot = slots[cursor++] ??= { value: { current: initial } };
       return slot.value;
     },
+    useMemo(factory: () => unknown, deps: unknown[]) {
+      const slot = slots[cursor++] ??= {};
+      if (slot.deps === undefined || deps.some((dep, index) => !Object.is(dep, slot.deps?.[index]))) {
+        slot.value = factory();
+        slot.deps = deps;
+      }
+      return slot.value;
+    },
     useEffect(effect: () => void | (() => void), deps?: unknown[]) {
       const slot = slots[cursor++] ??= {};
       const changed = deps === undefined || slot.deps === undefined || deps.some((dep, index) => !Object.is(dep, slot.deps?.[index]));
@@ -39,12 +47,13 @@ const hooks = vi.hoisted(() => {
 const mockApi = vi.hoisted(() => ({
   status: vi.fn(), notes: vi.fn(), databases: vi.fn(), note: vi.fn(), saveNote: vi.fn(),
   openVault: vi.fn(), pickVault: vi.fn(),
+  search: vi.fn(),
 }));
 let storedPreferences = new Map<string, string>();
 
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
-  useState: hooks.useState, useRef: hooks.useRef, useEffect: hooks.useEffect,
+  useState: hooks.useState, useRef: hooks.useRef, useEffect: hooks.useEffect, useMemo: hooks.useMemo,
 }));
 vi.mock('@/components/ui/button', () => ({ Button: 'test-button' }));
 vi.mock('@/lib/utils', () => ({ cn: (...parts: unknown[]) => parts.filter(Boolean).join(' ') }));
@@ -106,6 +115,7 @@ beforeEach(() => {
   mockApi.saveNote.mockImplementation(async (id: string, input: { body: string }) => ({ note: makeNote(id, input.body, `${id}-saved`) }));
   mockApi.openVault.mockResolvedValue({ vault: { name: 'Other', path: '/synthetic/other' } });
   mockApi.pickVault.mockResolvedValue({ canceled: true });
+  mockApi.search.mockResolvedValue({ results: [] });
   vi.stubGlobal('window', { localStorage: {
     getItem: (key: string) => storedPreferences.get(key) ?? null,
     setItem: (key: string, value: string) => { storedPreferences.set(key, value); },
@@ -115,6 +125,26 @@ beforeEach(() => {
   vi.stubGlobal('document', { documentElement: { classList: { toggle: () => {} }, dataset: {} } });
 });
 afterEach(() => { hooks.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it('debounces search and hides old results when the same query is cleared and entered again', async () => {
+  const result = { ...a, snippet: 'Title: synthetic-a' };
+  mockApi.search.mockResolvedValue({ results: [result] });
+  await mount();
+  props('test-sidebar').onQueryChange('synthetic'); await flush();
+  vi.advanceTimersByTime(179); await flush();
+  expect(mockApi.search).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1); await flush();
+  expect(props('test-sidebar').results).toEqual([result]);
+  const pending = deferred<{ results: typeof result[] }>();
+  mockApi.search.mockReturnValue(pending.promise);
+  props('test-sidebar').onClearSearch(); await flush();
+  props('test-sidebar').onQueryChange('synthetic'); await flush();
+  expect(props('test-sidebar')).toMatchObject({ searching: true, results: [] });
+  vi.advanceTimersByTime(180); await flush();
+  expect(props('test-sidebar')).toMatchObject({ searching: true, results: [] });
+  pending.resolve({ results: [] }); await flush();
+  expect(props('test-sidebar')).toMatchObject({ searching: false, results: [] });
+});
 
 describe('editor request ownership', () => {
   it.each(['success', 'failure'])('ignores an older note-load %s after a newer note is edited', async (outcome) => {
