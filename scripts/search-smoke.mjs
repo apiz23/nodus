@@ -23,8 +23,8 @@ try {
     assert(result.ok, `${method} ${path}: ${result.status}`);
     return result.json();
   };
-  const create = async (title, body = '') => {
-    const { note } = await request('/notes', 'POST', { title });
+  const create = async (title, body = '', tags = []) => {
+    const { note } = await request('/notes', 'POST', { title, ...(tags.length ? { tags } : {}) });
     if (body) return (await request(`/notes/${note.id}`, 'PUT', { title, body, baseHash: note.contentHash })).note;
     return note;
   };
@@ -32,6 +32,7 @@ try {
   const alias = await create('Alias destination');
   await create('Planning board');
   const content = await create('Content destination', `${'Context before. '.repeat(50)}Markdown **planning** and needle discovery. ${'After. '.repeat(50)}`);
+  const metadata = await create('Metadata-only note', '', ['Field work']);
   const aliasFile = join(vault, alias.path);
   const aliasText = await readFile(aliasFile, 'utf8');
   assert(aliasText.includes('\nnodus:'));
@@ -78,6 +79,15 @@ try {
   await search.press('Escape');
   assert.equal(await search.inputValue(), '');
   await page.getByRole('tree', { name: 'Pages', exact: true }).waitFor();
+
+  await page.getByRole('button', { name: /Filter notes/ }).click();
+  await page.getByLabel('Filter value').fill('field work');
+  await page.getByRole('button', { name: 'Add filter' }).click();
+  await waitRows(1);
+  assert.equal(await rows.first().getAttribute('aria-label'), 'Open Metadata-only note');
+  assert.match(await rows.first().innerText(), /Filter: Matches active filters/);
+  await page.getByRole('button', { name: 'Clear all' }).click();
+  assert.equal(await rows.count(), 0);
 
   // Errors are actionable and retry performs a fresh request for the same query.
   let failNext = true;
@@ -175,7 +185,7 @@ try {
   await paletteInput.fill('');
   await palette.getByRole('option', { name: 'Knowledge discovery' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log('Search browser smoke passed: ranking, alias/content context, Enter/arrows/Home/End navigation, no results, empty queries, error retry, delayed responses, palette selection, and vault isolation.');
+console.log('Search browser smoke passed: ranking, alias/content context, metadata tag filtering, Enter/arrows/Home/End navigation, no results, empty queries, error retry, delayed responses, palette selection, and vault isolation.');
 } finally {
   await browser?.close();
   await server?.close();

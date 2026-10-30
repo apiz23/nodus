@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, unlink } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import type {
   DatabaseStore,
@@ -15,6 +15,9 @@ import type {
   StorageIssue,
   VaultEntry,
   VaultAttachment,
+  PropertyCatalogSnapshot,
+  PropertyCatalogFile,
+  NotePropertyWrite,
   VaultStorage,
 } from '../contracts.js';
 import type { DatabaseDefinition } from '../../database/schema.js';
@@ -23,8 +26,18 @@ import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type 
 import { resolveLink } from '../../links/wikilink.js';
 import { addNoteDatabaseMembership, setNotePropertyValue, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
 import { relationWriteIssue } from '../../database/relations.js';
+import {
+  mutatePropertyCatalog as applyPropertyCatalogMutation,
+  parsePropertyCatalog,
+  PROPERTY_CATALOG_PATH,
+  serializePropertyCatalog,
+  validateNotePropertyValue,
+  type NotePropertyValue,
+  type PropertyCatalogMutation as PropertyCatalogMutationContract,
+} from '../../properties/catalog.js';
 import { isUuidV4 } from '../../domain/ids.js';
 import type { Note } from '../../domain/note.js';
+import { addTag, normalizeTagList, removeTag, TagValidationError, type TagOperation } from '../../domain/tags.js';
 import { validateNote } from '../../domain/note.js';
 import { validateNotePath } from '../../domain/paths.js';
 import { parseNote, serializeNote } from '../../format/note-format.js';
@@ -59,11 +72,11 @@ const NOTE_NOT_FOUND = (id: string) =>
 const DATABASE_NOT_FOUND = (id: string) =>
   new StorageError('NOT_FOUND', `Database "${id}" was not found`, { details: { ids: [id] } });
 
-function staleWrite(path: string, currentHash: string): StorageError {
+function staleWrite(path: string, currentHash?: string): StorageError {
   return new StorageError(
     'STALE_WRITE',
-    `File "${path}" changed on disk after the caller read it (current SHA-256: ${currentHash}); no write occurred`,
-    { path, details: { paths: [path], currentHash } },
+    `File "${path}" changed on disk after the caller read it${currentHash ? ` (current SHA-256: ${currentHash})` : ' or no longer exists'}; no write occurred`,
+    { path, details: { paths: [path], ...(currentHash === undefined ? {} : { currentHash }) } },
   );
 }
 
@@ -468,6 +481,45 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
+  /** Updates tags alone under the shared vault lock and the note's raw-byte revision. */
+  async updateNoteTags(
+    id: string,
+    operation: TagOperation,
+    options: { expectedHash: string; now: string },
+  ): Promise<{ note: Note; hash: string }> {
+    return withVaultRootLock(this.root, async () => {
+      const current = await this.locateNote(id);
+      const currentHash = sha256Hex(current.bytes);
+      if (currentHash !== options.expectedHash) throw staleWrite(current.note.path, currentHash);
+
+      let tags: string[];
+      try {
+        switch (operation.type) {
+          case 'add': tags = addTag(current.note.tags, operation.tag); break;
+          case 'remove': tags = removeTag(current.note.tags, operation.tag); break;
+          case 'replace':
+            if (!Array.isArray(operation.tags)) throw new TagValidationError('INVALID_TAG', 'Tags must be an array of strings.');
+            tags = normalizeTagList(operation.tags, current.note.tags);
+            break;
+          default: throw new TagValidationError('INVALID_TAG', 'Unsupported tag operation.');
+        }
+      } catch (error) {
+        if (error instanceof TagValidationError) throw new StorageError('INVALID_INPUT', error.message, { path: current.note.path, cause: error });
+        throw error;
+      }
+
+      if (tags.length === current.note.tags.length && tags.every((tag, index) => tag === current.note.tags[index])) {
+        return { note: current.note, hash: currentHash };
+      }
+      const updated: Note = { ...current.note, tags, updatedAt: options.now };
+      const text = this.serializeNoteInput(updated);
+      const absolute = await this.validateNoteTarget(updated.path);
+      await this.assertUnchanged(absolute, updated.path, options.expectedHash);
+      await this.writeDocument(updated.path, text);
+      return { note: updated, hash: sha256Hex(text) };
+    });
+  }
+
   async listDatabases(): Promise<DatabaseSummary[]> {
     const parsed = await this.parseDatabasesStrict();
     return parsed.map(({ database }) => ({
@@ -562,6 +614,80 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
+  /** Reads only the canonical catalog file; this does not walk or parse the note vault. */
+  async readPropertyCatalogWithHash(): Promise<PropertyCatalogSnapshot> {
+    return this.readPropertyCatalogUnlocked();
+  }
+
+  /** Applies one revision-checked definition operation under the shared vault writer lock. */
+  async mutatePropertyCatalog(
+    mutation: PropertyCatalogMutationContract,
+    expectedHash: string | null,
+  ): Promise<PropertyCatalogSnapshot> {
+    return withVaultRootLock(this.root, async () => {
+      const current = await this.readPropertyCatalogUnlocked();
+      if (current.hash !== expectedHash) throw staleWrite(PROPERTY_CATALOG_PATH, current.hash ?? undefined);
+      if (current.hash === null) {
+        const directory = resolveInsideRoot(this.root, 'properties');
+        try {
+          const contents = await readdir(directory);
+          if (contents.length > 0) throw new StorageError('CONFLICT', 'The existing "properties" folder contains user data; Nodus will not place its catalog in that folder.', { path: 'properties' });
+        } catch (error) {
+          if (!isMissing(error)) throw error;
+        }
+      }
+
+      let next;
+      try {
+        next = applyPropertyCatalogMutation(current.catalog, mutation);
+      } catch (error) {
+        throw wrapInputError(error, 'Invalid property catalog operation');
+      }
+      const text = serializePropertyCatalog(next);
+      await this.writeDocument(PROPERTY_CATALOG_PATH, text, true);
+      return { catalog: parsePropertyCatalog(text), hash: sha256Hex(text) };
+    });
+  }
+
+  /** Updates exactly one registered top-level YAML key with a note revision precondition. */
+  async setGeneralNoteProperty(
+    id: string,
+    input: NotePropertyWrite,
+    options: { expectedHash: string; now: string },
+  ): Promise<{ note: Note; hash: string; key: string; value?: NotePropertyValue }> {
+    return withVaultRootLock(this.root, async () => {
+      const current = await this.locateNote(id);
+      const currentHash = sha256Hex(current.bytes);
+      if (currentHash !== options.expectedHash) throw staleWrite(current.note.path, currentHash);
+
+      const { catalog } = await this.readPropertyCatalogUnlocked();
+      const property = catalog.properties.find((candidate) => candidate.id === input.propertyId);
+      if (!property) throw new StorageError('NOT_FOUND', `Property "${input.propertyId}" was not found in the vault catalog`, { details: { ids: [input.propertyId] } });
+
+      const extraFrontmatter = { ...current.note.extraFrontmatter };
+      if ('unset' in input) {
+        if (!Object.hasOwn(extraFrontmatter, property.key)) return { note: current.note, hash: currentHash, key: property.key };
+        delete extraFrontmatter[property.key];
+      } else {
+        const validation = validateNotePropertyValue(property, input.value);
+        if (!validation.ok) throw new StorageError('INVALID_INPUT', validation.issue.message, { path: current.note.path });
+        extraFrontmatter[property.key] = validation.value;
+      }
+
+      const updated: Note = { ...current.note, extraFrontmatter, updatedAt: options.now };
+      const text = this.serializeNoteInput(updated);
+      const absolute = await this.validateNoteTarget(updated.path);
+      await this.assertUnchanged(absolute, updated.path, options.expectedHash);
+      await this.writeDocument(updated.path, text);
+      return {
+        note: updated,
+        hash: sha256Hex(text),
+        key: property.key,
+        ...('unset' in input ? {} : { value: input.value }),
+      };
+    });
+  }
+
   async listDatabaseViews(databaseId?: string) {
     if (databaseId !== undefined && !isUuidV4(databaseId)) throw new StorageError('INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
     return withVaultRootLock(this.root, async () => {
@@ -637,40 +763,53 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async snapshot(): Promise<VaultEntry[]> {
-    return withVaultRootLock(this.root, async () => {
-      const notes = await this.parseNotesStrict();
-      const databases = await this.parseDatabasesStrict();
-      const views = await this.parseDatabaseViewsStrict();
-      const walked = await walkVault(this.root);
-      const attachmentIssues = walked.issues.filter((issue) => issue.path === ATTACHMENTS_DIR || issue.path.startsWith(`${ATTACHMENTS_DIR}/`));
-      if (attachmentIssues.length > 0) throw new StorageError('INVALID_CONTENT', 'Attachment storage contains invalid entries.', { details: { issues: attachmentIssues.map((issue) => `${issue.path}: ${issue.message}`) } });
-      const attachments: VaultEntry[] = [];
-      for (const entry of walked.entries) {
-        if (entry.kind !== 'attachment') continue;
-        const bytes = await this.readAttachmentBytesAt(entry.absolute, entry.path);
-        validateAttachmentBytes(entry.path, bytes);
-        attachments.push({ kind: 'attachment', id: attachmentPathId(entry.path)!, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
-      }
+    return withVaultRootLock(this.root, () => this.snapshotUnlocked());
+  }
 
-      return [
-        ...notes.map(({ note, text, bytes }) => ({
-          kind: 'note' as const,
-          id: note.id,
-          path: note.path,
-          text,
-          rawBytes: Buffer.from(bytes),
-        })),
-        ...databases.map(({ database, text, bytes }) => ({
-          kind: 'database' as const,
-          id: database.id,
-          path: databasePath(database.id),
-          text,
-          rawBytes: Buffer.from(bytes),
-        })),
-        ...views.map(({ view, text, bytes, path }) => ({ kind: 'database-view' as const, id: view.id, path, text, rawBytes: Buffer.from(bytes) })),
-        ...attachments,
-      ];
-    });
+  async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {
+    return withVaultRootLock(this.root, async () => ({
+      entries: await this.snapshotUnlocked(),
+      propertyCatalog: await this.readPropertyCatalogFileUnlocked(),
+    }));
+  }
+
+  async readPropertyCatalogFile(): Promise<PropertyCatalogFile | null> {
+    return withVaultRootLock(this.root, () => this.readPropertyCatalogFileUnlocked());
+  }
+
+  private async snapshotUnlocked(): Promise<VaultEntry[]> {
+    const notes = await this.parseNotesStrict();
+    const databases = await this.parseDatabasesStrict();
+    const views = await this.parseDatabaseViewsStrict();
+    const walked = await walkVault(this.root);
+    const attachmentIssues = walked.issues.filter((issue) => issue.path === ATTACHMENTS_DIR || issue.path.startsWith(`${ATTACHMENTS_DIR}/`));
+    if (attachmentIssues.length > 0) throw new StorageError('INVALID_CONTENT', 'Attachment storage contains invalid entries.', { details: { issues: attachmentIssues.map((issue) => `${issue.path}: ${issue.message}`) } });
+    const attachments: VaultEntry[] = [];
+    for (const entry of walked.entries) {
+      if (entry.kind !== 'attachment') continue;
+      const bytes = await this.readAttachmentBytesAt(entry.absolute, entry.path);
+      validateAttachmentBytes(entry.path, bytes);
+      attachments.push({ kind: 'attachment', id: attachmentPathId(entry.path)!, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
+    }
+
+    return [
+      ...notes.map(({ note, text, bytes }) => ({
+        kind: 'note' as const,
+        id: note.id,
+        path: note.path,
+        text,
+        rawBytes: Buffer.from(bytes),
+      })),
+      ...databases.map(({ database, text, bytes }) => ({
+        kind: 'database' as const,
+        id: database.id,
+        path: databasePath(database.id),
+        text,
+        rawBytes: Buffer.from(bytes),
+      })),
+      ...views.map(({ view, text, bytes, path }) => ({ kind: 'database-view' as const, id: view.id, path, text, rawBytes: Buffer.from(bytes) })),
+      ...attachments,
+    ];
   }
 
   async checkHealth(): Promise<StorageHealth> {
@@ -760,7 +899,13 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
-    return withVaultRootLock(this.root, () => this.applyImportLocked(plan, options));
+    return withVaultRootLock(this.root, async () => {
+      try {
+        return await this.applyImportLocked(plan, options);
+      } finally {
+        this.noteSnapshot.clear();
+      }
+    });
   }
 
   private async applyImportLocked(plan: ImportPlan, options: ImportOptions): Promise<ImportReport> {
@@ -804,6 +949,37 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateAttachmentPath(entry.path);
     }
 
+    const incomingCatalog = plan.propertyCatalog;
+    if (incomingCatalog !== undefined) {
+      if (incomingCatalog.path !== PROPERTY_CATALOG_PATH) {
+        throw new StorageError('INVALID_CONTENT', `Import property catalog must be stored at "${PROPERTY_CATALOG_PATH}"`, { path: incomingCatalog.path });
+      }
+      const bytes = incomingCatalog.rawBytes ?? Buffer.from(incomingCatalog.text, 'utf8');
+      let text: string;
+      let parsedCatalog;
+      try {
+        text = decodeVaultText(bytes, PROPERTY_CATALOG_PATH);
+        parsedCatalog = parsePropertyCatalog(text);
+      } catch (error) {
+        throw wrapContentError(error, PROPERTY_CATALOG_PATH);
+      }
+      if (text !== incomingCatalog.text || sha256Hex(bytes) !== incomingCatalog.hash || parsedCatalog.properties.length !== incomingCatalog.catalog.properties.length) {
+        throw new StorageError('INVALID_CONTENT', 'Import property catalog bytes do not match the validated catalog metadata', { path: PROPERTY_CATALOG_PATH });
+      }
+    }
+
+    const existingCatalog = await this.readPropertyCatalogFileUnlocked();
+    if (incomingCatalog !== undefined && existingCatalog === null) {
+      const directory = resolveInsideRoot(this.root, 'properties');
+      try {
+        const contents = await readdir(directory);
+        if (contents.length > 0) throw new StorageError('CONFLICT', 'The existing "properties" folder contains user data; the catalog was not imported.', { path: 'properties' });
+      } catch (error) {
+        if (error instanceof StorageError) throw error;
+        if (!isMissing(error)) throw storageFailure(error, 'Inspect property catalog directory', 'properties');
+      }
+    }
+
     const noteText = new Map<string, string>();
     const databaseText = new Map<string, string>();
     for (const entry of plan.entries) {
@@ -830,6 +1006,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       const stored = await this.readBytesAt(await this.validateAttachmentPath(item.path), item.path);
       expectedHashes.set(item.path, sha256Hex(stored));
     }
+    if (existingCatalog !== null) expectedHashes.set(PROPERTY_CATALOG_PATH, existingCatalog.hash);
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -907,6 +1084,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         pathConflicts.add(entry.path);
       }
     }
+    if (incomingCatalog !== undefined && existingCatalog !== null && existingCatalog.hash !== incomingCatalog.hash) {
+      pathConflicts.add(PROPERTY_CATALOG_PATH);
+    }
 
     if (options.overwrite !== true && (idConflicts.size > 0 || pathConflicts.size > 0)) {
       throw new StorageError('CONFLICT', 'Import would overwrite existing data; pass { overwrite: true }', {
@@ -960,8 +1140,20 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let databases = 0;
     let databaseViews = 0;
     let attachments = 0;
+    let propertyCatalog = 0;
 
     try {
+      if (incomingCatalog !== undefined) {
+        propertyCatalog = 1;
+        if (existingCatalog?.hash !== incomingCatalog.hash) {
+          failedPath = PROPERTY_CATALOG_PATH;
+          await this.writeDocument(PROPERTY_CATALOG_PATH, incomingCatalog.rawBytes, true, () =>
+            this.assertImportTargetUnchanged(PROPERTY_CATALOG_PATH, expectedHashes.get(PROPERTY_CATALOG_PATH)),
+          );
+          written.push(PROPERTY_CATALOG_PATH);
+        }
+      }
+
       for (const note of plan.notes) {
         const text = noteText.get(note.id) ?? this.serializeNoteInput(note);
         failedPath = note.path;
@@ -1025,7 +1217,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }) };
+    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }) };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
@@ -1047,6 +1239,57 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     } catch (error) {
       throw storageFailure(error, 'Remove imported file', path);
     }
+  }
+
+  private async readPropertyCatalogUnlocked(): Promise<PropertyCatalogSnapshot> {
+    const file = await this.readPropertyCatalogFileUnlocked();
+    return file === null
+      ? { catalog: { properties: [] }, hash: null }
+      : { catalog: file.catalog, hash: file.hash };
+  }
+
+  private async readPropertyCatalogFileUnlocked(): Promise<PropertyCatalogFile | null> {
+    const absolute = await this.validatePropertyCatalogPath();
+    let info;
+    try {
+      info = await lstat(absolute);
+    } catch (error) {
+      if (isMissing(error)) return null;
+      if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') {
+        throw new StorageError('CONFLICT', 'Cannot read property catalog because its parent path is not a directory', { path: PROPERTY_CATALOG_PATH });
+      }
+      throw storageFailure(error, 'Read property catalog', PROPERTY_CATALOG_PATH);
+    }
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new StorageError('UNSAFE_PATH', `Property catalog must be a regular file at "${PROPERTY_CATALOG_PATH}"`, { path: PROPERTY_CATALOG_PATH });
+    }
+
+    const bytes = await this.readBytesAt(absolute, PROPERTY_CATALOG_PATH);
+    const text = decodeVaultText(bytes, PROPERTY_CATALOG_PATH);
+    try {
+      const catalog = parsePropertyCatalog(text);
+      const version = catalogVersionFromText(text);
+      return { path: PROPERTY_CATALOG_PATH, text, rawBytes: Buffer.from(bytes), hash: sha256Hex(bytes), version, catalog };
+    } catch (error) {
+      throw wrapContentError(error, PROPERTY_CATALOG_PATH);
+    }
+  }
+
+  /** Validate both path components and their filesystem kinds before catalog reads or writes. */
+  private async validatePropertyCatalogPath(): Promise<string> {
+    const absolute = await this.validateInternalPath(PROPERTY_CATALOG_PATH);
+    const directory = resolveInsideRoot(this.root, 'properties');
+    let directoryInfo;
+    try {
+      directoryInfo = await lstat(directory);
+    } catch (error) {
+      if (isMissing(error)) return absolute;
+      throw storageFailure(error, 'Inspect property catalog directory', 'properties');
+    }
+    if (directoryInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Property catalog directory cannot be a symbolic link', { path: 'properties' });
+    if (!directoryInfo.isDirectory()) throw new StorageError('CONFLICT', 'The vault path "properties" exists and is not a directory', { path: 'properties' });
+    await assertNotSymlink(absolute, PROPERTY_CATALOG_PATH);
+    return absolute;
   }
 
   private async parseNotesStrict(): Promise<ParsedNote[]> {
@@ -1320,6 +1563,11 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       throw storageFailure(error, 'Read file', relativePath);
     }
   }
+}
+
+function catalogVersionFromText(text: string): number {
+  const parsed = JSON.parse(text) as { version?: unknown };
+  return typeof parsed.version === 'number' ? parsed.version : 0;
 }
 
 function decodeVaultText(bytes: Uint8Array, path: string): string {

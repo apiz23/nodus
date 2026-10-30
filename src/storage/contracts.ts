@@ -1,6 +1,8 @@
 import type { DatabaseDefinition } from '../database/schema.js';
 import type { DatabaseView } from '../database/database-view.js';
 import type { Note } from '../domain/note.js';
+import type { TagOperation } from '../domain/tags.js';
+import type { PropertyCatalog, PropertyCatalogMutation, NotePropertyValue } from '../properties/catalog.js';
 
 export interface NoteSummary {
   id: string;
@@ -108,6 +110,26 @@ export interface DatabaseStore {
   deleteDatabase(id: string): Promise<void>;
 }
 
+export interface PropertyCatalogSnapshot {
+  catalog: PropertyCatalog;
+  /** SHA-256 of raw catalog bytes, or null while the catalog has not been created. */
+  hash: string | null;
+}
+
+export type NotePropertyWrite =
+  | { propertyId: string; value: NotePropertyValue }
+  | { propertyId: string; unset: true };
+
+export interface PropertyStore {
+  readPropertyCatalogWithHash(): Promise<PropertyCatalogSnapshot>;
+  mutatePropertyCatalog(mutation: PropertyCatalogMutation, expectedHash: string | null): Promise<PropertyCatalogSnapshot>;
+  setGeneralNoteProperty(id: string, input: NotePropertyWrite, options: { expectedHash: string; now: string }): Promise<{ note: Note; hash: string; key: string; value?: NotePropertyValue }>;
+}
+
+export interface TagStore {
+  updateNoteTags(id: string, operation: TagOperation, options: { expectedHash: string; now: string }): Promise<{ note: Note; hash: string }>;
+}
+
 export interface DatabaseViewSummary {
   view: DatabaseView;
   path: string;
@@ -139,6 +161,18 @@ export interface ImportReport {
   databases: number;
   databaseViews: number;
   attachments?: number;
+  /** Present and equal to 1 when the plan carried a property catalog. */
+  propertyCatalog?: number;
+}
+
+/** A validated property catalog file and the exact bytes read from disk. */
+export interface PropertyCatalogFile {
+  path: string;
+  text: string;
+  rawBytes: Buffer;
+  hash: string;
+  version: number;
+  catalog: PropertyCatalog;
 }
 
 export interface ImportPlan {
@@ -146,6 +180,8 @@ export interface ImportPlan {
   notes: Note[];
   databases: DatabaseDefinition[];
   databaseViews?: DatabaseView[];
+  /** Validated catalog to import. Absent means a legacy source without one. */
+  propertyCatalog?: PropertyCatalogFile;
 }
 
 export interface ExportReport {
@@ -154,6 +190,7 @@ export interface ExportReport {
   databases: number;
   databaseViews: number;
   attachments?: number;
+  propertyCatalog?: number;
 }
 
 export interface BackupManifestFile {
@@ -177,6 +214,7 @@ export interface BackupManifestFormats {
   database: number;
   backup: number;
   databaseView?: number;
+  propertyCatalog?: number;
 }
 
 /** File counts by kind; optional on legacy v1 manifests, cross-checked when present. */
@@ -185,15 +223,30 @@ export interface BackupManifestCounts {
   databases: number;
   databaseViews?: number;
   attachments?: number;
+  /** Number of property catalog files; 0 or 1. */
+  propertyCatalog?: number;
+}
+
+/** Integrity metadata for the optional vault-wide property catalog. */
+export interface BackupManifestPropertyCatalog {
+  path: string;
+  format: 'nodus-property-catalog';
+  version: number;
+  /** Number of property definitions in the catalog. */
+  properties: number;
+  sha256: string;
+  bytes: number;
 }
 
 export interface BackupManifest {
   format: 'nodus-backup';
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   createdAt: string;
   app?: BackupManifestApp;
   formats?: BackupManifestFormats;
   counts?: BackupManifestCounts;
+  /** Optional catalog metadata. Absent for legacy backups and vaults without one. */
+  propertyCatalog?: BackupManifestPropertyCatalog;
   files: BackupManifestFile[];
   /**
    * SHA-256 of the canonical serialization of this manifest with `digest`
@@ -206,7 +259,9 @@ export interface BackupManifest {
 /** Read-only result of comparing a validated backup against a live vault. */
 export interface RestorePreview {
   manifest: BackupManifest;
-  counts: { notes: number; databases: number; databaseViews: number; attachments?: number };
+  counts: { notes: number; databases: number; databaseViews: number; attachments?: number; propertyCatalog?: number };
+  /** Catalog presence and target hash conflict; absent for legacy backups. */
+  propertyCatalog?: { path: string; version: number; properties: number; hash: string; conflict: boolean };
   /** ID and path conflicts a restore would hit without `overwrite: true`. */
   conflicts: { ids: string[]; paths: string[] };
 }
@@ -217,6 +272,7 @@ export interface BackupReport {
   databases: number;
   databaseViews: number;
   attachments?: number;
+  propertyCatalog?: number;
 }
 
 export interface BackupValidation {
@@ -225,6 +281,7 @@ export interface BackupValidation {
   notes: Note[];
   databases: DatabaseDefinition[];
   databaseViews: DatabaseView[];
+  propertyCatalog?: PropertyCatalogFile;
 }
 
 export interface BackupOptions {
@@ -237,10 +294,14 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore, AttachmentStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore, AttachmentStore, PropertyStore, TagStore {
   readonly root: string;
   /** All valid managed entries. Markdown/schema documents carry text; attachments carry raw bytes. */
   snapshot(): Promise<VaultEntry[]>;
+  /** Snapshot entries and the optional catalog read under one vault lock. */
+  snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }>;
+  /** Reads and validates the optional catalog; null means no catalog file exists. */
+  readPropertyCatalogFile(): Promise<PropertyCatalogFile | null>;
   /** Non-throwing diagnostic scan. I/O errors are still thrown. */
   checkHealth(): Promise<StorageHealth>;
   /** Applies a plan produced by `planImport`, validating every conflict first. */

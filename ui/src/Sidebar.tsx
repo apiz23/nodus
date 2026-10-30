@@ -27,6 +27,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { NoteFiltersPopover } from './NoteFiltersPopover';
+import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.js';
 import { PageTree } from './PageTree';
 import { modShortcut } from './format';
 import type { View } from './types';
@@ -68,6 +70,12 @@ interface SidebarProps {
   onOpenAnotherVault: () => void;
   switchingVault: boolean;
   navigationLocked: boolean;
+  filters?: readonly NoteFilter[];
+  filterLogic?: NoteFilterLogic;
+  onFiltersChange?: (filters: NoteFilter[], logic: NoteFilterLogic) => void;
+  searchRevision?: number;
+  metadataIssueCount?: number;
+  catalogIssue?: string;
 }
 
 const navItems = [
@@ -114,6 +122,12 @@ export function Sidebar({
   onOpenAnotherVault,
   switchingVault,
   navigationLocked,
+  filters = [],
+  filterLogic = 'and',
+  onFiltersChange = () => {},
+  searchRevision = 0,
+  metadataIssueCount = 0,
+  catalogIssue,
 }: SidebarProps) {
   const compact = collapsed && !open;
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -256,7 +270,8 @@ export function Sidebar({
             <TooltipContent side="right">Search notes ({modShortcut('k')})</TooltipContent>
           </Tooltip>
         ) : (
-          <div className="relative w-full">
+          <div className="flex w-full items-center gap-1">
+          <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               ref={searchRef}
@@ -276,7 +291,7 @@ export function Sidebar({
                   event.currentTarget.blur();
                   return;
                 }
-                if (event.key === 'ArrowDown' || (event.key === 'Enter' && query.trim() !== '')) {
+                if (event.key === 'ArrowDown' || (event.key === 'Enter' && (query.trim() !== '' || filters.length > 0))) {
                   // Move focus from the search box into the first result/page.
                   const tree = event.currentTarget
                     .closest('aside')
@@ -299,6 +314,8 @@ export function Sidebar({
                 {modShortcut('k')}
               </kbd>
             ) : null}
+          </div>
+          <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange} />
           </div>
         )}
 
@@ -356,6 +373,9 @@ export function Sidebar({
             folderError={folderError}
             results={results}
             query={query}
+            filtersActive={filters.length > 0}
+            metadataIssueCount={metadataIssueCount}
+            catalogIssue={catalogIssue}
             selectedId={selectedId}
             loading={loading}
             searching={searching}

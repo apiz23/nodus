@@ -168,6 +168,41 @@ describe('search ranking', () => {
 
 
 describe('global search snapshot lifecycle', () => {
+  it('indexes tags and registered properties, filters results, and invalidates on catalog changes', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const id = 'eeeeeeee-5555-4555-8555-555555555555';
+      const propertyId = 'ffffffff-6666-4666-8666-666666666666';
+      await vault.createNote(createNote({ id, title: 'Research log', path: 'notes/research.md', body: 'Body', tags: ['Field work'], now: NOW }));
+      const started = await startApi(vaultPath);
+      try {
+        const mutation = async (path: string, body: unknown) => fetch(`${started.base}/api${path}`, {
+          method: path === '/properties' ? 'POST' : 'PUT',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const createdResponse = await mutation('/properties', {
+          baseHash: null,
+          mutation: { type: 'create-property', property: { id: propertyId, key: 'purpose', name: 'Research purpose', type: 'text' } },
+        });
+        expect(createdResponse.ok).toBe(true);
+        const created = await createdResponse.json() as { contentHash: string };
+        const note = await (await fetch(`${started.base}/api/notes/${id}`)).json() as { note: { contentHash: string } };
+        const valueResponse = await mutation(`/notes/${id}/properties/${propertyId}`, { baseHash: note.note.contentHash, value: 'Local history' });
+        expect(valueResponse.ok).toBe(true);
+        expect((await search(started.base, 'field work')).results[0]?.match?.field).toBe('tag');
+        expect((await search(started.base, 'research purpose')).results[0]?.match?.field).toBe('property');
+        expect((await search(started.base, 'local history')).results[0]?.snippet).toContain('Research purpose: Local history');
+        const filter = encodeURIComponent(JSON.stringify([{ type: 'property', propertyId, operator: 'contains', value: 'history' }]));
+        const filtered = await fetch(`${started.base}/api/search?filters=${filter}`);
+        expect((await filtered.json() as { results: UiSearchResult[] }).results.map((result) => result.id)).toEqual([id]);
+        const renamed = await mutation('/properties', { baseHash: created.contentHash, mutation: { type: 'rename-property', propertyId, name: 'Project intent' } });
+        expect(renamed.ok).toBe(true);
+        expect((await search(started.base, 'project intent')).results[0]?.id).toBe(id);
+      } finally { await stopApi(started); }
+    });
+  });
+
   it('searches aliases and shares one derived snapshot across queries and discovery, invalidating on API writes', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

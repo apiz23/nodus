@@ -1,7 +1,5 @@
-import type { Note } from '../domain/note.js';
-
 /** One shared, bounded snapshot per vault; concurrent readers share the same rebuild. */
-export function createSnapshotCache<T>(load: () => Promise<Note[]>, build: (notes: Note[]) => T, ttlMs = 5000, now = Date.now) {
+export function createSnapshotCache<S, T>(load: () => Promise<S>, build: (snapshot: S) => T, ttlMs = 5000, now = Date.now) {
   let generation = 0;
   let cached: { generation: number; expires: number; index: T } | undefined;
   let pending: { generation: number; promise: Promise<T> } | undefined;

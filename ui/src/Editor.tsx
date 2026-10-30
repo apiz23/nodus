@@ -39,6 +39,9 @@ import { MarkdownPreview } from './editor/MarkdownPreview';
 import { BacklinksPanel } from './BacklinksPanel';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
+import { TagEditor } from './editor/TagEditor';
+import { PropertyEditor } from './editor/PropertyEditor';
+import type { NotePropertyValue } from '../../src/properties/catalog';
 
 interface EditorProps {
   note: UiNote | null;
@@ -64,6 +67,18 @@ interface EditorProps {
   onRename: () => void;
   onDelete: () => void;
   onOpenNote: (id: string) => void;
+  tagMutationBusy: boolean;
+  tagMutationDisabled: boolean;
+  tagMutationDisabledReason?: string;
+  onAddTag: (tag: string) => Promise<void>;
+  onRemoveTag: (tag: string) => Promise<void>;
+  vaultIdentity: string;
+  propertyMutationBusy: boolean;
+  propertyMutationDisabled: boolean;
+  propertyMutationDisabledReason?: string;
+  onSetPropertyValue: (propertyId: string, value: NotePropertyValue) => Promise<UiNote>;
+  onUnsetPropertyValue: (propertyId: string) => Promise<UiNote>;
+  onCatalogChanged?: () => void;
   backlinksRevision: number;
 }
 
@@ -91,6 +106,18 @@ export function Editor({
   onRename,
   onDelete,
   onOpenNote,
+  tagMutationBusy,
+  tagMutationDisabled,
+  tagMutationDisabledReason,
+  onAddTag,
+  onRemoveTag,
+  vaultIdentity,
+  propertyMutationBusy,
+  propertyMutationDisabled,
+  propertyMutationDisabledReason,
+  onSetPropertyValue,
+  onUnsetPropertyValue,
+  onCatalogChanged,
   backlinksRevision,
 }: EditorProps) {
   const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
@@ -440,13 +467,28 @@ export function Editor({
             <span>{words === 1 ? '1 word' : `${words} words`}</span>
           </div>
 
-          {note.tags.length > 0 || note.aliases.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Note metadata">
-              {note.tags.map((tag) => (
-                <Badge key={`tag-${tag}`} variant="secondary" className="font-normal">
-                  #{tag}
-                </Badge>
-              ))}
+          <TagEditor
+            noteId={note.id}
+            tags={note.tags}
+            disabled={tagMutationDisabled}
+            disabledReason={tagMutationDisabledReason}
+            busy={tagMutationBusy || propertyMutationBusy}
+            onAdd={onAddTag}
+            onRemove={onRemoveTag}
+          />
+          <PropertyEditor
+            note={note}
+            vaultIdentity={vaultIdentity}
+            disabled={propertyMutationDisabled}
+            disabledReason={propertyMutationDisabledReason}
+            busy={propertyMutationBusy || tagMutationBusy}
+            onSetValue={onSetPropertyValue}
+            onUnsetValue={onUnsetPropertyValue}
+            onReloadNote={onReload}
+            onCatalogChanged={onCatalogChanged}
+          />
+          {note.aliases.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Note aliases">
               {note.aliases.map((alias) => (
                 <Badge key={`alias-${alias}`} variant="outline" className="font-normal">
                   alias: {alias}

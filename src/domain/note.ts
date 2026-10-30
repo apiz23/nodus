@@ -1,6 +1,7 @@
 import { NodusError } from './errors.js';
 import { isUuidShaped, isUuidV4 } from './ids.js';
 import { validateNotePath } from './paths.js';
+import { normalizeTagList, TagValidationError } from './tags.js';
 
 export const NOTE_FORMAT_VERSION = 1;
 
@@ -44,11 +45,17 @@ export function validateNote(note: Note): void {
   validateNotePath(note.path);
   validateTimestamp('createdAt', note.createdAt);
   validateTimestamp('updatedAt', note.updatedAt);
-  validateStrings('tags', note.tags);
+  validateTags(note.tags);
   validateStrings('aliases', note.aliases);
 }
 
 export function createNote(input: CreateNoteInput): Note {
+  let tags: string[];
+  try { tags = normalizeTagList(input.tags ?? []); }
+  catch (error) {
+    if (error instanceof TagValidationError) throw invalidField(error.message);
+    throw error;
+  }
   const note: Note = {
     id: input.id,
     title: input.title,
@@ -56,7 +63,7 @@ export function createNote(input: CreateNoteInput): Note {
     body: input.body,
     createdAt: input.now,
     updatedAt: input.now,
-    tags: input.tags ?? [],
+    tags,
     aliases: input.aliases ?? [],
     extraFrontmatter: {},
   };
@@ -81,6 +88,14 @@ function validateStrings(field: string, values: readonly string[]): void {
   for (const value of values) {
     if (value.trim() === '' || value.trim() !== value) {
       throw invalidField(`${field} entries must be non-empty and trimmed`);
+    }
+  }
+}
+
+function validateTags(values: readonly string[]): void {
+  for (const value of values) {
+    if (typeof value !== 'string' || value.normalize('NFC').trim() === '') {
+      throw invalidField('tags entries must contain non-whitespace text');
     }
   }
 }

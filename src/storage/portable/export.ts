@@ -4,6 +4,7 @@ import type { ExportReport, VaultStorage } from '../contracts.js';
 import { StorageError, storageFailure } from '../errors.js';
 import { writeFileAtomic } from '../fs/atomic.js';
 import { resolveInsideRoot, isInsideRoot } from '../fs/safe-path.js';
+import { PROPERTY_CATALOG_PATH } from '../../properties/catalog.js';
 
 /**
  * Writes a portable copy of a vault: notes at their relative paths and database
@@ -22,7 +23,7 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
     });
   }
 
-  const entries = await vault.snapshot();
+  const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
 
   try {
     await mkdir(target, { recursive: true });
@@ -53,9 +54,12 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
       else if (entry.kind === 'database-view') databaseViews += 1;
       else attachments += 1;
     }
+    if (propertyCatalog !== null) {
+      await writeFileAtomic(resolveInsideRoot(target, PROPERTY_CATALOG_PATH), propertyCatalog.rawBytes);
+    }
   } catch (error) {
     throw storageFailure(error, 'Write export', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
 }

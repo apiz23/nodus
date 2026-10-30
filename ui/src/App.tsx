@@ -11,6 +11,9 @@ import type {
   UiNoteSummary,
   UiVaultStatus,
 } from '../../src/ui-server/dto';
+import type { TagOperation } from '../../src/domain/tags';
+import type { NotePropertyValue } from '../../src/properties/catalog';
+import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters';
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
@@ -88,6 +91,9 @@ export default function App() {
 
   const [query, setQuery] = useState('');
   const [searchRevision, setSearchRevision] = useState(0);
+  const [noteFilters, setNoteFilters] = useState<NoteFilter[]>([]);
+  const [filterLogic, setFilterLogic] = useState<NoteFilterLogic>('and');
+  const filterVaultRef = useRef<string | null>(null);
 
   const [activeNote, setActiveNote] = useState<UiNote | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -100,6 +106,8 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveCompletion, setSaveCompletion] = useState(0);
+  const [tagMutationBusy, setTagMutationBusy] = useState(false);
+  const [propertyMutationBusy, setPropertyMutationBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [pickingVault, setPickingVault] = useState(false);
@@ -162,6 +170,8 @@ export default function App() {
   if (journalRef.current === null) journalRef.current = new IndexedDbDraftJournal();
   const recoveredEntriesRef = useRef(new Map<string, DraftRecoveryEntry[]>());
   const saveInFlightRef = useRef(false);
+  const tagMutationInFlightRef = useRef(false);
+  const propertyMutationInFlightRef = useRef(false);
   const noteRequestRef = useRef(0);
   const vaultRequestRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -363,6 +373,8 @@ export default function App() {
   function beginVaultSwitch(): boolean {
     if (
       saveInFlightRef.current ||
+      tagMutationInFlightRef.current ||
+      propertyMutationInFlightRef.current ||
       createInFlightRef.current ||
       folderMutationInFlightRef.current ||
       noteMutationInFlightRef.current ||
@@ -587,9 +599,18 @@ export default function App() {
     };
   }, []);
 
-  const { results: searchResults, searching, error: searchError, retry: retrySearch } = useNoteSearch(
-    query, status?.vault.path ?? '', searchRevision, status !== null && !vaultSwitching && !vaultWorkInFlight,
+  const { results: searchResults, searching, error: searchError, retry: retrySearch, metadataIssueCount, catalogIssue } = useNoteSearch(
+    query, status?.vault.path ?? '', searchRevision, status !== null && !vaultSwitching && !vaultWorkInFlight, noteFilters, filterLogic,
   );
+
+  useEffect(() => {
+    const identity = status?.vault.path ?? null;
+    if (filterVaultRef.current !== identity) {
+      setNoteFilters([]);
+      setFilterLogic('and');
+    }
+    filterVaultRef.current = identity;
+  }, [status?.vault.path]);
 
   useEffect(() => {
     if (databases.length === 0) {
@@ -669,7 +690,7 @@ export default function App() {
   }
 
   async function saveNote(resolution?: { conflict: NoteConflict; useDiskHash: string }): Promise<void> {
-    if (vaultSwitching || folderMutationInFlightRef.current || activeNote === null || noteLoading || !dirty || saveState === 'saving' || saveInFlightRef.current) return;
+    if (vaultSwitching || folderMutationInFlightRef.current || tagMutationInFlightRef.current || propertyMutationInFlightRef.current || activeNote === null || noteLoading || !dirty || saveState === 'saving' || saveInFlightRef.current) return;
     if (noteConflictRef.current?.noteId === activeNote.id && resolution === undefined) return;
     if (resolution && (resolution.conflict.vaultIdentity !== status?.vault.path || resolution.conflict.noteId !== activeNote.id || resolution.conflict.diskNote?.contentHash !== resolution.useDiskHash)) return;
     const knownExternal = externalChangeRef.current;
@@ -753,10 +774,87 @@ export default function App() {
     }
   }
 
+  async function mutateActiveNoteTags(operation: TagOperation): Promise<void> {
+    const current = activeNoteRef.current;
+    const vaultIdentity = status?.vault.path;
+    if (!current || !vaultIdentity) throw new Error('Open a note before changing its tags.');
+    if (vaultSwitching || noteLoading || dirtyRef.current || saveInFlightRef.current || saveState === 'saving') {
+      throw new Error('Save the note draft before changing tags. The tag change was not sent.');
+    }
+    if (noteConflictRef.current?.noteId === current.id) throw new Error('Resolve the note conflict before changing tags.');
+    if (externalChangeRef.current?.id === current.id) throw new Error('Reload or compare the external note change before changing tags.');
+    if (propertyMutationInFlightRef.current) throw new Error('A property change is already being saved.');
+    if (tagMutationInFlightRef.current) throw new Error('A tag change is already being saved.');
+
+    const noteRequest = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    tagMutationInFlightRef.current = true;
+    setTagMutationBusy(true);
+    try {
+      const { note } = await api.updateNoteTags(current.id, { baseHash: current.contentHash, operation });
+      if (noteRequest !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== current.id || status?.vault.path !== vaultIdentity) return;
+      setActiveNote(note);
+      baseNoteRef.current = note;
+      // If typing began during the request, its title/body stay local while
+      // the draft advances to the tag write's returned revision.
+      setDraftBaseHash(note.contentHash);
+      setNotes((items) => items.map((item) => item.id === note.id
+        ? { ...item, title: note.title, path: note.path, updatedAt: note.updatedAt, aliases: note.aliases, icon: note.icon }
+        : item));
+      setSearchRevision((revision) => revision + 1);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'STALE_WRITE') void checkActiveNoteForExternalChange(true);
+      throw error;
+    } finally {
+      tagMutationInFlightRef.current = false;
+      setTagMutationBusy(false);
+    }
+  }
+
+  async function mutateActiveNoteProperty(propertyId: string, value?: NotePropertyValue): Promise<UiNote> {
+    const current = activeNoteRef.current;
+    const vaultIdentity = status?.vault.path;
+    if (!current || !vaultIdentity) throw new Error('Open a note before changing its properties.');
+    if (vaultSwitching || noteLoading || dirtyRef.current || saveInFlightRef.current || saveState === 'saving') {
+      throw new Error('Save the note draft before changing properties. The property change was not sent.');
+    }
+    if (noteConflictRef.current?.noteId === current.id) throw new Error('Resolve the note conflict before changing properties.');
+    if (externalChangeRef.current?.id === current.id) throw new Error('Reload or compare the external note change before changing properties.');
+    if (tagMutationInFlightRef.current || propertyMutationInFlightRef.current) throw new Error('Wait for the current metadata change to finish.');
+
+    const noteRequest = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    propertyMutationInFlightRef.current = true;
+    setPropertyMutationBusy(true);
+    try {
+      const result = value === undefined
+        ? await api.setGeneralNoteProperty(current.id, propertyId, { baseHash: current.contentHash, unset: true })
+        : await api.setGeneralNoteProperty(current.id, propertyId, { baseHash: current.contentHash, value });
+      const updated = result.note;
+      if (noteRequest !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== current.id || status?.vault.path !== vaultIdentity) return updated;
+      setActiveNote(updated);
+      baseNoteRef.current = updated;
+      // Preserve any title/body draft typed while the conditional property write was pending.
+      setDraftBaseHash(updated.contentHash);
+      setNotes((items) => items.map((item) => item.id === updated.id
+        ? { ...item, title: updated.title, path: updated.path, updatedAt: updated.updatedAt, aliases: updated.aliases, icon: updated.icon }
+        : item));
+      setSearchRevision((revision) => revision + 1);
+      return updated;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'STALE_WRITE') void checkActiveNoteForExternalChange(true);
+      throw error;
+    } finally {
+      propertyMutationInFlightRef.current = false;
+      setPropertyMutationBusy(false);
+      setSaveCompletion((revision) => revision + 1);
+    }
+  }
+
   useEffect(() => {
-    if (!dirty || noteLoading || activeNote === null || saveState !== 'idle' || noteConflict?.noteId === activeNote.id) return undefined;
+    if (!dirty || propertyMutationBusy || tagMutationBusy || noteLoading || activeNote === null || saveState !== 'idle' || noteConflict?.noteId === activeNote.id) return undefined;
     return scheduleAutosave(() => void saveNote());
-  }, [activeNote, dirty, draftBody, draftIcon, draftTitle, iconTouched, noteLoading, noteConflict, saveCompletion, saveState, draftBaseHash]);
+  }, [activeNote, dirty, tagMutationBusy, propertyMutationBusy, draftBody, draftIcon, draftTitle, iconTouched, noteLoading, noteConflict, saveCompletion, saveState, draftBaseHash]);
 
   async function retryConflictRead(): Promise<void> {
     const conflict = noteConflictRef.current;
@@ -1365,6 +1463,12 @@ export default function App() {
             setView(next);
           }}
           query={query}
+          filters={noteFilters}
+          filterLogic={filterLogic}
+          onFiltersChange={(filters, logic) => { setNoteFilters(filters); setFilterLogic(logic); }}
+          searchRevision={searchRevision}
+          metadataIssueCount={metadataIssueCount}
+          catalogIssue={catalogIssue}
           onQueryChange={setQuery}
           searchRef={searchRef}
           onCreate={() => void createNote()}
@@ -1385,10 +1489,10 @@ export default function App() {
           selectedId={selectedNoteId}
           loading={notesLoading}
           searching={searching}
-          searchError={query.trim() === '' ? notesError : searchError}
+          searchError={query.trim() === '' && noteFilters.length === 0 ? notesError : searchError}
           onOpen={(id) => void openNoteById(id)}
-          onClearSearch={() => setQuery('')}
-          onRetry={() => { if (query.trim()) retrySearch(); else void refreshNotes(); }}
+          onClearSearch={() => { setQuery(''); setNoteFilters([]); setFilterLogic('and'); }}
+          onRetry={() => { if (query.trim() || noteFilters.length) retrySearch(); else void refreshNotes(); }}
           onRenameNote={(id) => void requestRenameForNote(id)}
           onDeleteNote={(id) => void requestDeleteForNote(id)}
           open={sidebarOpen}
@@ -1480,6 +1584,15 @@ export default function App() {
             dirty={dirty}
             saveState={saveState}
             error={editorError}
+            tagMutationBusy={tagMutationBusy}
+            tagMutationDisabled={dirty || saveState === 'saving' || tagMutationBusy || propertyMutationBusy || noteConflict?.noteId === activeNote?.id || externalChange?.id === activeNote?.id || vaultSwitching}
+            tagMutationDisabledReason={
+              dirty || saveState === 'saving' ? 'Save the note draft before changing tags.'
+                : propertyMutationBusy ? 'Wait for the property change to finish.'
+                : noteConflict?.noteId === activeNote?.id ? 'Resolve the note conflict before changing tags.'
+                  : externalChange?.id === activeNote?.id ? 'Reload or compare the external change before changing tags.'
+                    : vaultSwitching ? 'Wait for the vault switch to finish.' : undefined
+            }
             focusMode={focusMode}
             fullWidth={editorFullWidth}
             onToggleWidth={() => setEditorFullWidth((value) => !value)}
@@ -1505,6 +1618,20 @@ export default function App() {
               if (activeNote !== null) void requestDeleteForNote(activeNote.id);
             }}
             onOpenNote={(id) => void openNoteById(id)}
+            onAddTag={(tag) => mutateActiveNoteTags({ type: 'add', tag })}
+            onRemoveTag={(tag) => mutateActiveNoteTags({ type: 'remove', tag })}
+            vaultIdentity={status?.vault.path ?? ''}
+            propertyMutationBusy={propertyMutationBusy}
+            propertyMutationDisabled={dirty || saveState === 'saving' || noteConflict?.noteId === activeNote?.id || externalChange?.id === activeNote?.id || vaultSwitching}
+            propertyMutationDisabledReason={
+              dirty || saveState === 'saving' ? 'Save the note draft before changing properties.'
+                : noteConflict?.noteId === activeNote?.id ? 'Resolve the note conflict before changing properties.'
+                  : externalChange?.id === activeNote?.id ? 'Reload or compare the external change before changing properties.'
+                    : vaultSwitching ? 'Wait for the vault switch to finish.' : undefined
+            }
+            onSetPropertyValue={(propertyId, value) => mutateActiveNoteProperty(propertyId, value)}
+            onUnsetPropertyValue={(propertyId) => mutateActiveNoteProperty(propertyId)}
+            onCatalogChanged={() => setSearchRevision((revision) => revision + 1)}
             backlinksRevision={backlinksRevision}
           />
         ) : null}

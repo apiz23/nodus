@@ -9,9 +9,16 @@ import type { BackupManifest, FolderImpact, VaultAttachment } from '../storage/c
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
 import type {
   NoteDatabaseRow,
-  NotePropertyValue,
+  NotePropertyValue as DatabaseNotePropertyValue,
   StructuredDataIssue,
 } from '../database/note-properties.js';
+import type {
+  NotePropertyDefinition,
+  NotePropertyValue,
+  PropertyCatalog,
+  PropertyCatalogMutation,
+} from '../properties/catalog.js';
+import type { TagOperation } from '../domain/tags.js';
 
 export type {
   BackupManifest,
@@ -111,6 +118,19 @@ export interface UiSearchResult extends UiNoteSummary {
   match?: import('../search/search-index.js').SearchMatch;
 }
 
+export interface UiSearchResponse {
+  results: UiSearchResult[];
+  metadataIssueCount: number;
+  catalogIssue?: string;
+}
+
+export interface UiSearchMetadataResponse {
+  tags: string[];
+  properties: NotePropertyDefinition[];
+  metadataIssueCount: number;
+  catalogIssue?: string;
+}
+
 export interface UiHealthIssue {
   code: string;
   path: string;
@@ -172,12 +192,47 @@ export interface UiNotePropertiesResponse {
 export interface UiSetNotePropertyInput {
   databaseId: string;
   propertyId: string;
-  value?: NotePropertyValue;
+  value?: DatabaseNotePropertyValue;
   /** Clear one value while retaining database membership. Cannot accompany value. */
   remove?: true;
   baseHash: string;
   /** Must be true to create nodus_data or add database membership to this note. */
   confirmCreate?: boolean;
+}
+
+export interface UiPropertyCatalogResponse {
+  catalog: PropertyCatalog;
+  /** SHA-256 of raw catalog bytes; null means no catalog file exists yet. */
+  contentHash: string | null;
+}
+
+export interface UiPropertyCatalogMutationInput {
+  mutation: PropertyCatalogMutation;
+  /** Expected catalog hash, or null if the catalog has not yet been created. */
+  baseHash: string | null;
+}
+
+/** Registered general-property values only; unregistered YAML remains in the Markdown source. */
+export interface UiGeneralNotePropertiesResponse {
+  noteId: string;
+  path: string;
+  contentHash: string;
+  values: Record<string, NotePropertyValue>;
+  issues: import('../properties/catalog.js').PropertyValueIssue[];
+}
+
+export type UiCreateNoteProperty = NotePropertyDefinition;
+
+export type UiSetGeneralNotePropertyInput =
+  | { baseHash: string; value: NotePropertyValue }
+  | { baseHash: string; unset: true };
+
+export interface UiSetGeneralNotePropertyResponse {
+  note: UiNote;
+  propertyId: string;
+  key: string;
+  /** Omitted after explicit unset. */
+  value?: NotePropertyValue;
 }
 
 export interface UiCreateBackupInput {
@@ -201,6 +256,7 @@ export interface UiBackupValidationResult {
     databases: number;
     databaseViews: number;
     attachments?: number;
+    propertyCatalog?: number;
   };
 }
 
@@ -212,6 +268,17 @@ export interface UiCreateNoteInput {
   body?: string;
   /** Optional page icon to preserve when creating a copy. */
   icon?: string | null;
+  /** Optional initial tags; normalized and duplicate-checked on creation. */
+  tags?: string[];
+}
+
+export interface UiUpdateNoteTagsInput {
+  baseHash: string;
+  operation: TagOperation;
+}
+
+export interface UiUpdateNoteTagsResponse {
+  note: UiNote;
 }
 
 export type UiFolderImpact = FolderImpact;

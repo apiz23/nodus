@@ -12,6 +12,8 @@ import {
 import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, parseDatabaseView, validateViewReferences } from '../database/database-view.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
+import { normalizeTagList, type TagOperation } from '../domain/tags.js';
+import { projectPropertyValues, type NotePropertyDefinition, type PropertyCatalog, type PropertyCatalogMutation, type PropertyOption } from '../properties/catalog.js';
 import { parseNote } from '../format/note-format.js';
 import { FileSystemVault, sha256Hex } from '../storage/fs/vault.js';
 import { isStorageError } from '../storage/errors.js';
@@ -31,6 +33,7 @@ import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
 import { buildSearchIndex, normalizeSearch, searchIndex } from '../search/search-index.js';
+import { validateFilterLogic, validateNoteFilters, type NoteFilter } from '../search/note-filters.js';
 type BacklinkIndex = { markDirty(): void };
 import type {
   UiApiErrorBody,
@@ -44,6 +47,7 @@ import type {
   UiNote,
   UiNoteSummary,
   UiNotePropertiesResponse,
+  UiGeneralNotePropertiesResponse,
   UiSaveNoteInput,
   UiVaultPickResult,
   UiVaultStatus,
@@ -100,11 +104,24 @@ export function createLocalApiMiddleware(
   const clock = options.now ?? NOW;
   const chooseFolder = options.folderPicker ?? pickFolder;
   let vaultPromise: Promise<FileSystemVault> | undefined;
-  const buildKnowledgeIndex = (notes: Note[]) => ({ links: buildLinkIndex(notes), search: buildSearchIndex(notes) });
-  const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<ReturnType<typeof buildKnowledgeIndex>>>>();
+  type KnowledgeSnapshot = { notes: Note[]; catalog: PropertyCatalog; catalogIssue?: string };
+  const loadKnowledgeSnapshot = async (vault: FileSystemVault): Promise<KnowledgeSnapshot> => {
+    const notes = await vault.snapshotNotes();
+    try {
+      const { catalog } = await vault.readPropertyCatalogWithHash();
+      return { notes, catalog };
+    } catch (error) {
+      return { notes, catalog: { properties: [] }, catalogIssue: error instanceof Error ? error.message : 'Property catalog could not be read.' };
+    }
+  };
+  const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot) => ({
+    links: buildLinkIndex(snapshot.notes),
+    search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue),
+  });
+  const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<KnowledgeSnapshot, ReturnType<typeof buildKnowledgeIndex>>>>();
   const indexFor = (vault: FileSystemVault) => {
     let index = indexes.get(vault);
-    if (!index) { index = createSnapshotCache(() => vault.snapshotNotes(), buildKnowledgeIndex); indexes.set(vault, index); }
+    if (!index) { index = createSnapshotCache(() => loadKnowledgeSnapshot(vault), buildKnowledgeIndex); indexes.set(vault, index); }
     return index;
   };
   const backlinkIndex = { markDirty() { for (const index of indexes.values()) index.markDirty(); } };
@@ -272,6 +289,40 @@ export function createLocalApiMiddleware(
       return sendJson(res, 201, await createLocalNote(await getVault(), body, clock, backlinkIndex));
     }
 
+    if (method === 'GET' && path === '/api/properties') {
+      const { catalog, hash } = await (await getVault()).readPropertyCatalogWithHash();
+      return sendJson(res, 200, { catalog, contentHash: hash });
+    }
+
+    const generalPropertiesMatch = /^\/api\/notes\/([^/]+)\/general-properties$/.exec(path);
+    if (method === 'GET' && generalPropertiesMatch !== null) {
+      const id = requireUuid(decodeURIComponent(generalPropertiesMatch[1] ?? ''), 'note ID');
+      const vault = await getVault();
+      const { note, hash } = await vault.readNoteWithHash(id);
+      const { catalog } = await vault.readPropertyCatalogWithHash();
+      const projection = projectPropertyValues(catalog, note.extraFrontmatter);
+      const response: UiGeneralNotePropertiesResponse = {
+        noteId: id, path: note.path, contentHash: hash,
+        values: projection.values, issues: projection.issues,
+      };
+      return sendJson(res, 200, response);
+    }
+
+    if (method === 'POST' && path === '/api/properties') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['mutation', 'baseHash'], 'request');
+      const mutation = requirePropertyCatalogMutation(body.mutation);
+      const baseHash = requireNullableHash(body.baseHash, 'baseHash');
+      let saved;
+      try {
+        saved = await (await getVault()).mutatePropertyCatalog(mutation, baseHash);
+      } catch (error) {
+        throw toPropertyCatalogStaleApiError(error);
+      }
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, { catalog: saved.catalog, contentHash: saved.hash });
+    }
+
     if (method === 'GET' && path === '/api/discovery') {
       const { links: index } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
       return sendJson(res, 200, {
@@ -327,6 +378,52 @@ export function createLocalApiMiddleware(
       }
     }
 
+    const noteTagsMatch = /^\/api\/notes\/([^/]+)\/tags$/.exec(path);
+    if (method === 'PUT' && noteTagsMatch !== null) {
+      const id = requireUuid(decodeURIComponent(noteTagsMatch[1] ?? ''), 'note ID');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['baseHash', 'operation'], 'request');
+      const baseHash = requireHash(body.baseHash);
+      const operation = requireTagOperation(body.operation);
+      try {
+        const result = await (await getVault()).updateNoteTags(id, operation, { expectedHash: baseHash, now: clock() });
+        backlinkIndex.markDirty();
+        return sendJson(res, 200, { note: toUiNote(result.note, result.hash) });
+      } catch (error) {
+        if (isStorageError(error) && error.code === 'STALE_WRITE') throw toStaleApiError(error, 'updating tags');
+        if (isStorageError(error) && error.code === 'INVALID_INPUT') throw new ApiError(422, 'INVALID_TAG', error.message);
+        throw error;
+      }
+    }
+
+    const generalPropertyMatch = /^\/api\/notes\/([^/]+)\/properties\/([^/]+)$/.exec(path);
+    if (method === 'PUT' && generalPropertyMatch !== null) {
+      const id = requireUuid(decodeURIComponent(generalPropertyMatch[1] ?? ''), 'note ID');
+      const propertyId = requireUuid(decodeURIComponent(generalPropertyMatch[2] ?? ''), 'property ID');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['baseHash', 'value', 'unset'], 'request');
+      const baseHash = requireHash(body.baseHash);
+      const hasValue = Object.hasOwn(body, 'value');
+      if (body.unset !== undefined && body.unset !== true) throw new ApiError(400, 'INVALID_INPUT', 'unset must be true when removing a property value');
+      if (hasValue === (body.unset === true)) throw new ApiError(400, 'INVALID_INPUT', 'Send exactly one of value or unset: true.');
+      let result;
+      try {
+        result = await (await getVault()).setGeneralNoteProperty(id,
+          body.unset === true ? { propertyId, unset: true } : { propertyId, value: body.value as import('../properties/catalog.js').NotePropertyValue },
+          { expectedHash: baseHash, now: clock() },
+        );
+      } catch (error) {
+        if (isStorageError(error) && error.code === 'STALE_WRITE') throw toStaleApiError(error, 'updating this property');
+        if (isStorageError(error) && error.code === 'INVALID_INPUT') throw new ApiError(422, 'PROPERTY_VALUE_INVALID', error.message);
+        throw error;
+      }
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, {
+        note: toUiNote(result.note, result.hash), propertyId, key: result.key,
+        ...('value' in result ? { value: result.value } : {}),
+      });
+    }
+
     const moveMatch = /^\/api\/notes\/([^/]+)\/move$/.exec(path);
     if (method === 'POST' && moveMatch !== null) {
       const id = decodeURIComponent(moveMatch[1] ?? '');
@@ -347,10 +444,38 @@ export function createLocalApiMiddleware(
       return sendJson(res, 200, await backlinksForNote(id, snapshot.links));
     }
 
-    if (method === 'GET' && path === '/api/search') {
+    if (method === 'GET' && path === '/api/search/metadata') {
+      const snapshot = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      const tags = [...new Set(snapshot.search.documents.flatMap((document) => document.tagsRaw))]
+        .sort((left, right) => left.localeCompare(right));
       return sendJson(res, 200, {
-        results: normalizeSearch(url.searchParams.get('q') ?? '') === '' ? [] : searchIndex(
-          (await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true')).search, url.searchParams.get('q') ?? ''),
+        tags, properties: snapshot.search.properties,
+        metadataIssueCount: snapshot.search.metadataIssues.length,
+        ...(snapshot.search.catalogIssue === undefined ? {} : { catalogIssue: snapshot.search.catalogIssue }),
+      });
+    }
+
+    if (method === 'GET' && path === '/api/search') {
+      const query = url.searchParams.get('q') ?? '';
+      const requestedFilters = url.searchParams.get('filters');
+      if (!normalizeSearch(query) && (requestedFilters === null || requestedFilters === '[]')) {
+        return sendJson(res, 200, { results: [], metadataIssueCount: 0 });
+      }
+      const snapshot = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      let filters: NoteFilter[] = [];
+      let logic: import('../search/note-filters.js').NoteFilterLogic = 'and';
+      const rawFilters = requestedFilters;
+      if (rawFilters !== null) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(rawFilters); } catch { throw new ApiError(400, 'INVALID_FILTER', 'filters must be valid JSON.'); }
+        try { filters = validateNoteFilters(parsed, { properties: snapshot.search.properties }); logic = validateFilterLogic(url.searchParams.get('logic') ?? undefined); }
+        catch (error) { throw new ApiError(400, 'INVALID_FILTER', error instanceof Error ? error.message : 'Invalid filter.'); }
+      }
+      const results = searchIndex(snapshot.search, query, 50, filters, logic);
+      return sendJson(res, 200, {
+        results,
+        metadataIssueCount: snapshot.search.metadataIssues.length,
+        ...(snapshot.search.catalogIssue === undefined ? {} : { catalogIssue: snapshot.search.catalogIssue }),
       });
     }
 
@@ -638,6 +763,10 @@ async function createLocalNote(
   if (content.length > MAX_BODY_CHARS) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', `Note body exceeds ${MAX_BODY_CHARS} characters`);
   }
+  const initialTags = body.tags === undefined ? [] : requireStringArray(body.tags, 'tags');
+  let tags: string[];
+  try { tags = normalizeTagList(initialTags); }
+  catch (error) { throw new ApiError(400, 'INVALID_TAG', error instanceof Error ? error.message : 'Invalid initial tags.'); }
   let extraFrontmatter: Record<string, unknown> = {};
   if ('icon' in body) {
     const normalized = normalizePageIcon(body.icon);
@@ -652,7 +781,7 @@ async function createLocalNote(
   }
   const path = await uniqueNotePath(vault, slugify(title), folder);
 
-  const note = { ...createNote({ id, title, path, body: content, now }), extraFrontmatter };
+  const note = { ...createNote({ id, title, path, body: content, now, tags }), extraFrontmatter };
   await vault.createNote(note);
   backlinkIndex.markDirty();
 
@@ -858,6 +987,75 @@ function requireAllowedKeys(value: Record<string, unknown>, allowed: string[], w
   if (extra !== undefined) throw new ApiError(400, 'INVALID_INPUT', `Unknown field "${extra}" in ${where}.`);
 }
 
+function requireTagOperation(value: unknown): TagOperation {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'operation must be an object.');
+  const operation = value as Record<string, unknown>;
+  const type = requireString(operation.type, 'operation.type');
+  switch (type) {
+    case 'add':
+    case 'remove':
+      requireAllowedKeys(operation, ['type', 'tag'], `${type}-tag operation`);
+      return { type, tag: requireString(operation.tag, 'tag') };
+    case 'replace':
+      requireAllowedKeys(operation, ['type', 'tags'], 'replace-tags operation');
+      return { type, tags: requireStringArray(operation.tags, 'tags') };
+    default:
+      throw new ApiError(400, 'INVALID_INPUT', `Unsupported tag operation "${type}".`);
+  }
+}
+
+function requireStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new ApiError(400, 'INVALID_INPUT', `${field} must be an array of strings.`);
+  return [...value];
+}
+
+function requirePropertyCatalogMutation(value: unknown): PropertyCatalogMutation {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'mutation must be an object.');
+  const mutation = value as Record<string, unknown>;
+  const type = requireString(mutation.type, 'mutation.type');
+  switch (type) {
+    case 'create-property':
+      requireAllowedKeys(mutation, ['type', 'property'], 'create-property mutation');
+      if (typeof mutation.property !== 'object' || mutation.property === null || Array.isArray(mutation.property)) throw new ApiError(400, 'INVALID_INPUT', 'property must be an object.');
+      return { type, property: mutation.property as NotePropertyDefinition };
+    case 'rename-property':
+      requireAllowedKeys(mutation, ['type', 'propertyId', 'name'], 'rename-property mutation');
+      return { type, propertyId: requireUuid(mutation.propertyId, 'propertyId'), name: requireString(mutation.name, 'name') };
+    case 'add-option':
+      requireAllowedKeys(mutation, ['type', 'propertyId', 'option'], 'add-option mutation');
+      if (typeof mutation.option !== 'object' || mutation.option === null || Array.isArray(mutation.option)) throw new ApiError(400, 'INVALID_INPUT', 'option must be an object.');
+      return { type, propertyId: requireUuid(mutation.propertyId, 'propertyId'), option: mutation.option as PropertyOption };
+    case 'rename-option':
+      requireAllowedKeys(mutation, ['type', 'propertyId', 'optionId', 'label'], 'rename-option mutation');
+      return { type, propertyId: requireUuid(mutation.propertyId, 'propertyId'), optionId: requireUuid(mutation.optionId, 'optionId'), label: requireString(mutation.label, 'label') };
+    case 'remove-option':
+    case 'delete-property': {
+      const allowed = type === 'remove-option'
+        ? ['type', 'propertyId', 'optionId', 'confirmUnregisterValues']
+        : ['type', 'propertyId', 'confirmUnregisterValues'];
+      requireAllowedKeys(mutation, allowed, `${type} mutation`);
+      if (mutation.confirmUnregisterValues !== true) throw new ApiError(400, 'INVALID_INPUT', 'confirmUnregisterValues: true is required; note values are preserved but will become unregistered or invalid.');
+      if (type === 'remove-option') return { type, propertyId: requireUuid(mutation.propertyId, 'propertyId'), optionId: requireUuid(mutation.optionId, 'optionId'), confirmUnregisterValues: true };
+      return { type, propertyId: requireUuid(mutation.propertyId, 'propertyId'), confirmUnregisterValues: true };
+    }
+    default:
+      throw new ApiError(400, 'INVALID_INPUT', `Unsupported property catalog operation "${type}".`);
+  }
+}
+
+function requireNullableHash(value: unknown, field: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) throw new ApiError(400, 'INVALID_INPUT', `${field} must be a lowercase SHA-256 hash or null when no catalog exists.`);
+  return value;
+}
+
+function toPropertyCatalogStaleApiError(error: unknown): unknown {
+  if (isStorageError(error) && error.code === 'STALE_WRITE') {
+    return new ApiError(409, 'STALE_WRITE', 'The property catalog changed on disk after it was read. Reload it before saving.', { currentHash: error.details?.currentHash });
+  }
+  return error;
+}
+
 function requireDatabaseViewInput(value: unknown) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'view must be an object.');
   try { return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version: ('type' in value || 'settings' in value) ? DATABASE_VIEW_VERSION : 1, ...value })); }
@@ -973,13 +1171,14 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; attachments?: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; attachments?: number; propertyCatalog?: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
     manifest: validation.manifest,
     counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
-      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}) },
+      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
+      ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }) },
   };
 }
 

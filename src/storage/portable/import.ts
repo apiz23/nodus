@@ -1,14 +1,16 @@
-import { stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, stat } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase } from '../../database/schema.js';
 import { parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
 import type { Note } from '../../domain/note.js';
 import { parseNote } from '../../format/note-format.js';
-import type { ImportOptions, ImportPlan, ImportReport, VaultEntry, VaultStorage } from '../contracts.js';
+import type { ImportOptions, ImportPlan, ImportReport, PropertyCatalogFile, VaultEntry, VaultStorage } from '../contracts.js';
 import { StorageError, storageFailure, wrapContentError } from '../errors.js';
 import { databasePath, databaseViewPath } from '../fs/layout.js';
+import { PROPERTY_CATALOG_PATH, parsePropertyCatalog } from '../../properties/catalog.js';
 import { walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES } from '../fs/attachments.js';
 
@@ -52,6 +54,7 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     );
   }
 
+  const propertyCatalog = await readImportPropertyCatalog(source);
   const notes: Note[] = [];
   const databases: DatabaseDefinition[] = [];
   const databaseViews: DatabaseView[] = [];
@@ -153,7 +156,68 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     entries.push({ kind: 'attachment', id: valid.id, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
   }
 
-  return { entries, notes, databases, databaseViews };
+  return { entries, notes, databases, databaseViews, ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+}
+
+async function readImportPropertyCatalog(source: string): Promise<PropertyCatalogFile | undefined> {
+  const propertiesDirectory = join(source, 'properties');
+  let directoryInfo;
+  try {
+    directoryInfo = await lstat(propertiesDirectory);
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw storageFailure(error, 'Read import property catalog directory', 'properties');
+  }
+  if (!directoryInfo.isDirectory()) {
+    if (directoryInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Import property catalog directory cannot be a symbolic link', { path: 'properties' });
+    return undefined;
+  }
+
+  const catalogPath = join(source, PROPERTY_CATALOG_PATH);
+  let catalogInfo;
+  try {
+    catalogInfo = await lstat(catalogPath);
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw storageFailure(error, 'Read import property catalog', PROPERTY_CATALOG_PATH);
+  }
+  if (catalogInfo.isSymbolicLink() || !catalogInfo.isFile()) {
+    throw new StorageError('INVALID_CONTENT', 'Import property catalog must be a regular file', { path: PROPERTY_CATALOG_PATH });
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(catalogPath);
+  } catch (error) {
+    throw storageFailure(error, 'Read import property catalog', PROPERTY_CATALOG_PATH);
+  }
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new StorageError('INVALID_CONTENT', `File "${PROPERTY_CATALOG_PATH}" is not valid UTF-8 text`, { path: PROPERTY_CATALOG_PATH });
+  }
+  let catalog;
+  let version: number;
+  try {
+    catalog = parsePropertyCatalog(text);
+    version = catalogVersionFromText(text);
+  } catch (error) {
+    throw wrapContentError(error, PROPERTY_CATALOG_PATH);
+  }
+  return {
+    path: PROPERTY_CATALOG_PATH,
+    text,
+    rawBytes: Buffer.from(bytes),
+    hash: createHash('sha256').update(bytes).digest('hex'),
+    version,
+    catalog,
+  };
+}
+
+function catalogVersionFromText(text: string): number {
+  const parsed = JSON.parse(text) as { version?: unknown };
+  return typeof parsed.version === 'number' ? parsed.version : 0;
 }
 
 /** Applies a previously validated plan. Conflicts are checked before writing. */

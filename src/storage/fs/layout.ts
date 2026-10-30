@@ -4,7 +4,7 @@ export const DATABASES_DIR = 'databases';
 export const DATABASE_VIEWS_DIR = 'database-views';
 export const BACKUP_MANIFEST = 'nodus-backup.json';
 export const BACKUP_FORMAT = 'nodus-backup';
-export const BACKUP_VERSION = 3;
+export const BACKUP_VERSION = 4;
 export const TEMP_PREFIX = '.nodus-tmp-';
 
 /** Workspace-relative path of a database definition, always POSIX-separated. */

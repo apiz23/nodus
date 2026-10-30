@@ -38,7 +38,7 @@ Unicode stays as written: café, 日本語, 🙂.
 | Field | Required | Type | Rule |
 |---|---|---|---|
 | `title` | yes | string | Non-empty, no leading or trailing whitespace, single line, not UUID-shaped. |
-| `tags` | no | string array | Each entry non-empty and trimmed. Omitted when empty. |
+| `tags` | no | string array | Each entry contains non-whitespace text. New or explicitly edited tags are NFC-normalized and trimmed; legacy spelling is preserved until edited. Omitted when empty. |
 | `aliases` | no | string array | Each entry non-empty and trimmed. Omitted when empty. |
 | `nodus.version` | yes | integer | Must be `1`. |
 | `nodus.id` | yes | string | Lowercase UUID v4. Never changes. |
@@ -58,6 +58,8 @@ Notes:
 - User data is never silently dropped.
 
 The current pure `projectNoteProperties` validator understands `nodus_data` version 1. It reports an unsupported namespace version as `UNSUPPORTED_NAMESPACE_VERSION` and leaves the namespace opaque; this does not make the Markdown note unreadable. See the [structured-data ADR](structured-data-adr.md) for the namespace contract.
+
+General typed note properties are defined separately by the [Nodus Note Property Catalog](property-format.md). The editor's Properties section displays and edits only registered keys; unregistered custom frontmatter remains preserved and is not exposed as a property form. The catalog does not change note-format version 1 or cause existing custom frontmatter to be adopted automatically.
 
 ## Serialization
 
@@ -143,4 +145,5 @@ Rules for migration authors:
 - Plain Markdown body saves do not add frontmatter. A title/metadata edit or a Nodus-managed move does add it so those changes and the note ID can be persisted.
 - JavaScript object key order is used for `extraFrontmatter`, so integer-like keys (for example `2024:`) may move ahead of other keys on write.
 - Empty `tags` and `aliases` are omitted on write.
-- Tags and aliases keep their order and are not de-duplicated.
+- Tags and aliases remain separate ordered lists. Aliases identify alternate note titles; tags are user-managed labels and are never inferred from aliases.
+- Existing tag values, including case-insensitive duplicates, decomposed Unicode, and surrounding whitespace, are preserved on read and ordinary note saves. Nodus does not silently normalize or deduplicate legacy tags. The tag editor compares tags by NFC normalization, trimming, and case-insensitive matching. Adding a duplicate is rejected; removing a tag removes all legacy entries with the same normalized identity. An explicit replacement list is normalized, duplicate-checked, and kept in the submitted order; when a submitted tag matches an existing tag, the first existing spelling is retained.

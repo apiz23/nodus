@@ -13,6 +13,13 @@ import type {
   UiDatabaseRowsResponse,
   UiDatabaseView,
   UiDatabaseViewsResponse,
+  UiPropertyCatalogResponse,
+  UiGeneralNotePropertiesResponse,
+  UiPropertyCatalogMutationInput,
+  UiSetGeneralNotePropertyInput,
+  UiSetGeneralNotePropertyResponse,
+  UiUpdateNoteTagsInput,
+  UiUpdateNoteTagsResponse,
   UiDeleteNoteInput,
   UiMoveNoteInput,
   UiNote,
@@ -23,6 +30,8 @@ import type {
   UiSetNotePropertyInput,
   UiOpenVaultInput,
   UiSearchResult,
+  UiSearchResponse,
+  UiSearchMetadataResponse,
   UiValidateBackupInput,
   UiVaultPickResult,
   UiVaultStatus,
@@ -182,6 +191,35 @@ export const api = {
     return request<UiNotePropertiesResponse>(`/api/notes/${encodeURIComponent(id)}/properties`);
   },
 
+  propertyCatalog(): Promise<UiPropertyCatalogResponse> {
+    return request<UiPropertyCatalogResponse>('/api/properties');
+  },
+
+  generalNoteProperties(id: string): Promise<UiGeneralNotePropertiesResponse> {
+    return request<UiGeneralNotePropertiesResponse>(`/api/notes/${encodeURIComponent(id)}/general-properties`);
+  },
+
+  mutatePropertyCatalog(input: UiPropertyCatalogMutationInput): Promise<UiPropertyCatalogResponse> {
+    return request<UiPropertyCatalogResponse>('/api/properties', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
+  },
+
+  setGeneralNoteProperty(id: string, propertyId: string, input: UiSetGeneralNotePropertyInput): Promise<UiSetGeneralNotePropertyResponse> {
+    return request<UiSetGeneralNotePropertyResponse>(`/api/notes/${encodeURIComponent(id)}/properties/${encodeURIComponent(propertyId)}`, {
+      method: 'PUT',
+      body: jsonBody(input),
+    });
+  },
+
+  updateNoteTags(id: string, input: UiUpdateNoteTagsInput): Promise<UiUpdateNoteTagsResponse> {
+    return request<UiUpdateNoteTagsResponse>(`/api/notes/${encodeURIComponent(id)}/tags`, {
+      method: 'PUT',
+      body: jsonBody(input),
+    });
+  },
+
   setNoteProperty(id: string, input: UiSetNotePropertyInput): Promise<UiNotePropertiesResponse> {
     return request<UiNotePropertiesResponse>(`/api/notes/${encodeURIComponent(id)}/properties`, {
       method: 'PUT',
@@ -233,8 +271,15 @@ export const api = {
     });
   },
 
-  search(query: string, signal?: AbortSignal, refresh = false): Promise<{ results: UiSearchResult[] }> {
-    return request<{ results: UiSearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}${refresh ? '&refresh=true' : ''}`, { signal });
+  search(query: string, signal?: AbortSignal, refresh = false, filters: readonly import('../../src/search/note-filters.js').NoteFilter[] = [], logic: import('../../src/search/note-filters.js').NoteFilterLogic = 'and'): Promise<UiSearchResponse> {
+    const params = new URLSearchParams({ q: query });
+    if (refresh) params.set('refresh', 'true');
+    if (filters.length) { params.set('filters', JSON.stringify(filters)); params.set('logic', logic); }
+    return request<UiSearchResponse>(`/api/search?${params}`, { signal });
+  },
+
+  searchMetadata(refresh = false): Promise<UiSearchMetadataResponse> {
+    return request<UiSearchMetadataResponse>(`/api/search/metadata${refresh ? '?refresh=true' : ''}`);
   },
 
   databases(): Promise<{ databases: UiDatabase[] }> {

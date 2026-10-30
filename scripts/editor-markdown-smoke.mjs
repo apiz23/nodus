@@ -21,11 +21,41 @@ try {
     return response.json();
   };
   const { note: target } = await request('/notes', 'POST', { title: 'Target' });
-  const { note } = await request('/notes', 'POST', { title: 'Markdown commands' });
+  const { note } = await request('/notes', 'POST', { title: 'Markdown commands', tags: ['planning'] });
   const original = 'hello\n\n[[Target|label]]\n\n- [x] task\n';
   await request(`/notes/${note.id}`, 'PUT', { title: note.title, body: original, baseHash: note.contentHash });
   const path = join(root, note.path);
-  await writeFile(path, (await readFile(path, 'utf8')).replace('\nnodus:', '\naliases:\n  - Portable alias\ncustom: preserved\nnodus:'));
+  await writeFile(path, (await readFile(path, 'utf8')).replace('\nnodus:', '\naliases:\n  - Portable alias\ncustom: preserved\nscore: not-a-number\nnodus:'));
+  const propertyIds = {
+    summary: 'a1111111-1111-4111-8111-111111111111',
+    score: 'a2222222-2222-4222-8222-222222222222',
+    reviewed: 'a3333333-3333-4333-8333-333333333333',
+    due: 'a4444444-4444-4444-8444-444444444444',
+    status: 'a5555555-5555-4555-8555-555555555555',
+    topics: 'a6666666-6666-4666-8666-666666666666',
+    website: 'a7777777-7777-4777-8777-777777777777',
+    obsolete: 'a8888888-8888-4888-8888-888888888888',
+  };
+  const statusOptionId = 'b5555555-5555-4555-8555-555555555555';
+  let catalogHash = (await request('/properties')).contentHash;
+  const definitions = [
+    { id: propertyIds.summary, key: 'summary', name: 'Summary', type: 'text' },
+    { id: propertyIds.score, key: 'score', name: 'Score', type: 'number' },
+    { id: propertyIds.reviewed, key: 'reviewed', name: 'Reviewed', type: 'checkbox' },
+    { id: propertyIds.due, key: 'due', name: 'Due date', type: 'date' },
+    { id: propertyIds.status, key: 'status', name: 'Status', type: 'select', options: [{ id: statusOptionId, label: 'In progress' }, { id: 'b5555555-5555-4555-8555-555555555556', label: 'Done' }] },
+    { id: propertyIds.topics, key: 'topics', name: 'Topics', type: 'multi-select', options: [{ id: 'b6666666-6666-4666-8666-666666666666', label: 'Research' }] },
+    { id: propertyIds.website, key: 'website', name: 'Website', type: 'url' },
+    { id: propertyIds.obsolete, key: 'obsolete', name: 'Obsolete', type: 'text' },
+  ];
+  for (const property of definitions) {
+    catalogHash = (await request('/properties', 'POST', { baseHash: catalogHash, mutation: { type: 'create-property', property } })).contentHash;
+  }
+  let propertyNote = (await request(`/notes/${note.id}`)).note;
+  for (const [key, value] of [['summary', 'Notebook'], ['reviewed', false], ['due', '2026-10-30'], ['status', 'In progress'], ['topics', []], ['obsolete', 'keep']]) {
+    const propertyId = propertyIds[key];
+    propertyNote = (await request(`/notes/${note.id}/properties/${propertyId}`, 'PUT', { baseHash: propertyNote.contentHash, value })).note;
+  }
   const { note: previewNote } = await request('/notes', 'POST', { title: 'Preview page' });
   await mkdir(join(root, 'notes', 'assets'), { recursive: true });
   await writeFile(join(root, 'notes', 'assets', 'tiny.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/S5sAAAAASUVORK5CYII=', 'base64'));
@@ -52,6 +82,164 @@ try {
   await page.getByRole('treeitem', { name: 'Markdown commands (markdown-commands.md)', exact: true }).click();
   const body = page.getByRole('textbox', { name: 'Markdown body', exact: true });
   await body.waitFor();
+  const propertySection = page.getByRole('region', { name: 'Note properties', exact: true });
+  await propertySection.getByRole('button', { name: /Properties/ }).waitFor();
+  await propertySection.getByRole('textbox', { name: 'Summary value', exact: true }).waitFor();
+  assert.equal(await propertySection.getByRole('textbox', { name: 'Summary value', exact: true }).inputValue(), 'Notebook');
+  assert.equal(await propertySection.getByRole('spinbutton', { name: 'Score value', exact: true }).inputValue(), '');
+  assert.equal(await propertySection.getByRole('checkbox', { name: 'Reviewed', exact: true }).isChecked(), false, 'Explicit false remains a set checkbox value');
+  assert.equal(await propertySection.getByRole('textbox', { name: 'Due date value', exact: true }).inputValue(), '2026-10-30');
+  await propertySection.getByText('Empty list', { exact: true }).waitFor();
+  const scoreRow = propertySection.getByRole('group', { name: 'Score property', exact: true });
+  await scoreRow.getByRole('alert').filter({ hasText: 'must be a number' }).waitFor();
+  await scoreRow.getByRole('spinbutton', { name: 'Score value' }).fill('4.25');
+  const scoreWrite = page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.score}`) && response.request().method() === 'PUT');
+  await scoreRow.getByRole('button', { name: 'Save', exact: true }).click();
+  await scoreWrite;
+  assert.equal((await vaultRead()).score, 4.25);
+  const dueRow = propertySection.getByRole('group', { name: 'Due date property', exact: true });
+  await dueRow.getByRole('textbox', { name: 'Due date value' }).fill('2026-11-01');
+  const dueWrite = page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.due}`) && response.request().method() === 'PUT');
+  await dueRow.getByRole('button', { name: 'Save', exact: true }).click();
+  await dueWrite;
+  const checkboxRow = propertySection.getByRole('group', { name: 'Reviewed property', exact: true });
+  const reviewed = checkboxRow.getByRole('checkbox', { name: 'Reviewed' });
+  let reviewedWrite = page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.reviewed}`) && response.request().method() === 'PUT');
+  await reviewed.click();
+  await reviewedWrite;
+  reviewedWrite = page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.reviewed}`) && response.request().method() === 'PUT');
+  await reviewed.click();
+  await reviewedWrite;
+  assert.equal((await vaultRead()).reviewed, false);
+  const statusRow = propertySection.getByRole('group', { name: 'Status property', exact: true });
+  await statusRow.getByRole('combobox', { name: 'Status' }).click();
+  await page.getByRole('option', { name: 'Done', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.status}`) && response.request().method() === 'PUT');
+  await statusRow.getByRole('combobox', { name: 'Status' }).click();
+  await page.getByRole('option', { name: 'In progress', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.status}`) && response.request().method() === 'PUT');
+  const topicsRow = propertySection.getByRole('group', { name: 'Topics property', exact: true });
+  await topicsRow.getByRole('checkbox', { name: 'Topics: Research' }).check();
+  await topicsRow.getByRole('button', { name: 'Save selection', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.topics}`) && response.request().method() === 'PUT');
+  await topicsRow.getByRole('checkbox', { name: 'Topics: Research' }).uncheck();
+  await topicsRow.getByRole('button', { name: 'Save selection', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.topics}`) && response.request().method() === 'PUT');
+  assert.deepEqual((await vaultRead()).topics, []);
+  const summaryRow = propertySection.getByRole('group', { name: 'Summary property', exact: true });
+  await summaryRow.getByRole('textbox', { name: 'Summary value' }).fill('');
+  await summaryRow.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.summary}`) && response.request().method() === 'PUT');
+  assert.equal((await vaultRead()).summary, '', 'Empty text is a set value distinct from unset');
+  await summaryRow.getByRole('button', { name: 'Unset', exact: true }).click();
+  await page.waitForResponse((response) => response.url().includes(`/notes/${note.id}/properties/${propertyIds.summary}`) && response.request().method() === 'PUT');
+  assert.equal(Object.hasOwn(await vaultRead(), 'summary'), false);
+  await propertySection.getByRole('combobox', { name: 'Add property', exact: true }).click();
+  await page.getByRole('option', { name: 'Website' }).click();
+  const website = propertySection.getByRole('textbox', { name: 'Website value', exact: true });
+  await website.fill('javascript:alert(1)');
+  await propertySection.getByRole('button', { name: 'Save', exact: true }).last().click();
+  await propertySection.getByRole('alert').filter({ hasText: 'HTTP or HTTPS' }).waitFor();
+  await website.fill('https://example.test/path');
+  await propertySection.getByRole('button', { name: 'Save', exact: true }).last().click();
+  await propertySection.getByRole('link', { name: 'Open Website URL', exact: true }).waitFor();
+
+  await propertySection.getByRole('button', { name: 'Manage', exact: true }).click();
+  const propertyDialog = page.getByRole('dialog', { name: 'Manage note properties', exact: true });
+  const summaryDefinition = propertyDialog.locator('article').filter({ hasText: 'summary' });
+  await summaryDefinition.getByLabel('Name for summary').fill('Abstract');
+  let rejectCatalogWriteOnce = true;
+  await page.route('**/api/properties', async (route) => {
+    if (route.request().method() === 'POST' && rejectCatalogWriteOnce) {
+      rejectCatalogWriteOnce = false;
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STALE_WRITE', message: 'The property catalog changed elsewhere.' } }) });
+    } else await route.continue();
+  });
+  await summaryDefinition.getByRole('button', { name: 'Rename', exact: true }).click();
+  await propertyDialog.getByRole('alert').filter({ hasText: 'changed elsewhere' }).waitFor();
+  await propertyDialog.getByRole('button', { name: 'Reload catalog', exact: true }).click();
+  await summaryDefinition.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.unroute('**/api/properties');
+  const statusDefinition = propertyDialog.locator('article').filter({ hasText: 'status' });
+  const optionName = statusDefinition.getByRole('textbox', { name: 'Option In progress', exact: true });
+  await optionName.waitFor({ state: 'visible' });
+  await optionName.fill('Doing');
+  await statusDefinition.getByRole('button', { name: 'Rename option', exact: true }).first().click();
+  await propertyDialog.getByLabel('Display name', { exact: true }).fill('Priority');
+  await propertyDialog.getByLabel('Stable YAML key', { exact: true }).fill('priority');
+  await propertyDialog.getByLabel('Property type').click();
+  await page.getByRole('option', { name: 'number', exact: true }).click();
+  await propertyDialog.getByRole('button', { name: 'Create property', exact: true }).click();
+  const obsoleteDefinition = propertyDialog.locator('article').filter({ hasText: 'obsolete' });
+  await obsoleteDefinition.getByRole('button', { name: 'Delete definition', exact: true }).click();
+  await obsoleteDefinition.getByRole('button', { name: 'Confirm delete', exact: true }).click();
+  await propertyDialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await expectText(statusRow.getByRole('combobox', { name: 'Status' }), 'Doing');
+  const catalogAfterManage = await request('/properties');
+  assert(catalogAfterManage.catalog.properties.some((property) => property.name === 'Abstract' && property.key === 'summary'));
+  assert(catalogAfterManage.catalog.properties.find((property) => property.key === 'status').options[0].aliases.includes('In progress'));
+  assert(!catalogAfterManage.catalog.properties.some((property) => property.key === 'obsolete'));
+  assert((await readFile(path, 'utf8')).includes('obsolete: keep'), 'Deleting a property definition leaves its Markdown YAML value intact');
+  async function vaultRead() { return (await import('yaml')).parse((await readFile(path, 'utf8')).split('---\n')[1].split('\n---')[0]); }
+  async function expectText(locator, text) { assert.equal((await locator.textContent()).trim(), text); }
+  const tags = page.getByRole('textbox', { name: 'Add tag', exact: true });
+  await page.getByRole('button', { name: 'Remove tag planning', exact: true }).waitFor();
+  let rejectTagOnce = true;
+  await page.route('**/api/notes/*/tags', async (route) => {
+    if (rejectTagOnce) {
+      rejectTagOnce = false;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEMPORARY', message: 'Temporary tag write failure.' } }) });
+    } else await route.continue();
+  });
+  await tags.fill('Research');
+  await tags.press('Enter');
+  await page.getByRole('alert').filter({ hasText: 'Temporary tag write failure.' }).waitFor();
+  assert.equal(await tags.inputValue(), 'Research', 'A failed write keeps the intended tag for retry');
+  await tags.press('Enter');
+  await page.getByRole('button', { name: 'Remove tag Research', exact: true }).waitFor();
+  await page.unroute('**/api/notes/*/tags');
+  await tags.fill(' research ');
+  await tags.press('Enter');
+  await page.getByRole('alert').filter({ hasText: 'already exists' }).waitFor();
+  assert.equal(await tags.inputValue(), ' research ', "Duplicate feedback keeps the user's input");
+  await tags.fill('linking');
+  await tags.press(',');
+  await page.getByRole('button', { name: 'Remove tag linking', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Remove tag Research', exact: true }).click();
+  await page.getByRole('button', { name: 'Remove tag Research', exact: true }).waitFor({ state: 'detached' });
+  await tags.focus();
+  await page.keyboard.press('Backspace');
+  await page.getByRole('button', { name: 'Remove tag linking', exact: true }).waitFor({ state: 'detached' });
+  await page.route('**/api/notes/*/tags', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.continue();
+  });
+  await tags.fill('Persistent');
+  const delayedTagResponse = page.waitForResponse((response) => response.url().includes(`/api/notes/${note.id}/tags`) && response.request().method() === 'PUT');
+  await tags.press('Enter');
+  await page.getByText('Saving tag changes…', { exact: true }).waitFor();
+  assert.equal(await tags.isDisabled(), true, 'Repeated tag actions are blocked while a write is pending');
+  await page.getByRole('treeitem', { name: 'Preview page (preview-page.md)', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  await delayedTagResponse;
+  assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).inputValue(), 'Preview page', 'A late tag response must not replace a newly selected note');
+  await page.getByRole('treeitem', { name: 'Markdown commands (markdown-commands.md)', exact: true }).click();
+  await page.getByRole('button', { name: 'Remove tag Persistent', exact: true }).waitFor();
+  await tags.fill('Concurrent');
+  const concurrentTagResponse = page.waitForResponse((response) => response.url().includes(`/api/notes/${note.id}/tags`) && response.request().method() === 'PUT');
+  await tags.press('Enter');
+  const concurrentDraft = `${original}Concurrent tag-save draft.\n`;
+  const concurrentAutosave = page.waitForResponse((response) => response.url().includes(`/api/notes/${note.id}`) && !response.url().includes('/tags') && response.request().method() === 'PUT');
+  await body.fill(concurrentDraft);
+  await concurrentAutosave;
+  await concurrentTagResponse;
+  await page.getByText('Saved', { exact: true }).waitFor();
+  assert.equal((await request(`/notes/${note.id}`)).note.body, concurrentDraft, 'Autosave preserves a draft typed while a tag write is pending');
+  assert.deepEqual((await request(`/notes/${note.id}`)).note.tags, ['planning', 'Persistent', 'Concurrent']);
+  await body.fill(original);
+  await page.waitForResponse((response) => response.url().includes(`/api/notes/${note.id}`) && !response.url().includes('/tags') && response.request().method() === 'PUT');
+  await page.getByText('Saved', { exact: true }).waitFor();
+  await page.unroute('**/api/notes/*/tags');
   await page.getByRole('button', { name: 'Source', exact: true }).click();
   // Use CodeMirror's public selection API; edits still travel through real
   // toolbar/key events, React drafts, and the normal conditional-save API.
@@ -84,7 +272,7 @@ try {
   assert.equal((await editor()).text, '~~hello~~' + original.slice(5));
   await page.getByRole('button', { name: 'Live', exact: true }).click();
   await page.locator('.cm-strikethrough').waitFor();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByTitle('Save note (Ctrl/Cmd+S)').click();
   await page.getByText('Saved', { exact: true }).waitFor();
   const saved = (await request(`/notes/${note.id}`)).note;
   assert.equal(saved.id, note.id);
@@ -146,6 +334,7 @@ try {
   await page.keyboard.press(`${mod}+Shift+k`);
   assert.equal((await editor()).text, '[[Target|label]]');
   assert.equal(await page.getByRole('dialog', { name: 'Command palette' }).count(), 0);
+  assert.equal(await tags.isDisabled(), true, 'Tag edits are blocked while the Markdown draft is unsaved');
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: 'Format Markdown', exact: true }).click();
@@ -181,8 +370,9 @@ try {
   assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).inputValue(), 'Target');
   const persistedPreview = (await request(`/notes/${previewNote.id}`)).note;
   assert.equal(persistedPreview.body, previewMarkdown, 'Preview must not rewrite the Markdown source');
+  assert.deepEqual((await request(`/notes/${note.id}`)).note.tags, ['planning', 'Persistent', 'Concurrent']);
   assert.deepEqual(errors, []);
-  console.log('Markdown browser smoke passed: formatting/shortcuts, undo/redo, source persistence, lists/code/links, wiki navigation, preview rendering/security/local images, and mobile controls.');
+  console.log('Markdown browser smoke passed: tags keyboard/pointer/retry/loading/draft safety, formatting/shortcuts, undo/redo, source persistence, lists/code/links, wiki navigation, preview rendering/security/local images, and mobile controls.');
 } finally {
   await browser?.close();
   await server?.close();

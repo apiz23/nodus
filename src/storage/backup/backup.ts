@@ -8,6 +8,7 @@ import type { Note } from '../../domain/note.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { isUuidV4 } from '../../domain/ids.js';
 import { NodusError } from '../../domain/errors.js';
+import { PROPERTY_CATALOG_FORMAT, PROPERTY_CATALOG_PATH, PROPERTY_CATALOG_VERSION, parsePropertyCatalog } from '../../properties/catalog.js';
 import { parseNote } from '../../format/note-format.js';
 import { validateNotePath } from '../../domain/paths.js';
 import type {
@@ -16,12 +17,14 @@ import type {
   BackupManifestCounts,
   BackupManifestFile,
   BackupManifestFormats,
+  BackupManifestPropertyCatalog,
   BackupOptions,
   BackupReport,
   BackupValidation,
   ImportOptions,
   ImportReport,
   RestorePreview,
+  PropertyCatalogFile,
   VaultEntry,
   VaultStorage,
 } from '../contracts.js';
@@ -60,7 +63,7 @@ export async function createBackup(
     });
   }
 
-  const entries = await vault.snapshot();
+  const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
   for (const entry of entries) {
     const issue = restorePathIssue(entry.kind, entry.id, entry.path);
     if (issue !== undefined) {
@@ -121,14 +124,32 @@ export async function createBackup(
       else attachments += 1;
     }
 
+    let catalogMetadata: BackupManifestPropertyCatalog | undefined;
+    if (propertyCatalog !== null) {
+      const bytes = propertyCatalog.rawBytes;
+      if (propertyCatalog.path !== PROPERTY_CATALOG_PATH || propertyCatalog.hash !== sha256(bytes)) {
+        throw new StorageError('INVALID_CONTENT', 'Property catalog snapshot failed its integrity check', { path: PROPERTY_CATALOG_PATH });
+      }
+      await writeFileAtomic(resolveInsideRoot(target, PROPERTY_CATALOG_PATH), bytes);
+      catalogMetadata = {
+        path: PROPERTY_CATALOG_PATH,
+        format: PROPERTY_CATALOG_FORMAT,
+        version: propertyCatalog.version,
+        properties: propertyCatalog.catalog.properties.length,
+        sha256: sha256(bytes),
+        bytes: bytes.byteLength,
+      };
+    }
+
     const app = await readAppInfo();
     const manifest: BackupManifest = {
       format: BACKUP_FORMAT,
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION },
-      counts: { notes, databases, databaseViews, attachments },
+      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION },
+      counts: { notes, databases, databaseViews, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1 },
+      ...(catalogMetadata === undefined ? {} : { propertyCatalog: catalogMetadata }),
       files,
     };
     manifest.digest = digestOf(manifest);
@@ -137,7 +158,7 @@ export async function createBackup(
     throw storageFailure(error, 'Write backup', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
 }
 
 /**
@@ -191,6 +212,7 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
   const notes: Note[] = [];
   const databases: DatabaseDefinition[] = [];
   const databaseViews: DatabaseView[] = [];
+  let propertyCatalog: PropertyCatalogFile | undefined;
 
   const ids = new Set<string>();
   const paths = new Set<string>();
@@ -209,6 +231,9 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     const pathIssue = restorePathIssue(file.kind, file.id, file.path);
     if (pathIssue !== undefined) issues.push(pathIssue);
   }
+  const catalogResult = await validateBackupPropertyCatalog(target, manifest);
+  propertyCatalog = catalogResult.file;
+  issues.push(...catalogResult.issues);
   if (issues.length > 0) {
     throw new StorageError('CORRUPT_BACKUP', 'Backup validation failed before reading entries', {
       details: { issues },
@@ -352,7 +377,7 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     );
   }
 
-  return { manifest, entries, notes, databases, databaseViews };
+  return { manifest, entries, notes, databases, databaseViews, ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
 }
 
 /**
@@ -391,6 +416,7 @@ export async function restoreBackup(
       notes: validation.notes,
       databases: validation.databases,
       databaseViews: validation.databaseViews,
+      ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: validation.propertyCatalog }),
     },
     { overwrite: options.overwrite },
   );
@@ -411,6 +437,12 @@ export async function previewRestore(
 ): Promise<RestorePreview> {
   const validation = await validateBackup(backupDir);
   const existing = await vault.snapshot();
+  const targetCatalog = await vault.readPropertyCatalogWithHash();
+  const catalogConflict = validation.propertyCatalog === undefined
+    ? false
+    : targetCatalog.hash === null
+      ? await propertiesDirectoryHasEntries(vault.root)
+      : targetCatalog.hash !== validation.propertyCatalog.hash;
 
   const noteIds = new Set<string>();
   const databaseIds = new Set<string>();
@@ -452,13 +484,123 @@ export async function previewRestore(
     if (attachmentIds.has(entry.id)) ids.add(entry.id);
     if (attachmentPaths.has(foldPath(entry.path))) paths.add(entry.path);
   }
+  if (catalogConflict) paths.add(PROPERTY_CATALOG_PATH);
 
   return {
     manifest: validation.manifest,
     counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
-      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}) },
+      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
+      ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }) },
+    ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: {
+      path: PROPERTY_CATALOG_PATH,
+      version: validation.propertyCatalog.version,
+      properties: validation.propertyCatalog.catalog.properties.length,
+      hash: validation.propertyCatalog.hash,
+      conflict: catalogConflict,
+    } }),
     conflicts: { ids: [...ids].sort(), paths: [...paths].sort() },
   };
+}
+
+async function propertiesDirectoryHasEntries(root: string): Promise<boolean> {
+  try {
+    return (await readdir(join(root, 'properties'))).length > 0;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') return true;
+    throw storageFailure(error, 'Inspect property catalog directory', PROPERTY_CATALOG_PATH);
+  }
+}
+
+async function validateBackupPropertyCatalog(
+  target: string,
+  manifest: BackupManifest,
+): Promise<{ file?: PropertyCatalogFile; issues: string[] }> {
+  const issues: string[] = [];
+  const metadata = manifest.propertyCatalog;
+  const propertiesDirectory = join(target, 'properties');
+  let directoryInfo;
+  try {
+    directoryInfo = await lstat(propertiesDirectory);
+  } catch (error) {
+    if (isMissing(error)) {
+      if (metadata !== undefined) issues.push(`Missing property catalog "${PROPERTY_CATALOG_PATH}"`);
+      return { issues };
+    }
+    throw storageFailure(error, 'Inspect property catalog directory', PROPERTY_CATALOG_PATH);
+  }
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) {
+    if (metadata !== undefined) issues.push('Property catalog parent must be a regular properties/ directory');
+    return { issues };
+  }
+
+  const catalogPath = join(target, PROPERTY_CATALOG_PATH);
+  let catalogInfo;
+  try {
+    catalogInfo = await lstat(catalogPath);
+  } catch (error) {
+    if (isMissing(error)) {
+      if (metadata !== undefined) issues.push(`Missing property catalog "${PROPERTY_CATALOG_PATH}"`);
+      return { issues };
+    }
+    throw storageFailure(error, 'Read property catalog', PROPERTY_CATALOG_PATH);
+  }
+  if (catalogInfo.isSymbolicLink() || !catalogInfo.isFile()) {
+    issues.push('Property catalog must be a regular file');
+    return { issues };
+  }
+  if (metadata === undefined) {
+    issues.push(`Property catalog "${PROPERTY_CATALOG_PATH}" is present but not recorded in the manifest`);
+    return { issues };
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(catalogPath);
+  } catch (error) {
+    if (isMissing(error)) {
+      issues.push(`Missing property catalog "${PROPERTY_CATALOG_PATH}"`);
+      return { issues };
+    }
+    throw storageFailure(error, 'Read property catalog', PROPERTY_CATALOG_PATH);
+  }
+  if (bytes.byteLength !== metadata.bytes) issues.push('Property catalog byte length does not match the manifest');
+  if (sha256(bytes) !== metadata.sha256) issues.push('Property catalog hash does not match the manifest');
+
+  let text: string;
+  let catalog;
+  let version: number;
+  try {
+    text = decodeUtf8(bytes, PROPERTY_CATALOG_PATH);
+    catalog = parsePropertyCatalog(text);
+    version = catalogVersionFromText(text);
+  } catch (error) {
+    const unsupported = unsupportedError(error, PROPERTY_CATALOG_PATH);
+    if (unsupported !== undefined) throw unsupported;
+    issues.push(`${PROPERTY_CATALOG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+    return { issues };
+  }
+  if (metadata.path !== PROPERTY_CATALOG_PATH) issues.push('Property catalog manifest path must be properties/catalog.json');
+  if (metadata.format !== PROPERTY_CATALOG_FORMAT) issues.push('Property catalog format does not match the manifest');
+  if (metadata.version !== version) issues.push('Property catalog version does not match the manifest');
+  if (metadata.properties !== catalog.properties.length) issues.push('Property catalog definition count does not match the manifest');
+  if (issues.length > 0) return { issues };
+  return {
+    file: {
+      path: PROPERTY_CATALOG_PATH,
+      text,
+      rawBytes: Buffer.from(bytes),
+      hash: metadata.sha256,
+      version,
+      catalog,
+    },
+    issues,
+  };
+}
+
+function catalogVersionFromText(text: string): number {
+  const parsed = JSON.parse(text) as { version?: unknown };
+  return typeof parsed.version === 'number' ? parsed.version : 0;
 }
 
 async function readManifest(target: string): Promise<BackupManifest> {
@@ -540,7 +682,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   }
 
   const issues: string[] = [];
-  if (version >= 2) rejectUnknownKeys(data, ['format', 'version', 'createdAt', 'app', 'formats', 'counts', 'files', 'digest'], 'manifest', issues);
+  if (version >= 2) rejectUnknownKeys(data, ['format', 'version', 'createdAt', 'app', 'formats', 'counts', ...(version >= 4 ? ['propertyCatalog'] : []), 'files', 'digest'], 'manifest', issues);
   const files: BackupManifestFile[] = [];
 
   data.files.forEach((item: unknown, index: number) => {
@@ -596,11 +738,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
         !isIntegerAtLeast(data.formats.note, 1) ||
         !isIntegerAtLeast(data.formats.database, 1) ||
         !isIntegerAtLeast(data.formats.backup, 1) ||
-        (version >= 2 && !isIntegerAtLeast(data.formats.databaseView, 1))) {
-      issues.push('formats must contain positive integers note, database, backup, and for v2+ databaseView');
+        (version >= 2 && !isIntegerAtLeast(data.formats.databaseView, 1)) ||
+        (version >= 4 && !isIntegerAtLeast(data.formats.propertyCatalog, 1))) {
+      issues.push('formats must contain positive integers note, database, backup, databaseView for v2+, and propertyCatalog for v4+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', 'backup'], 'formats', issues);
-      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', ...(version >= 4 ? ['propertyCatalog'] : []), 'backup'], 'formats', issues);
+      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}), ...(version >= 4 ? { propertyCatalog: data.formats.propertyCatalog as number } : {}) };
     }
   }
 
@@ -610,11 +753,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
         !isIntegerAtLeast(data.counts.notes, 0) ||
         !isIntegerAtLeast(data.counts.databases, 0) ||
         (version >= 2 && !isIntegerAtLeast(data.counts.databaseViews, 0)) ||
-        (version >= 3 && !isIntegerAtLeast(data.counts.attachments, 0))) {
-      issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, and attachments for v3+');
+        (version >= 3 && !isIntegerAtLeast(data.counts.attachments, 0)) ||
+        (version >= 4 && !isIntegerAtLeast(data.counts.propertyCatalog, 0))) {
+      issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, attachments for v3+, and propertyCatalog for v4+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : [])], 'counts', issues);
-      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : []), ...(version >= 4 ? ['propertyCatalog'] : [])], 'counts', issues);
+      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}), ...(version >= 4 ? { propertyCatalog: data.counts.propertyCatalog as number } : {}) };
       const noteFiles = files.filter((file) => file.kind === 'note').length;
       const databaseFiles = files.filter((file) => file.kind === 'database').length;
       const viewFiles = files.filter((file) => file.kind === 'database-view').length;
@@ -623,6 +767,40 @@ async function readManifest(target: string): Promise<BackupManifest> {
         issues.push('counts does not match the number of file entries');
       }
     }
+  }
+
+  let propertyCatalog: BackupManifestPropertyCatalog | undefined;
+  if (data.propertyCatalog !== undefined) {
+    if (version < 4) {
+      issues.push('propertyCatalog is not supported before backup version 4');
+    } else if (!isRecord(data.propertyCatalog)) {
+      issues.push('propertyCatalog must be an object');
+    } else {
+      rejectUnknownKeys(data.propertyCatalog, ['path', 'format', 'version', 'properties', 'sha256', 'bytes'], 'propertyCatalog', issues);
+      if (data.propertyCatalog.path !== PROPERTY_CATALOG_PATH) issues.push(`propertyCatalog.path must be "${PROPERTY_CATALOG_PATH}"`);
+      if (data.propertyCatalog.format !== PROPERTY_CATALOG_FORMAT) issues.push(`propertyCatalog.format must be "${PROPERTY_CATALOG_FORMAT}"`);
+      if (!isIntegerAtLeast(data.propertyCatalog.version, 1)) issues.push('propertyCatalog.version must be a positive integer');
+      if (!isIntegerAtLeast(data.propertyCatalog.properties, 0)) issues.push('propertyCatalog.properties must be a non-negative integer');
+      if (typeof data.propertyCatalog.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(data.propertyCatalog.sha256)) issues.push('propertyCatalog.sha256 must be a lowercase SHA-256 hex digest');
+      if (!isIntegerAtLeast(data.propertyCatalog.bytes, 0)) issues.push('propertyCatalog.bytes must be a non-negative integer');
+      if (isIntegerAtLeast(data.propertyCatalog.version, 1)) {
+        if (data.propertyCatalog.version > PROPERTY_CATALOG_VERSION) {
+          throw new StorageError('UNSUPPORTED_VERSION', `Property catalog version ${data.propertyCatalog.version} is newer than supported version ${PROPERTY_CATALOG_VERSION}`, { path: BACKUP_MANIFEST });
+        }
+        propertyCatalog = {
+          path: data.propertyCatalog.path as string,
+          format: data.propertyCatalog.format as 'nodus-property-catalog',
+          version: data.propertyCatalog.version,
+          properties: data.propertyCatalog.properties as number,
+          sha256: data.propertyCatalog.sha256 as string,
+          bytes: data.propertyCatalog.bytes as number,
+        };
+      }
+    }
+  }
+  if (version >= 4 && counts !== undefined) {
+    const expectedCatalogCount = propertyCatalog === undefined ? 0 : 1;
+    if (counts.propertyCatalog !== expectedCatalogCount) issues.push('counts.propertyCatalog does not match the catalog metadata');
   }
 
   const digest =
@@ -634,10 +812,14 @@ async function readManifest(target: string): Promise<BackupManifest> {
   }
   if (version >= 2 && (formats === undefined || counts === undefined)) issues.push('v2+ manifests require formats and counts');
   if (version >= 3 && counts?.attachments === undefined) issues.push('v3 manifests require attachment counts');
+  if (version >= 4 && counts?.propertyCatalog === undefined) issues.push('v4 manifests require property catalog counts');
   if (version >= 2 && files.some((file) => file.bytes === undefined)) issues.push('v2+ manifest file entries require byte lengths');
   if (version >= 2 && digest === undefined) issues.push('v2+ manifests require a digest');
   if (version >= 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
     if (formats.databaseView > DATABASE_VIEW_VERSION) throw new StorageError('UNSUPPORTED_VERSION', `Database view format version ${formats.databaseView} is newer than supported version ${DATABASE_VIEW_VERSION}`, { path: BACKUP_MANIFEST });
+  }
+  if (formats?.propertyCatalog !== undefined && formats.propertyCatalog > PROPERTY_CATALOG_VERSION) {
+    throw new StorageError('UNSUPPORTED_VERSION', `Property catalog format version ${formats.propertyCatalog} is newer than supported version ${PROPERTY_CATALOG_VERSION}`, { path: BACKUP_MANIFEST });
   }
   if (formats && formats.database > DATABASE_FORMAT_VERSION) throw new StorageError('UNSUPPORTED_VERSION', 'Backup requires a newer database format', { path: BACKUP_MANIFEST });
   if (version >= 2 && formats?.backup !== version) issues.push(`formats.backup must match manifest version ${version}`);
@@ -648,11 +830,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
     } else {
       const candidate: BackupManifest = {
         format: BACKUP_FORMAT,
-        version: version as 1 | 2 | 3,
+        version: version as 1 | 2 | 3 | 4,
         createdAt: data.createdAt,
         ...(app === undefined ? {} : { app }),
         ...(formats === undefined ? {} : { formats }),
         ...(counts === undefined ? {} : { counts }),
+        ...(propertyCatalog === undefined ? {} : { propertyCatalog }),
         files,
       };
       if (digestOf(candidate) !== digest) {
@@ -670,11 +853,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
 
   return {
     format: BACKUP_FORMAT,
-    version: version as 1 | 2 | 3,
+    version: version as 1 | 2 | 3 | 4,
     createdAt: data.createdAt,
     ...(app === undefined ? {} : { app }),
     ...(formats === undefined ? {} : { formats }),
     ...(counts === undefined ? {} : { counts }),
+    ...(propertyCatalog === undefined ? {} : { propertyCatalog }),
     files,
     ...(digest === undefined ? {} : { digest }),
   };
@@ -805,15 +989,15 @@ async function readAppInfo(): Promise<{ name: string; version: string } | undefi
  * Canonical digest serialization, covered by `digestOf`:
  *
  * 1. Keys in fixed order: format, version, createdAt, then app, formats,
- *    counts when present (each rebuilt with its own fixed key order), then
- *    files. The `digest` key itself is never included.
+ *    counts, propertyCatalog when present (each rebuilt with its own fixed key
+ *    order), then files. The `digest` key itself is never included.
  * 2. Each file entry has keys kind, id, path, sha256, and bytes when present,
  *    in that order; entries keep manifest array order.
  * 3. Serialized with `JSON.stringify` and no whitespace, UTF-8 encoded,
  *    hashed with SHA-256 as lowercase hex.
  */
 function canonicalDigestInput(
-  manifest: Pick<BackupManifest, 'format' | 'version' | 'createdAt' | 'app' | 'formats' | 'counts' | 'files'>,
+  manifest: Pick<BackupManifest, 'format' | 'version' | 'createdAt' | 'app' | 'formats' | 'counts' | 'propertyCatalog' | 'files'>,
 ): string {
   const payload: Record<string, unknown> = {
     format: manifest.format,
@@ -828,6 +1012,7 @@ function canonicalDigestInput(
       note: manifest.formats.note,
       database: manifest.formats.database,
       ...(manifest.formats.databaseView === undefined ? {} : { databaseView: manifest.formats.databaseView }),
+      ...(manifest.formats.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.formats.propertyCatalog }),
       backup: manifest.formats.backup,
     };
   }
@@ -837,6 +1022,17 @@ function canonicalDigestInput(
       databases: manifest.counts.databases,
       ...(manifest.counts.databaseViews === undefined ? {} : { databaseViews: manifest.counts.databaseViews }),
       ...(manifest.counts.attachments === undefined ? {} : { attachments: manifest.counts.attachments }),
+      ...(manifest.counts.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.counts.propertyCatalog }),
+    };
+  }
+  if (manifest.propertyCatalog !== undefined) {
+    payload.propertyCatalog = {
+      path: manifest.propertyCatalog.path,
+      format: manifest.propertyCatalog.format,
+      version: manifest.propertyCatalog.version,
+      properties: manifest.propertyCatalog.properties,
+      sha256: manifest.propertyCatalog.sha256,
+      bytes: manifest.propertyCatalog.bytes,
     };
   }
   payload.files = manifest.files.map((file) =>
@@ -848,7 +1044,7 @@ function canonicalDigestInput(
 }
 
 function digestOf(
-  manifest: Pick<BackupManifest, 'format' | 'version' | 'createdAt' | 'app' | 'formats' | 'counts' | 'files'>,
+  manifest: Pick<BackupManifest, 'format' | 'version' | 'createdAt' | 'app' | 'formats' | 'counts' | 'propertyCatalog' | 'files'>,
 ): string {
   return sha256(canonicalDigestInput(manifest));
 }

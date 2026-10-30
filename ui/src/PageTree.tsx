@@ -34,6 +34,9 @@ interface PageTreeProps {
   notes: UiNoteSummary[];
   results: UiSearchResult[];
   query: string;
+  filtersActive: boolean;
+  metadataIssueCount?: number;
+  catalogIssue?: string;
   selectedId: string | null;
   folders: string[];
   folderError: string | null;
@@ -137,6 +140,9 @@ export function PageTree({
   folderError,
   results,
   query,
+  filtersActive,
+  metadataIssueCount = 0,
+  catalogIssue,
   selectedId,
   loading,
   searching,
@@ -291,7 +297,7 @@ export function PageTree({
     } finally { setDeleteFolderBusy(false); }
   };
 
-  const isSearching = query.trim() !== '';
+  const isSearching = query.trim() !== '' || filtersActive;
 
   const handleSearchResultsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -371,6 +377,9 @@ export function PageTree({
             <Button type="button" variant="link" size="xs" onClick={onRetry}>{isSearching ? 'Retry search' : 'Retry'}</Button>
           </div>
         )}
+
+        {isSearching && catalogIssue ? <p role="status" className="mx-2 mb-2 text-[11px] text-amber-700 dark:text-amber-300">Metadata search is limited because the property catalog could not be read.</p> : null}
+        {isSearching && metadataIssueCount > 0 ? <p role="status" className="mx-2 mb-2 text-[11px] text-muted-foreground">{metadataIssueCount} registered property {metadataIssueCount === 1 ? 'value is' : 'values are'} invalid and excluded from search and filters.</p> : null}
 
         {loading || (isSearching && searching) ? (
           <div className="space-y-1.5 px-1" aria-label="Loading pages">

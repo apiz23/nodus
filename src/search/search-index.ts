@@ -1,19 +1,28 @@
 import type { Note } from '../domain/note.js';
 import { readPageIcon } from '../ui-server/page-icon.js';
+import { projectPropertyValues, type NotePropertyValue, type PropertyCatalog } from '../properties/catalog.js';
+import { matchesNoteFilters, type NoteFilter, type NoteFilterLogic } from './note-filters.js';
 
-export type SearchField = 'title' | 'alias' | 'path' | 'content';
-export interface SearchMatch { field: SearchField; text: string; start: number; end: number }
+export type SearchField = 'title' | 'alias' | 'path' | 'content' | 'tag' | 'property' | 'filter';
+export interface SearchMatch { field: SearchField; text: string; start: number; end: number; propertyId?: string; propertyName?: string }
+export interface SearchMetadataIssue { noteId: string; key: string; propertyId: string; message: string }
 export interface SearchResult {
   id: string; title: string; path: string; updatedAt: string; aliases: string[]; icon: string | null;
   snippet: string;
   match: SearchMatch;
 }
 interface SearchText { text: string; folded: string; offsets?: number[] }
+interface IndexedProperty { id: string; name: string; type: string; value?: NotePropertyValue; invalid: boolean }
 interface SearchDocument {
   note: Pick<SearchResult, 'id' | 'title' | 'path' | 'updatedAt' | 'aliases' | 'icon'>;
   title: SearchText; aliases: SearchText[]; path: SearchText; content: SearchText;
+  tags: SearchText[];
+  tagsRaw: string[];
+  properties: Array<{ id: string; name: SearchText; nameDisplay: string; value: SearchText; valueRaw: NotePropertyValue; invalid: boolean }>;
+  filterProperties: Record<string, NotePropertyValue>;
+  invalidPropertyIds: Set<string>;
 }
-export interface SearchIndex { documents: SearchDocument[] }
+export interface SearchIndex { documents: SearchDocument[]; metadataIssues: SearchMetadataIssue[]; catalogIssue?: string; properties: PropertyCatalog['properties'] }
 
 export function normalizeSearch(value: string): string {
   return value.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -34,13 +43,29 @@ function searchable(value: string): SearchText {
 }
 
 /** Pre-normalized searchable fields, rebuilt only from authoritative parsed Markdown notes. */
-export function buildSearchIndex(notes: readonly Note[]): SearchIndex {
-  return { documents: notes.map((note) => ({
+export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalog = { properties: [] }, catalogIssue?: string): SearchIndex {
+  const metadataIssues: SearchMetadataIssue[] = [];
+  const documents = notes.map((note) => {
+    const projection = projectPropertyValues(catalog, note.extraFrontmatter);
+    for (const issue of projection.issues) metadataIssues.push({ noteId: note.id, key: issue.key, propertyId: issue.propertyId, message: issue.message });
+    const invalidPropertyIds = new Set(projection.issues.map((issue) => issue.propertyId));
+    const properties = catalog.properties.flatMap((property) => {
+      const hasValue = Object.hasOwn(projection.values, property.id);
+      const value = projection.values[property.id];
+      if (!hasValue && !invalidPropertyIds.has(property.id)) return [];
+      const valueDisplay = hasValue ? displayPropertyValue(value!) : '';
+      return [{ id: property.id, name: searchable(property.name), nameDisplay: property.name, value: searchable(valueDisplay), valueRaw: value!, invalid: invalidPropertyIds.has(property.id) }];
+    });
+    return {
     note: { id: note.id, title: note.title, path: note.path, updatedAt: note.updatedAt,
       aliases: [...note.aliases], icon: readPageIcon(note.extraFrontmatter) },
     title: searchable(note.title), aliases: note.aliases.map(searchable),
     path: searchable(note.path), content: searchable(note.body),
-  })) };
+    tags: note.tags.map(searchable), tagsRaw: [...note.tags], properties,
+    filterProperties: projection.values, invalidPropertyIds,
+  };
+  });
+  return { documents, metadataIssues, ...(catalogIssue === undefined ? {} : { catalogIssue }), properties: catalog.properties };
 }
 
 function matchIn(value: SearchText, query: string, field: SearchField): SearchMatch | undefined {
@@ -69,13 +94,18 @@ function context(match: SearchMatch): SearchMatch {
     start: prefix.length + match.start - start, end: prefix.length + match.end - start };
 }
 
-/** Exact title → exact alias → partial alias → title prefix/partial → path → content. */
-export function searchIndex(index: SearchIndex, rawQuery: string, limit = 50): SearchResult[] {
+/** Preserve prior title/path/content ordering, then consider tags and registered properties. */
+export function searchIndex(index: SearchIndex, rawQuery: string, limit = 50, filters: readonly NoteFilter[] = [], logic: NoteFilterLogic = 'and'): SearchResult[] {
   const query = normalizeSearch(rawQuery);
-  if (!query) return [];
+  if (!query && filters.length === 0) return [];
   const ranked: { rank: number; result: SearchResult }[] = [];
   for (const doc of index.documents) {
-    let rank: number;
+    if (!matchesNoteFilters({ tags: doc.tagsRaw, values: doc.filterProperties, invalidPropertyIds: doc.invalidPropertyIds }, filters, logic)) continue;
+    if (!query) {
+      ranked.push({ rank: 10, result: { ...doc.note, aliases: [...doc.note.aliases], snippet: 'Matches active filters', match: { field: 'filter', text: 'Matches active filters', start: 0, end: 0 } } });
+      continue;
+    }
+    let rank = 8;
     let match: SearchMatch | undefined;
     const alias = doc.aliases.find((alias) => alias.folded === query)
       ?? doc.aliases.find((alias) => alias.folded.includes(query));
@@ -83,14 +113,45 @@ export function searchIndex(index: SearchIndex, rawQuery: string, limit = 50): S
     else if (alias) { rank = alias.folded === query ? 1 : 2; match = matchIn(alias, query, 'alias'); }
     else if (doc.title.folded.includes(query)) { rank = doc.title.folded.startsWith(query) ? 3 : 4; match = matchIn(doc.title, query, 'title'); }
     else if (doc.path.folded.includes(query)) { rank = 5; match = matchIn(doc.path, query, 'path'); }
-    else { rank = 6; match = matchIn(doc.content, query, 'content'); }
+    else if (doc.content.folded.includes(query)) { rank = 6; match = matchIn(doc.content, query, 'content'); }
+    else {
+      const tagMatch = doc.tags.find((tag) => tag.folded.includes(query));
+      if (tagMatch) { rank = 7; match = matchIn(tagMatch, query, 'tag'); }
+      else {
+        const propertyMatch = findPropertyMatch(doc.properties, query);
+        if (propertyMatch) { rank = 8; match = propertyMatch; }
+      }
+    }
     if (!match) continue;
     const excerpt = context(match);
-    const label = { title: 'Title', alias: 'Alias', path: 'Path', content: 'Content' }[match.field];
+    const label = { title: 'Title', alias: 'Alias', path: 'Path', content: 'Content', tag: 'Tag', property: 'Property', filter: 'Filter' }[match.field];
     ranked.push({ rank, result: { ...doc.note, aliases: [...doc.note.aliases],
       snippet: match.field === 'content' ? excerpt.text : `${label}: ${excerpt.text}`, match: excerpt } });
   }
   return ranked.sort((a, b) => a.rank - b.rank || a.result.title.localeCompare(b.result.title)
     || a.result.path.localeCompare(b.result.path) || a.result.id.localeCompare(b.result.id))
     .slice(0, limit).map(({ result }) => result);
+}
+
+function findPropertyMatch(properties: SearchDocument['properties'], query: string): SearchMatch | undefined {
+  for (const property of properties) {
+    if (property.invalid) continue;
+    const nameMatch = matchIn(property.name, query, 'property');
+    if (nameMatch) {
+      const text = `${property.nameDisplay}: ${property.value.text}`;
+      return { field: 'property', propertyId: property.id, propertyName: property.nameDisplay, text,
+        start: nameMatch.start, end: nameMatch.end };
+    }
+    const valueMatch = matchIn(property.value, query, 'property');
+    if (valueMatch) {
+      const prefix = `${property.nameDisplay}: `;
+      return { field: 'property', propertyId: property.id, propertyName: property.nameDisplay,
+        text: `${prefix}${property.value.text}`, start: prefix.length + valueMatch.start, end: prefix.length + valueMatch.end };
+    }
+  }
+  return undefined;
+}
+
+function displayPropertyValue(value: NotePropertyValue): string {
+  return Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? String(value) : String(value);
 }

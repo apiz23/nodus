@@ -103,7 +103,7 @@ describe('vault attachments', () => {
       const backup = join(dir, 'backup');
       await createBackup(source, backup);
       const validation = await validateBackup(backup);
-      expect(validation.manifest.version).toBe(3);
+      expect(validation.manifest.version).toBe(4);
       expect(validation.entries.some((entry) => entry.kind === 'attachment' && entry.rawBytes?.equals(PNG))).toBe(true);
       const restored = await restoreBackup(backup, join(dir, 'restored'));
       expect(restored.attachments).toBe(1);
