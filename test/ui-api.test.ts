@@ -390,6 +390,27 @@ describe('local UI API', () => {
     });
   });
 
+  it('atomically creates conflict-copy content in the requested folder with collision-safe paths', async () => {
+    await withTempDir(async (dir) => {
+      const started = await startApi(join(dir, 'vault'));
+      try {
+        const input = { title: 'Research draft copy', folder: '', body: '![map](attachments/map.png)\n\nLocal text', icon: '📌' };
+        const first = await json<{ note: UiNote }>(started.base, '/api/notes', { method: 'POST', body: input });
+        const second = await json<{ note: UiNote }>(started.base, '/api/notes', { method: 'POST', body: input });
+        expect(first.status).toBe(201);
+        expect(first.body.note.path).toBe('research-draft-copy.md');
+        expect(first.body.note.body).toBe(input.body);
+        expect(first.body.note.icon).toBe(input.icon);
+        expect(second.body.note.path).toBe('research-draft-copy-2.md');
+        const reloaded = await json<{ note: UiNote }>(started.base, `/api/notes/${first.body.note.id}`);
+        expect(reloaded.body.note.body).toBe(input.body);
+        expect(reloaded.body.note.icon).toBe(input.icon);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  }, 20_000);
+
   it('rejects malformed UTF-8 in a valid save request without changing note bytes', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

@@ -634,15 +634,25 @@ async function createLocalNote(
   backlinkIndex: BacklinkIndex,
 ): Promise<{ note: UiNote }> {
   const title = normalizeTitle(body.title);
+  const content = body.body === undefined ? '' : requireString(body.body, 'body');
+  if (content.length > MAX_BODY_CHARS) {
+    throw new ApiError(413, 'PAYLOAD_TOO_LARGE', `Note body exceeds ${MAX_BODY_CHARS} characters`);
+  }
+  let extraFrontmatter: Record<string, unknown> = {};
+  if ('icon' in body) {
+    const normalized = normalizePageIcon(body.icon);
+    if (!normalized.ok) throw new ApiError(400, 'INVALID_INPUT', normalized.message);
+    extraFrontmatter = applyPageIcon(extraFrontmatter, normalized.value);
+  }
   const now = clock();
   const id = randomUUID();
   const folder = body.folder === undefined ? 'notes' : requireString(body.folder, 'folder');
-  if (body.folder !== undefined && !(await vault.listFolders()).includes(folder)) {
+  if (folder !== '' && body.folder !== undefined && !(await vault.listFolders()).includes(folder)) {
     throw new ApiError(404, 'NOT_FOUND', `Folder "${folder}" no longer exists. Refresh the sidebar and try again.`);
   }
   const path = await uniqueNotePath(vault, slugify(title), folder);
 
-  const note = createNote({ id, title, path, body: '', now });
+  const note = { ...createNote({ id, title, path, body: content, now }), extraFrontmatter };
   await vault.createNote(note);
   backlinkIndex.markDirty();
 

@@ -15,6 +15,9 @@ import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
 import { Editor } from './Editor';
+import { DraftRecoveryDialog } from './editor/DraftRecoveryDialog';
+import { ConflictResolutionDialog, type NoteConflict } from './editor/ConflictResolutionDialog';
+import { ExternalChangeDialog, ExternalChangeNotice } from './editor/ExternalChangeDialog';
 import { DiscoveryView } from './DiscoveryView';
 import { GraphView } from './GraphView';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
@@ -23,6 +26,7 @@ import { Sidebar } from './Sidebar';
 import { useNoteSearch } from './useNoteSearch';
 import { scheduleAutosave } from './scheduleAutosave';
 import { saveResultDisposition } from './saveResultDisposition';
+import { IndexedDbDraftJournal, type DraftRecoveryEntry, type DraftJournal } from './draftRecoveryJournal';
 import type { SaveState, View } from './types';
 
 type ModalState =
@@ -53,6 +57,10 @@ function initialFullWidth(): boolean {
   } catch {
     return false;
   }
+}
+
+function createWriterId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `writer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function messageOf(error: unknown): string {
@@ -87,6 +95,7 @@ export default function App() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftBody, setDraftBody] = useState('');
   const [draftIcon, setDraftIcon] = useState<string | null>(null);
+  const [draftBaseHash, setDraftBaseHash] = useState('');
   const [iconTouched, setIconTouched] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -103,6 +112,17 @@ export default function App() {
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [recoveryEntries, setRecoveryEntries] = useState<DraftRecoveryEntry[]>([]);
+  const [recoveryDiskHash, setRecoveryDiskHash] = useState('');
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [draftJournalError, setDraftJournalError] = useState<string | null>(null);
+  const [noteConflict, setNoteConflict] = useState<NoteConflict | null>(null);
+  const [conflictBusy, setConflictBusy] = useState(false);
+  const [externalChange, setExternalChange] = useState<UiNote | null>(null);
+  const [externalCheckError, setExternalCheckError] = useState<string | null>(null);
+  const [externalCompareOpen, setExternalCompareOpen] = useState(false);
+  const [externalReloadBusy, setExternalReloadBusy] = useState(false);
 
   const [theme, setTheme] = useState<'light' | 'dark'>(initialTheme);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -129,6 +149,18 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const activeNoteRef = useRef(activeNote);
   const draftRevisionRef = useRef(0);
+  const baseNoteRef = useRef<UiNote | null>(null);
+  const noteConflictRef = useRef(noteConflict);
+  const externalChangeRef = useRef(externalChange);
+  const externalCheckActionRef = useRef<() => void>(() => {});
+  const externalCheckInFlightRef = useRef(false);
+  const lastExternalCheckRef = useRef({ noteId: '', timestamp: 0 });
+  const draftValuesRef = useRef({ title: draftTitle, body: draftBody, icon: draftIcon, revision: draftRevisionRef.current });
+  const writerIdRef = useRef<string | null>(null);
+  if (writerIdRef.current === null) writerIdRef.current = createWriterId();
+  const journalRef = useRef<DraftJournal | null>(null);
+  if (journalRef.current === null) journalRef.current = new IndexedDbDraftJournal();
+  const recoveredEntriesRef = useRef(new Map<string, DraftRecoveryEntry[]>());
   const saveInFlightRef = useRef(false);
   const noteRequestRef = useRef(0);
   const vaultRequestRef = useRef(0);
@@ -137,6 +169,9 @@ export default function App() {
   const folderMutationInFlightRef = useRef(false);
   const dirtyRef = useRef(dirty);
   activeNoteRef.current = activeNote;
+  noteConflictRef.current = noteConflict;
+  externalChangeRef.current = externalChange;
+  draftValuesRef.current = { title: draftTitle, body: draftBody, icon: draftIcon, revision: draftRevisionRef.current };
   dirtyRef.current = dirty;
 
   useEffect(() => {
@@ -172,6 +207,21 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
 
+  useEffect(() => {
+    const visibility = () => {
+      if (document.visibilityState === 'visible') externalCheckActionRef.current();
+    };
+    const focus = () => {
+      if (document.visibilityState === 'visible') externalCheckActionRef.current();
+    };
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('focus', focus);
+    return () => {
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('focus', focus);
+    };
+  }, []);
+
   async function refreshStatus(): Promise<void> {
     const request = vaultRequestRef.current;
     setStatusLoading(true);
@@ -196,6 +246,9 @@ export default function App() {
       if (request === vaultRequestRef.current) {
         setNotes(result.notes);
         setSearchRevision((value) => value + 1);
+        if (status?.vault.path) void journalRef.current!.pruneMissing(status.vault.path, recoveryNoteIds(result.notes, activeNoteRef.current, dirtyRef.current)).catch(() => {
+          setDraftJournalError('Could not remove recovery records for notes no longer in this vault.');
+        });
       }
     } catch (error) {
       if (request === vaultRequestRef.current) setNotesError(messageOf(error));
@@ -217,7 +270,63 @@ export default function App() {
     }
   }
 
+  async function findRecoveryEntries(vaultIdentity: string, note: UiNote): Promise<DraftRecoveryEntry[]> {
+    try {
+      await journalRef.current!.allowNote(vaultIdentity, note.id);
+      const entries = await journalRef.current!.list(vaultIdentity, note.id);
+      const pending: DraftRecoveryEntry[] = [];
+      for (const entry of entries) {
+        if (entry.title === note.title && entry.body === note.body && entry.icon === note.icon) {
+          try {
+            await journalRef.current!.clearThrough(entry.vaultIdentity, entry.noteId, entry.writerId, entry.revision);
+          } catch {
+            pending.push(entry);
+            setDraftJournalError('The saved note matches a recovery copy, but the browser could not remove that copy yet.');
+          }
+        } else pending.push(entry);
+      }
+      if (pending.length === 0) setDraftJournalError(null);
+      return pending;
+    } catch {
+      setDraftJournalError('Browser draft recovery storage is unavailable. Nodus will continue autosaving to the vault, but cannot keep a restart recovery copy.');
+      return [];
+    }
+  }
+
+  async function clearCurrentRecovery(noteId: string, vaultIdentity = status?.vault.path): Promise<void> {
+    if (!vaultIdentity) return;
+    const revision = draftRevisionRef.current;
+    try {
+      await journalRef.current!.clearThrough(vaultIdentity, noteId, writerIdRef.current!, revision);
+      const recovered = recoveredEntriesRef.current.get(noteId) ?? [];
+      for (const entry of recovered) {
+        await journalRef.current!.clearThrough(entry.vaultIdentity, entry.noteId, entry.writerId, entry.revision);
+      }
+      recoveredEntriesRef.current.delete(noteId);
+    } catch {
+      setDraftJournalError('Could not clear this browser recovery draft. If the note is already saved, an identical copy will be ignored on the next open.');
+    }
+  }
+
+  async function clearSavedRecovery(vaultIdentity: string | undefined, noteId: string, revision: number): Promise<void> {
+    if (!vaultIdentity) return;
+    try {
+      await journalRef.current!.clearThrough(vaultIdentity, noteId, writerIdRef.current!, revision);
+      const recovered = recoveredEntriesRef.current.get(noteId) ?? [];
+      for (const entry of recovered) {
+        await journalRef.current!.clearThrough(entry.vaultIdentity, entry.noteId, entry.writerId, entry.revision);
+      }
+      recoveredEntriesRef.current.delete(noteId);
+      setDraftJournalError(null);
+    } catch {
+      setDraftJournalError('The note was saved, but its browser recovery copy could not be cleared. Nodus will ignore it if the saved Markdown matches.');
+    }
+  }
+
   async function applyVault(nextStatus: UiVaultStatus): Promise<void> {
+    const previousNote = activeNoteRef.current;
+    const previousVault = status?.vault.path;
+    if (dirtyRef.current && previousNote !== null) await clearCurrentRecovery(previousNote.id, previousVault);
     vaultRequestRef.current += 1;
     noteRequestRef.current += 1;
     draftRevisionRef.current += 1;
@@ -225,15 +334,24 @@ export default function App() {
     setVaultPathDraft(nextStatus.vault.path);
     setQuery('');
     setActiveNote(null);
+    baseNoteRef.current = null;
+    setNoteConflict(null);
+    setExternalChange(null);
+    setExternalCheckError(null);
+    setExternalCompareOpen(false);
     setSelectedNoteId(null);
     setNoteLoading(false);
     setDraftTitle('');
     setDraftBody('');
     setDraftIcon(null);
+    setDraftBaseHash('');
     setIconTouched(false);
     setDirty(false);
     setSaveState('idle');
     setEditorError(null);
+    setRecoveryEntries([]);
+    setRecoveryDiskHash('');
+    setRecoveryError(null);
     setModal(null);
     setModalError(null);
     setCommandOpen(false);
@@ -331,6 +449,7 @@ export default function App() {
     if (confirmDiscard && dirty) {
       const proceed = window.confirm('Discard unsaved changes and open another note?');
       if (!proceed) return;
+      if (activeNote !== null) await clearCurrentRecovery(activeNote.id);
     }
 
     const request = ++noteRequestRef.current;
@@ -339,17 +458,30 @@ export default function App() {
     setSelectedNoteId(id);
     setNoteLoading(true);
     setEditorError(null);
+    setRecoveryEntries([]);
+    setRecoveryError(null);
+    setNoteConflict(null);
+    setExternalChange(null);
+    setExternalCheckError(null);
+    setExternalCompareOpen(false);
     setSidebarOpen(false);
     try {
       const { note } = await api.note(id);
       if (request !== noteRequestRef.current) return;
+      const vaultIdentity = status?.vault.path;
+      const recovered = vaultIdentity ? await findRecoveryEntries(vaultIdentity, note) : [];
+      if (request !== noteRequestRef.current) return;
       setActiveNote(note);
+      baseNoteRef.current = note;
       setDraftTitle(note.title);
       setDraftBody(note.body);
       setDraftIcon(note.icon);
+      setDraftBaseHash(note.contentHash);
       setIconTouched(false);
       setDirty(false);
       setSaveState('idle');
+      setRecoveryDiskHash(note.contentHash);
+      setRecoveryEntries(recovered);
     } catch (error) {
       if (request !== noteRequestRef.current) return;
       setActiveNote(null);
@@ -393,20 +525,32 @@ export default function App() {
       if (notesResult.status === 'fulfilled') {
         setNotes(notesResult.value.notes);
         setNotesError(null);
+        if (statusResult.status === 'fulfilled') {
+          void journalRef.current!.pruneMissing(statusResult.value.vault.path, recoveryNoteIds(notesResult.value.notes, activeNoteRef.current, dirtyRef.current)).catch(() => {
+            setDraftJournalError('Could not remove recovery records for notes no longer in this vault.');
+          });
+        }
         const first = notesResult.value.notes[0];
         if (first !== undefined && request === noteRequestRef.current) {
           setSelectedNoteId(first.id);
           setNoteLoading(true);
           try {
             const result = await api.note(first.id);
+            const recovered = statusResult.status === 'fulfilled'
+              ? await findRecoveryEntries(statusResult.value.vault.path, result.note)
+              : [];
             if (!cancelled && vaultRequest === vaultRequestRef.current && request === noteRequestRef.current) {
               setActiveNote(result.note);
+              baseNoteRef.current = result.note;
               setDraftTitle(result.note.title);
               setDraftBody(result.note.body);
               setDraftIcon(result.note.icon);
+              setDraftBaseHash(result.note.contentHash);
               setIconTouched(false);
               setDirty(false);
               setSaveState('idle');
+              setRecoveryDiskHash(result.note.contentHash);
+              setRecoveryEntries(recovered);
             }
           } catch (error) {
             if (!cancelled && vaultRequest === vaultRequestRef.current && request === noteRequestRef.current) {
@@ -474,6 +618,7 @@ export default function App() {
     setNotesError(null);
     try {
       const { note } = await api.createNote({ title: 'Untitled note', ...(folder === undefined ? {} : { folder }) });
+      if (activeNote !== null && dirty) await clearCurrentRecovery(activeNote.id);
       setView('notes');
       setQuery('');
       setSidebarOpen(false);
@@ -481,13 +626,17 @@ export default function App() {
       if (request !== noteRequestRef.current) return;
       setSelectedNoteId(note.id);
       setActiveNote(note);
+      baseNoteRef.current = note;
       setDraftTitle(note.title);
       setDraftBody(note.body);
       setDraftIcon(note.icon);
+      setDraftBaseHash(note.contentHash);
       setIconTouched(false);
       setDirty(false);
       setSaveState('saved');
       setEditorError(null);
+      setRecoveryEntries([]);
+      setRecoveryDiskHash(note.contentHash);
     } catch (error) {
       setNotesError(messageOf(error));
     } finally {
@@ -496,21 +645,66 @@ export default function App() {
     }
   }
 
-  async function saveNote(): Promise<void> {
+  async function loadConflict(id: string, baseHash: string, baseNote: UiNote | null, fallbackDraft: { title: string; body: string; icon: string | null; revision: number }): Promise<void> {
+    const request = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    const vaultIdentity = status?.vault.path ?? '';
+    const draft = draftValuesRef.current;
+    const conflictDraft = { ...fallbackDraft, ...draft };
+    setExternalChange(null);
+    setExternalCheckError(null);
+    setNoteConflict({ vaultIdentity, noteId: id, baseHash, baseNote, diskNote: null, draft: conflictDraft, deleted: false, loading: true, error: null });
+    try {
+      const { note } = await api.note(id);
+      if (request !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== id || status?.vault.path !== vaultIdentity) return;
+      setNoteConflict({ vaultIdentity, noteId: id, baseHash, baseNote, diskNote: note, draft: { ...draftValuesRef.current }, deleted: false, loading: false, error: null });
+    } catch (error) {
+      if (request !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== id || status?.vault.path !== vaultIdentity) return;
+      if (error instanceof ApiError && error.status === 404) {
+        setNoteConflict({ vaultIdentity, noteId: id, baseHash, baseNote, diskNote: null, draft: { ...draftValuesRef.current }, deleted: true, loading: false, error: null });
+      } else {
+        setNoteConflict({ vaultIdentity, noteId: id, baseHash, baseNote, diskNote: null, draft: { ...draftValuesRef.current }, deleted: false, loading: false, error: `Could not load the latest disk version: ${messageOf(error)}` });
+      }
+    }
+  }
+
+  async function saveNote(resolution?: { conflict: NoteConflict; useDiskHash: string }): Promise<void> {
     if (vaultSwitching || folderMutationInFlightRef.current || activeNote === null || noteLoading || !dirty || saveState === 'saving' || saveInFlightRef.current) return;
+    if (noteConflictRef.current?.noteId === activeNote.id && resolution === undefined) return;
+    if (resolution && (resolution.conflict.vaultIdentity !== status?.vault.path || resolution.conflict.noteId !== activeNote.id || resolution.conflict.diskNote?.contentHash !== resolution.useDiskHash)) return;
+    const knownExternal = externalChangeRef.current;
+    if (!resolution && knownExternal?.id === activeNote.id && status?.vault.path) {
+      setExternalChange(null);
+      setNoteConflict({
+        vaultIdentity: status.vault.path,
+        noteId: activeNote.id,
+        baseHash: draftBaseHash || activeNote.contentHash,
+        baseNote: baseNoteRef.current,
+        diskNote: knownExternal,
+        draft: { title: draftTitle, body: draftBody, icon: draftIcon, revision: draftRevisionRef.current },
+        deleted: false,
+        loading: false,
+        error: null,
+      });
+      return;
+    }
     const savedNoteId = activeNote.id;
     const savedRequest = noteRequestRef.current;
-    const savedRevision = draftRevisionRef.current;
+    const savedRevision = resolution?.conflict.draft.revision ?? draftRevisionRef.current;
+    const savedVaultIdentity = status?.vault.path;
+    const snapshot = resolution?.conflict.draft ?? { title: draftTitle, body: draftBody, icon: draftIcon, revision: savedRevision };
+    const baseHash = resolution?.useDiskHash ?? (draftBaseHash || activeNote.contentHash);
     saveInFlightRef.current = true;
     setSaveState('saving');
     setEditorError(null);
     try {
       const { note } = await api.saveNote(activeNote.id, {
-        title: draftTitle,
-        body: draftBody,
-        baseHash: activeNote.contentHash,
-        ...(iconTouched ? { icon: draftIcon } : {}),
+        title: snapshot.title,
+        body: snapshot.body,
+        baseHash,
+        ...(resolution || iconTouched ? { icon: snapshot.icon } : {}),
       });
+      await clearSavedRecovery(savedVaultIdentity, savedNoteId, savedRevision);
       if (savedRequest !== noteRequestRef.current) return;
       const disposition = saveResultDisposition(
         savedNoteId,
@@ -520,6 +714,10 @@ export default function App() {
       );
       if (disposition === 'ignore') return;
       setActiveNote(note);
+      baseNoteRef.current = note;
+      setNoteConflict(null);
+      setExternalChange(null);
+      setDraftBaseHash(note.contentHash);
       if (disposition === 'replace-draft') {
         setDraftTitle(note.title);
         setDraftBody(note.body);
@@ -538,7 +736,15 @@ export default function App() {
     } catch (error) {
       if (savedRequest !== noteRequestRef.current || activeNoteRef.current?.id !== savedNoteId) return;
       setSaveState('error');
-      setEditorError(messageOf(error));
+      if ((error instanceof ApiError && error.code === 'STALE_WRITE') || (error instanceof ApiError && error.status === 404)) {
+        await loadConflict(savedNoteId, baseHash, baseNoteRef.current, snapshot);
+        setEditorError(null);
+      } else {
+        if (resolution && noteConflictRef.current?.noteId === savedNoteId) {
+          setNoteConflict({ ...resolution.conflict, loading: false, error: messageOf(error) });
+        }
+        setEditorError(messageOf(error));
+      }
     } finally {
       saveInFlightRef.current = false;
       // A timer for a newer note may have fired while this request was pending.
@@ -548,9 +754,274 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!dirty || noteLoading || activeNote === null || saveState !== 'idle') return undefined;
+    if (!dirty || noteLoading || activeNote === null || saveState !== 'idle' || noteConflict?.noteId === activeNote.id) return undefined;
     return scheduleAutosave(() => void saveNote());
-  }, [activeNote, dirty, draftBody, draftIcon, draftTitle, iconTouched, noteLoading, saveCompletion, saveState]);
+  }, [activeNote, dirty, draftBody, draftIcon, draftTitle, iconTouched, noteLoading, noteConflict, saveCompletion, saveState, draftBaseHash]);
+
+  async function retryConflictRead(): Promise<void> {
+    const conflict = noteConflictRef.current;
+    if (!conflict || activeNoteRef.current?.id !== conflict.noteId || status?.vault.path !== conflict.vaultIdentity) return;
+    await loadConflict(conflict.noteId, conflict.baseHash, conflict.baseNote, conflict.draft);
+  }
+
+  async function checkActiveNoteForExternalChange(force = false): Promise<void> {
+    const current = activeNoteRef.current;
+    const vaultIdentity = status?.vault.path;
+    if (!current || !vaultIdentity || noteLoading || vaultSwitching || vaultWorkInFlight || saveInFlightRef.current || noteConflictRef.current) return;
+    const now = Date.now();
+    if (!force && lastExternalCheckRef.current.noteId === current.id && now - lastExternalCheckRef.current.timestamp < 900) return;
+    if (externalCheckInFlightRef.current) return;
+    lastExternalCheckRef.current = { noteId: current.id, timestamp: now };
+    externalCheckInFlightRef.current = true;
+    const request = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    try {
+      const { note: latest } = await api.note(current.id);
+      if (request !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== current.id || activeNoteRef.current.contentHash !== current.contentHash || status?.vault.path !== vaultIdentity || noteConflictRef.current) return;
+      if (latest.contentHash === current.contentHash) {
+        setExternalCheckError(null);
+        return;
+      }
+      setExternalCheckError(null);
+      if (dirtyRef.current) {
+        setExternalChange(null);
+        setNoteConflict({
+          vaultIdentity,
+          noteId: current.id,
+          baseHash: draftBaseHash || current.contentHash,
+          baseNote: baseNoteRef.current,
+          diskNote: latest,
+          draft: { ...draftValuesRef.current },
+          deleted: false,
+          loading: false,
+          error: null,
+        });
+      } else {
+        setExternalChange(latest);
+      }
+    } catch (error) {
+      if (request === noteRequestRef.current && vaultRequest === vaultRequestRef.current && activeNoteRef.current?.id === current.id && activeNoteRef.current.contentHash === current.contentHash && !noteConflictRef.current) {
+        setExternalCheckError(`Could not check this note for external changes: ${messageOf(error)}`);
+      }
+    } finally {
+      externalCheckInFlightRef.current = false;
+    }
+  }
+  externalCheckActionRef.current = () => { void checkActiveNoteForExternalChange(); };
+
+  async function reloadExternalChange(): Promise<void> {
+    const notice = externalChangeRef.current;
+    const current = activeNoteRef.current;
+    const vaultIdentity = status?.vault.path;
+    if (!notice || !current || current.id !== notice.id || !vaultIdentity || externalReloadBusy) return;
+    const request = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    setExternalReloadBusy(true);
+    setExternalCheckError(null);
+    try {
+      const { note } = await api.note(current.id);
+      if (request !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== current.id || status?.vault.path !== vaultIdentity) return;
+      if (noteConflictRef.current) return;
+      if (dirtyRef.current) {
+        setNoteConflict({
+          vaultIdentity,
+          noteId: current.id,
+          baseHash: draftBaseHash || current.contentHash,
+          baseNote: baseNoteRef.current,
+          diskNote: note,
+          draft: { ...draftValuesRef.current },
+          deleted: false,
+          loading: false,
+          error: null,
+        });
+        setExternalChange(null);
+        setExternalCheckError(null);
+        setExternalCompareOpen(false);
+        return;
+      }
+      draftRevisionRef.current += 1;
+      setActiveNote(note);
+      baseNoteRef.current = note;
+      setDraftTitle(note.title);
+      setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setDraftBaseHash(note.contentHash);
+      setIconTouched(false);
+      setDirty(false);
+      setSaveState('saved');
+      setEditorError(null);
+      setExternalChange(null);
+      setExternalCheckError(null);
+      setExternalCompareOpen(false);
+      setBacklinksRevision((value) => value + 1);
+      await refreshNotes(true);
+      window.setTimeout(() => document.getElementById('note-title')?.focus(), 0);
+    } catch (error) {
+      if (request === noteRequestRef.current && activeNoteRef.current?.id === current.id && status?.vault.path === vaultIdentity) {
+        setExternalCheckError(`Could not reload this note: ${messageOf(error)}`);
+      }
+    } finally {
+      setExternalReloadBusy(false);
+    }
+  }
+
+  async function useDiskConflictVersion(): Promise<void> {
+    const conflict = noteConflictRef.current;
+    const disk = conflict?.diskNote;
+    if (!conflict || !disk || activeNoteRef.current?.id !== conflict.noteId || status?.vault.path !== conflict.vaultIdentity || conflictBusy) return;
+    setConflictBusy(true);
+    const revision = draftRevisionRef.current + 1;
+    draftRevisionRef.current = revision;
+    setActiveNote(disk);
+    baseNoteRef.current = disk;
+    setDraftTitle(disk.title);
+    setDraftBody(disk.body);
+    setDraftIcon(disk.icon);
+    setDraftBaseHash(disk.contentHash);
+    setIconTouched(false);
+    setDirty(false);
+    setSaveState('saved');
+    setEditorError(null);
+    setNoteConflict(null);
+    setRecoveryEntries([]);
+    await clearSavedRecovery(conflict.vaultIdentity, conflict.noteId, revision);
+    await refreshNotes(true);
+    setBacklinksRevision((value) => value + 1);
+    setConflictBusy(false);
+  }
+
+  async function saveConflictAsSeparateNote(): Promise<void> {
+    const conflict = noteConflictRef.current;
+    const current = activeNoteRef.current;
+    if (!conflict || !current || current.id !== conflict.noteId || status?.vault.path !== conflict.vaultIdentity || conflictBusy) return;
+    const noteRequest = noteRequestRef.current;
+    const vaultRequest = vaultRequestRef.current;
+    setConflictBusy(true);
+    setEditorError(null);
+    try {
+      const folder = current.path.includes('/') ? current.path.slice(0, current.path.lastIndexOf('/')) : '';
+      const title = `${(conflict.draft.title || current.title).slice(0, 180)} (draft copy)`;
+      const { note } = await api.createNote({
+        title,
+        folder,
+        body: conflict.draft.body,
+        icon: conflict.draft.icon,
+      });
+      if (noteRequest !== noteRequestRef.current || vaultRequest !== vaultRequestRef.current || activeNoteRef.current?.id !== conflict.noteId || status?.vault.path !== conflict.vaultIdentity) {
+        setNotesError('The draft copy was created, but the active note changed. Its recovery copy was retained.');
+        await refreshNotes(true);
+        return;
+      }
+      await clearSavedRecovery(conflict.vaultIdentity, conflict.noteId, conflict.draft.revision);
+      draftRevisionRef.current += 1;
+      setActiveNote(note);
+      baseNoteRef.current = note;
+      setSelectedNoteId(note.id);
+      setDraftTitle(note.title);
+      setDraftBody(note.body);
+      setDraftIcon(note.icon);
+      setDraftBaseHash(note.contentHash);
+      setIconTouched(false);
+      setDirty(false);
+      setSaveState('saved');
+      setNoteConflict(null);
+      setRecoveryEntries([]);
+      await refreshNotes(true);
+      setBacklinksRevision((value) => value + 1);
+    } catch (error) {
+      if (noteRequest === noteRequestRef.current && activeNoteRef.current?.id === conflict.noteId) {
+        setNoteConflict({ ...conflict, loading: false, error: `Could not create the separate draft note: ${messageOf(error)}` });
+      }
+    } finally {
+      setConflictBusy(false);
+    }
+  }
+
+  async function confirmConflictOverwrite(): Promise<void> {
+    const conflict = noteConflictRef.current;
+    if (!conflict?.diskNote || conflictBusy || status?.vault.path !== conflict.vaultIdentity || activeNoteRef.current?.id !== conflict.noteId) return;
+    setConflictBusy(true);
+    try {
+      await saveNote({ conflict, useDiskHash: conflict.diskNote.contentHash });
+    } finally {
+      setConflictBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!dirty || noteLoading || activeNote === null || status?.vault.path === undefined) return;
+    const entry: DraftRecoveryEntry = {
+      vaultIdentity: status.vault.path,
+      noteId: activeNote.id,
+      writerId: writerIdRef.current!,
+      revision: draftRevisionRef.current,
+      title: draftTitle,
+      body: draftBody,
+      icon: draftIcon,
+      iconTouched,
+      baseHash: draftBaseHash || activeNote.contentHash,
+      updatedAt: new Date().toISOString(),
+    };
+    let current = true;
+    void journalRef.current!.write(entry).then(() => {
+      if (current && activeNoteRef.current?.id === entry.noteId) setDraftJournalError(null);
+    }).catch(() => {
+      if (current && activeNoteRef.current?.id === entry.noteId) {
+        setDraftJournalError('Could not save a browser recovery copy. Nodus will continue autosaving to the vault.');
+      }
+    });
+    return () => { current = false; };
+  }, [activeNote, dirty, draftBody, draftIcon, draftTitle, iconTouched, noteLoading, status?.vault.path, draftBaseHash]);
+
+  async function recoverDraft(entry: DraftRecoveryEntry): Promise<void> {
+    const vaultIdentity = status?.vault.path;
+    if (!vaultIdentity || vaultIdentity !== entry.vaultIdentity || activeNote?.id !== entry.noteId) return;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    const revision = draftRevisionRef.current + 1;
+    draftRevisionRef.current = revision;
+    const recovered: DraftRecoveryEntry = {
+      ...entry,
+      writerId: writerIdRef.current!,
+      revision,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      await journalRef.current!.adopt(entry, recovered);
+    } catch {
+      setRecoveryError('The draft was loaded, but its recovery record could not be updated. Keep this page open until it saves.');
+      setDraftJournalError('Could not update the browser recovery copy.');
+    }
+    recoveredEntriesRef.current.set(entry.noteId, [
+      ...(recoveredEntriesRef.current.get(entry.noteId) ?? []), entry,
+    ]);
+    setDraftTitle(entry.title);
+    setDraftBody(entry.body);
+    setDraftIcon(entry.icon);
+    baseNoteRef.current = entry.baseHash === activeNote.contentHash ? activeNote : null;
+    setDraftBaseHash(entry.baseHash);
+    setIconTouched(entry.iconTouched);
+    setDirty(true);
+    setSaveState('idle');
+    setRecoveryEntries((entries) => entries.filter((candidate) => candidate.writerId !== entry.writerId || candidate.revision !== entry.revision));
+    setRecoveryBusy(false);
+  }
+
+  async function discardRecovery(entry: DraftRecoveryEntry): Promise<void> {
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      await journalRef.current!.clearThrough(entry.vaultIdentity, entry.noteId, entry.writerId, entry.revision);
+      setRecoveryEntries((entries) => entries.filter((candidate) => candidate.writerId !== entry.writerId || candidate.revision !== entry.revision));
+    } catch {
+      setRecoveryError('Could not discard this browser recovery draft. It remains available if you reopen the note.');
+    } finally { setRecoveryBusy(false); }
+  }
+
+  function closeRecoveryPrompt(): void {
+    setRecoveryEntries([]);
+    setRecoveryError(null);
+  }
 
   async function reloadNote(): Promise<void> {
     const id = activeNote?.id ?? selectedNoteId;
@@ -567,12 +1038,18 @@ export default function App() {
       const { note } = await api.note(id);
       if (request !== noteRequestRef.current) return;
       setActiveNote(note);
+      baseNoteRef.current = note;
       setDraftTitle(note.title);
       setDraftBody(note.body);
       setDraftIcon(note.icon);
+      setDraftBaseHash(note.contentHash);
       setIconTouched(false);
       setDirty(false);
       setSaveState('idle');
+      setNoteConflict(null);
+      setExternalChange(null);
+      setExternalCheckError(null);
+      setExternalCompareOpen(false);
       setBacklinksRevision((value) => value + 1);
     } catch (error) {
       if (request !== noteRequestRef.current) return;
@@ -649,6 +1126,7 @@ export default function App() {
         setDraftTitle(note.title);
         setDraftBody(note.body);
         setDraftIcon(note.icon);
+        setDraftBaseHash(note.contentHash);
         setIconTouched(false);
         setDirty(false);
         setSaveState('saved');
@@ -671,6 +1149,9 @@ export default function App() {
     setModalError(null);
     try {
       await api.deleteNote(modal.note.id, { baseHash: modal.note.contentHash });
+      await journalRef.current!.deleteNote(status?.vault.path ?? '', modal.note.id).catch(() => {
+        setDraftJournalError('The note was deleted, but its browser recovery copy could not be cleared.');
+      });
       setModal(null);
       if (activeNoteRef.current?.id === modal.note.id || selectedNoteId === modal.note.id) {
         setActiveNote(null);
@@ -678,10 +1159,13 @@ export default function App() {
         setDraftTitle('');
         setDraftBody('');
         setDraftIcon(null);
+        setDraftBaseHash('');
         setIconTouched(false);
         setDirty(false);
         setSaveState('saved');
         setEditorError(null);
+        setRecoveryEntries([]);
+        setRecoveryDiskHash('');
       }
       await Promise.all([refreshNotes(true), refreshStatus()]);
       setBacklinksRevision((value) => value + 1);
@@ -712,6 +1196,7 @@ export default function App() {
     try {
       await api.moveFolder(fromPath, toPath);
       if (affected && current !== null) {
+        if (discardDraft) await clearCurrentRecovery(current.id);
         noteRequestRef.current += 1;
         try {
           const fresh = await api.note(current.id);
@@ -720,6 +1205,7 @@ export default function App() {
           setDraftTitle(fresh.note.title);
           setDraftBody(fresh.note.body);
           setDraftIcon(fresh.note.icon);
+          setDraftBaseHash(fresh.note.contentHash);
           setIconTouched(false);
           setDirty(false);
           setSaveState('saved');
@@ -753,6 +1239,11 @@ export default function App() {
     setVaultWorkInFlight(true);
     try {
       const result = await api.deleteFolder(path, token);
+      if (affectsActive && current !== null) {
+        await journalRef.current!.deleteNote(status?.vault.path ?? '', current.id).catch(() => {
+          setDraftJournalError('The folder was deleted, but its browser recovery copy could not be cleared.');
+        });
+      }
       if (affectsActive || affectsSelected) {
         noteRequestRef.current += 1;
         setActiveNote(null);
@@ -760,6 +1251,7 @@ export default function App() {
         setDraftTitle('');
         setDraftBody('');
         setDraftIcon(null);
+        setDraftBaseHash('');
         setIconTouched(false);
         setDirty(false);
         setSaveState('saved');
@@ -784,6 +1276,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (vaultSwitching || vaultWorkInFlight) return;
       const modifier = event.metaKey || event.ctrlKey;
       if (!modifier) return;
@@ -958,6 +1451,23 @@ export default function App() {
           </div>
         ) : null}
 
+        {draftJournalError !== null ? (
+          <div className="mx-3 mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive sm:mx-4" role="alert">
+            {draftJournalError}
+          </div>
+        ) : null}
+
+        {view === 'notes' ? (
+          <ExternalChangeNotice
+            note={externalChange?.id === activeNote?.id ? externalChange : null}
+            error={externalCheckError}
+            busy={externalReloadBusy}
+            onReload={() => void reloadExternalChange()}
+            onCompare={() => setExternalCompareOpen(true)}
+            onRetry={() => void checkActiveNoteForExternalChange(true)}
+          />
+        ) : null}
+
         {view === 'notes' ? (
           <Editor
             note={activeNote}
@@ -1114,6 +1624,38 @@ export default function App() {
         }}
         onConfirm={() => void confirmDelete()}
       />
+
+      <DraftRecoveryDialog
+        entries={recoveryEntries}
+        diskHash={recoveryDiskHash}
+        busy={recoveryBusy}
+        error={recoveryError}
+        onRecover={(entry) => void recoverDraft(entry)}
+        onDiscard={(entry) => void discardRecovery(entry)}
+        onClose={closeRecoveryPrompt}
+        onFocusEditor={() => window.setTimeout(() => document.getElementById('note-title')?.focus(), 0)}
+      />
+
+      <ConflictResolutionDialog
+        conflict={noteConflict}
+        busy={conflictBusy}
+        onRetry={() => void retryConflictRead()}
+        onUseDisk={() => void useDiskConflictVersion()}
+        onSaveSeparate={() => void saveConflictAsSeparateNote()}
+        onSaveOverDisk={() => void confirmConflictOverwrite()}
+        onClose={() => { /* unresolved conflicts stay open to keep autosave blocked */ }}
+        onFocusEditor={() => window.setTimeout(() => document.getElementById('note-title')?.focus(), 0)}
+      />
+
+      <ExternalChangeDialog
+        open={externalCompareOpen && externalChange !== null}
+        current={activeNote?.id === externalChange?.id ? activeNote : null}
+        latest={externalChange}
+        busy={externalReloadBusy}
+        onReload={() => void reloadExternalChange()}
+        onClose={() => setExternalCompareOpen(false)}
+        onFocusEditor={() => window.setTimeout(() => document.getElementById('note-title')?.focus(), 0)}
+      />
     </div>
   );
 }
@@ -1123,4 +1665,10 @@ function isTextEntryTarget(target: Element | null): boolean {
     target instanceof HTMLElement && target.isContentEditable
     || target.closest('input, textarea, select, [role="textbox"], [contenteditable="true"]') !== null
   );
+}
+
+function recoveryNoteIds(notes: readonly UiNoteSummary[], activeNote: UiNote | null, dirty: boolean): Set<string> {
+  const ids = new Set(notes.map((note) => note.id));
+  if (dirty && activeNote !== null) ids.add(activeNote.id);
+  return ids;
 }
