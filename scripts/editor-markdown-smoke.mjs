@@ -155,8 +155,8 @@ try {
   await page.keyboard.press('Escape');
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  const saveButton = page.getByRole('button', { name: 'Save', exact: true });
-  if (await saveButton.isEnabled()) await saveButton.click();
+  // The last edit may already be saving or saved by autosave. Waiting for the
+  // persisted state avoids racing a click against the save button disabling.
   await page.getByText('Saved', { exact: true }).waitFor();
   await page.getByRole('treeitem', { name: 'Preview page (preview-page.md)', exact: true }).click();
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
