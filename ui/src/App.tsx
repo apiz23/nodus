@@ -777,6 +777,11 @@ export default function App() {
     void Promise.all([refreshNotes(true), refreshStatus()]);
   }
 
+  // Keep the installed listener scoped to overlays/vault work while dispatching
+  // to the current draft actions, including their existing save/navigation guards.
+  const shortcutActionsRef = useRef({ createNote, saveNote });
+  shortcutActionsRef.current = { createNote, saveNote };
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (vaultSwitching || vaultWorkInFlight) return;
@@ -806,13 +811,13 @@ export default function App() {
       if (key === 'n') {
         if (textEntry) return;
         event.preventDefault();
-        void createNote();
+        void shortcutActionsRef.current.createNote();
         return;
       }
       if (key === 's') {
         if (textEntry && !inEditor) return;
         event.preventDefault();
-        void saveNote();
+        void shortcutActionsRef.current.saveNote();
       }
     };
     window.addEventListener('keydown', handler);

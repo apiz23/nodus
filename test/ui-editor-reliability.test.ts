@@ -46,10 +46,13 @@ const hooks = vi.hoisted(() => {
 
 const mockApi = vi.hoisted(() => ({
   status: vi.fn(), notes: vi.fn(), folders: vi.fn(), databases: vi.fn(), note: vi.fn(), saveNote: vi.fn(),
+  createNote: vi.fn(),
   openVault: vi.fn(), pickVault: vi.fn(),
   search: vi.fn(),
 }));
 let storedPreferences = new Map<string, string>();
+let shortcutEvents = new EventTarget();
+const confirmDiscard = vi.fn<() => boolean>();
 
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
@@ -100,13 +103,38 @@ const makeNote = (id: string, body = id, contentHash = `${id}-hash`): UiNote => 
 const a = makeNote('synthetic-a');
 const b = makeNote('synthetic-b');
 const status = { vault: { name: 'Fixture', path: '/synthetic/vault' } };
+
+// Only the DOM target predicates used by the installed window listener are
+// modeled here. Events themselves go through a real EventTarget below.
+class ShortcutElement {
+  constructor(readonly tag = 'button', readonly containers: string[] = [], readonly isContentEditable = false) {}
+  closest(selector: string): ShortcutElement | null {
+    return selector.split(',').some((part) => {
+      const match = part.trim();
+      return match === this.tag || this.containers.includes(match) || (match === '[contenteditable="true"]' && this.isContentEditable);
+    }) ? this : null;
+  }
+  blur() {}
+}
+
+function shortcut(key: string, modifier: 'ctrlKey' | 'metaKey' = 'ctrlKey', target = new ShortcutElement(), prevented = false): KeyboardEvent {
+  const event = new Event('keydown', { cancelable: true });
+  Object.defineProperties(event, {
+    key: { value: key }, ctrlKey: { value: modifier === 'ctrlKey' }, metaKey: { value: modifier === 'metaKey' },
+    target: { value: target },
+  });
+  if (prevented) event.preventDefault();
+  shortcutEvents.dispatchEvent(event);
+  return event as KeyboardEvent;
+}
+
 async function mount(): Promise<void> { render(); await flush(); }
 async function open(id: string): Promise<void> { props('test-sidebar').onOpen(id); await flush(); }
 async function edit(body: string): Promise<void> { props('test-editor').onBodyChange(body); await flush(); }
 async function debounce(): Promise<void> { vi.advanceTimersByTime(AUTOSAVE_DELAY_MS); await flush(); }
 
 beforeEach(() => {
-  vi.useFakeTimers(); hooks.reset(); vi.clearAllMocks();
+  vi.useFakeTimers(); hooks.reset(); vi.resetAllMocks();
   storedPreferences = new Map();
   mockApi.status.mockResolvedValue(status);
   mockApi.notes.mockResolvedValue({ notes: [] });
@@ -117,15 +145,194 @@ beforeEach(() => {
   mockApi.openVault.mockResolvedValue({ vault: { name: 'Other', path: '/synthetic/other' } });
   mockApi.pickVault.mockResolvedValue({ canceled: true });
   mockApi.search.mockResolvedValue({ results: [] });
+  mockApi.createNote.mockResolvedValue({ note: makeNote('synthetic-created', '') });
+  shortcutEvents = new EventTarget();
+  confirmDiscard.mockReturnValue(true);
+  vi.stubGlobal('Element', ShortcutElement);
+  vi.stubGlobal('HTMLElement', ShortcutElement);
   vi.stubGlobal('window', { localStorage: {
     getItem: (key: string) => storedPreferences.get(key) ?? null,
     setItem: (key: string, value: string) => { storedPreferences.set(key, value); },
   },
-    confirm: () => true, addEventListener: () => {}, removeEventListener: () => {},
+    confirm: confirmDiscard,
+    addEventListener: shortcutEvents.addEventListener.bind(shortcutEvents),
+    removeEventListener: shortcutEvents.removeEventListener.bind(shortcutEvents),
+    dispatchEvent: shortcutEvents.dispatchEvent.bind(shortcutEvents),
     setTimeout, clearTimeout });
   vi.stubGlobal('document', { documentElement: { classList: { toggle: () => {} }, dataset: {} } });
 });
 afterEach(() => { hooks.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+describe('installed editor keyboard listener', () => {
+  describe.each(['ctrlKey', 'metaKey'] as const)('%s shortcuts', (modifier) => {
+    it('saves the current complete draft immediately, without advancing the autosave clock', async () => {
+      await mount(); await open(a.id); await edit('Current body');
+      props('test-editor').onTitleChange('Current title');
+      props('test-editor').onIconChange('📝'); await flush();
+      const event = shortcut('s', modifier, new ShortcutElement('div', ['[aria-label="Editor"]'], true));
+      expect(event.defaultPrevented).toBe(true);
+      expect(mockApi.saveNote).toHaveBeenCalledExactlyOnceWith(a.id, {
+        title: 'Current title', body: 'Current body', icon: '📝', baseHash: a.contentHash,
+      });
+      await flush(); await debounce();
+      expect(mockApi.saveNote).toHaveBeenCalledTimes(1);
+      const unload = new Event('beforeunload', { cancelable: true });
+      shortcutEvents.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(false);
+    });
+
+    it('uses the new note and hash after switching notes', async () => {
+      await mount(); await open(a.id); await open(b.id); await edit('B draft');
+      props('test-editor').onTitleChange('B title'); await flush();
+      shortcut('S', modifier);
+      expect(mockApi.saveNote).toHaveBeenCalledExactlyOnceWith(b.id, {
+        title: 'B title', body: 'B draft', baseHash: b.contentHash,
+      });
+    });
+
+    it('confirms before creating a note and preserves the entire draft on cancellation', async () => {
+      await mount(); await open(a.id); await open(b.id); await edit('Keep B body');
+      props('test-editor').onTitleChange('Keep B title');
+      props('test-editor').onIconChange('📌'); await flush();
+      confirmDiscard.mockReturnValue(false);
+      shortcut('n', modifier); await flush();
+      expect(confirmDiscard).toHaveBeenCalledExactlyOnceWith('Discard unsaved changes and create a new note?');
+      expect(mockApi.createNote).not.toHaveBeenCalled();
+      expect(props('test-editor')).toMatchObject({ note: b, title: 'Keep B title', body: 'Keep B body', icon: '📌', dirty: true, saveState: 'idle' });
+      expect(props('test-sidebar').selectedId).toBe(b.id);
+      const unload = new Event('beforeunload', { cancelable: true });
+      shortcutEvents.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(true);
+      shortcut('s', modifier);
+      expect(mockApi.saveNote).toHaveBeenCalledExactlyOnceWith(b.id, {
+        title: 'Keep B title', body: 'Keep B body', icon: '📌', baseHash: b.contentHash,
+      });
+    });
+
+    it('creates exactly one note when discard is confirmed and creation is pending', async () => {
+      const pending = deferred<{ note: UiNote }>();
+      mockApi.createNote.mockReturnValue(pending.promise);
+      await mount(); await open(a.id); await edit('Discard this draft');
+      shortcut('n', modifier); shortcut('n', modifier); await flush();
+      expect(confirmDiscard).toHaveBeenCalledTimes(1);
+      expect(mockApi.createNote).toHaveBeenCalledExactlyOnceWith({ title: 'Untitled note' });
+      pending.resolve({ note: makeNote('synthetic-created', '') }); await flush();
+      expect(props('test-editor')).toMatchObject({ note: { id: 'synthetic-created' }, body: '', dirty: false });
+    });
+
+    it('does not save a clean draft, and creates a clean note without a discard prompt', async () => {
+      await mount();
+      shortcut('s', modifier);
+      await open(a.id); shortcut('s', modifier);
+      expect(mockApi.saveNote).not.toHaveBeenCalled();
+      shortcut('n', modifier); await flush();
+      expect(confirmDiscard).not.toHaveBeenCalled();
+      expect(mockApi.createNote).toHaveBeenCalledTimes(1);
+    });
+
+    it('prevents overlapping saves and retains edits made during a shortcut save', async () => {
+      const pending = deferred<{ note: UiNote }>();
+      mockApi.saveNote.mockReturnValueOnce(pending.promise);
+      await mount(); await open(a.id); await edit('First snapshot');
+      shortcut('s', modifier); shortcut('s', modifier); await flush();
+      await edit('Newer body');
+      shortcut('s', modifier);
+      await debounce();
+      expect(mockApi.saveNote).toHaveBeenCalledTimes(1);
+      pending.resolve({ note: makeNote(a.id, 'First snapshot', 'new-base-hash') }); await flush();
+      expect(props('test-editor')).toMatchObject({ body: 'Newer body', dirty: true });
+      shortcut('s', modifier);
+      expect(mockApi.saveNote).toHaveBeenLastCalledWith(a.id, expect.objectContaining({ body: 'Newer body', baseHash: 'new-base-hash' }));
+      expect(mockApi.saveNote).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses the existing retry path after a save failure without clearing the draft', async () => {
+      mockApi.saveNote.mockRejectedValueOnce(new Error('Save unavailable'));
+      await mount(); await open(a.id); await edit('Recoverable draft');
+      shortcut('s', modifier); await flush();
+      expect(props('test-editor')).toMatchObject({ body: 'Recoverable draft', dirty: true, saveState: 'error', error: 'Save unavailable' });
+      shortcut('s', modifier); await flush();
+      expect(mockApi.saveNote).toHaveBeenCalledTimes(2);
+      expect(mockApi.saveNote).toHaveBeenLastCalledWith(a.id, expect.objectContaining({ body: 'Recoverable draft', baseHash: a.contentHash }));
+      expect(props('test-editor')).toMatchObject({ dirty: false, saveState: 'saved', error: null });
+    });
+  });
+
+  it.each(['input', 'textarea', 'select', 'div'])('leaves %s text entry outside the editor alone', async (tag) => {
+    await mount(); await open(a.id); await edit('Draft');
+    const target = new ShortcutElement(tag, [], tag === 'div');
+    expect(shortcut('s', 'ctrlKey', target).defaultPrevented).toBe(false);
+    expect(shortcut('n', 'metaKey', target).defaultPrevented).toBe(false);
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+  });
+
+  it.each(['input', 'textarea', 'div'])('saves from editor %s but does not create while typing', async (tag) => {
+    await mount(); await open(a.id); await edit('Editor draft');
+    const target = new ShortcutElement(tag, ['[aria-label="Editor"]'], tag === 'div');
+    expect(shortcut('n', 'ctrlKey', target).defaultPrevented).toBe(false);
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+    expect(shortcut('s', 'metaKey', target).defaultPrevented).toBe(true);
+    expect(mockApi.saveNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('respects events already handled by CodeMirror or another control', async () => {
+    await mount(); await open(a.id); await edit('Draft');
+    shortcut('s', 'ctrlKey', new ShortcutElement('div', ['[aria-label="Editor"]'], true), true);
+    shortcut('n', 'metaKey', new ShortcutElement(), true);
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+  });
+
+  it.each(['[role="dialog"]', '[role="alertdialog"]', '[data-slot="sheet-content"]'])('leaves shortcuts inside %s to that overlay', async (container) => {
+    await mount(); await open(a.id); await edit('Draft');
+    const target = new ShortcutElement('button', [container]);
+    shortcut('s', 'ctrlKey', target); shortcut('n', 'metaKey', target);
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+  });
+
+  it('blocks shortcuts while the note-action dialog or command palette is open', async () => {
+    await mount(); await open(a.id); await edit('Draft');
+    props('test-sidebar').onRenameNote(b.id); await flush();
+    shortcut('s'); shortcut('n');
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+    props('test-rename').onCancel(); await flush();
+    props('test-palette').onOpenChange(true); await flush();
+    shortcut('s'); shortcut('n');
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+  });
+
+  it('blocks shortcuts during vault work and removes listeners on unmount', async () => {
+    await mount(); await open(a.id); await edit('Draft');
+    props('test-sidebar').onView('settings'); await flush();
+    props('test-settings').onVaultWorkChange(true); await flush();
+    shortcut('s'); shortcut('n');
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+    props('test-settings').onVaultWorkChange(false); await flush();
+    hooks.dispose();
+    expect(shortcut('s').defaultPrevented).toBe(false);
+    expect(shortcut('n').defaultPrevented).toBe(false);
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+  });
+
+  it('blocks shortcuts during a vault switch and resumes with the retained draft if switching is cancelled', async () => {
+    const pending = deferred<{ canceled: true }>();
+    mockApi.pickVault.mockReturnValue(pending.promise);
+    await mount(); await open(a.id); await edit('Retained after picker cancellation');
+    props('test-sidebar').onOpenAnotherVault(); await flush();
+    shortcut('s'); shortcut('n', 'metaKey');
+    expect(mockApi.saveNote).not.toHaveBeenCalled();
+    expect(mockApi.createNote).not.toHaveBeenCalled();
+    pending.resolve({ canceled: true }); await flush();
+    shortcut('s', 'metaKey');
+    expect(mockApi.saveNote).toHaveBeenCalledExactlyOnceWith(a.id, expect.objectContaining({ body: 'Retained after picker cancellation', baseHash: a.contentHash }));
+  });
+});
 
 it('loads filesystem folders on startup even when there are no notes', async () => {
   const folders = ['Empty', 'Projects', 'Projects/Research'];
