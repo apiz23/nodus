@@ -46,6 +46,9 @@ class WikiLinkWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const link = document.createElement('span');
+    let touchTapPending = false;
+    let touchStart: { x: number; y: number } | null = null;
+    let moved = false;
     link.className = `cm-wikilink cm-wikilink-${this.link.status}`;
     link.textContent = this.link.display;
     link.title = labelFor(this.link, this.notes);
@@ -57,6 +60,29 @@ class WikiLinkWidget extends WidgetType {
       const open = () => {
         if (this.link.noteId !== undefined) this.onOpenNote(this.link.noteId);
       };
+      link.addEventListener('pointerdown', (event) => {
+        touchTapPending = event.pointerType === 'touch';
+        touchStart = touchTapPending ? { x: event.clientX, y: event.clientY } : null;
+        moved = false;
+      });
+      link.addEventListener('pointermove', (event) => {
+        if (!touchTapPending || touchStart === null) return;
+        if (Math.abs(event.clientX - touchStart.x) > 8 || Math.abs(event.clientY - touchStart.y) > 8) moved = true;
+      });
+      link.addEventListener('pointercancel', () => {
+        touchTapPending = false;
+        touchStart = null;
+        moved = false;
+      });
+      link.addEventListener('click', (event) => {
+        if (!touchTapPending) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!moved) open();
+        touchTapPending = false;
+        touchStart = null;
+        moved = false;
+      });
       link.addEventListener('mousedown', (event) => {
         if (!event.metaKey && !event.ctrlKey) return;
         event.preventDefault();
@@ -71,6 +97,10 @@ class WikiLinkWidget extends WidgetType {
 
     link.addEventListener('mousedown', (event) => {
       if (this.link.status === 'resolved' && (event.metaKey || event.ctrlKey)) return;
+      if (this.link.status === 'resolved' && touchTapPending) {
+        event.preventDefault();
+        return;
+      }
       event.preventDefault();
       view.focus();
       view.dispatch({ selection: EditorSelection.cursor(this.from) });
