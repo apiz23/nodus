@@ -35,6 +35,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
 import { CodeMirrorEditor } from './editor/CodeMirrorEditor';
+import { MarkdownPreview } from './editor/MarkdownPreview';
 import { BacklinksPanel } from './BacklinksPanel';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
@@ -93,6 +94,7 @@ export function Editor({
   backlinksRevision,
 }: EditorProps) {
   const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
+  const [preview, setPreview] = useState(false);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [titleFocused, setTitleFocused] = useState(false);
 
@@ -185,6 +187,7 @@ export function Editor({
           <span
             className="inline-flex min-w-0 items-center justify-end gap-1 text-[11px] font-medium sm:min-w-20"
             aria-live="polite"
+            aria-atomic="true"
           >
             {saveState === 'saving' ? (
               <>
@@ -262,22 +265,28 @@ export function Editor({
             aria-label="Markdown rendering mode"
             className="flex items-center gap-1"
           >
-            {(['live', 'source'] as const).map((mode) => (
+            {(['live', 'source', 'preview'] as const).map((mode) => (
               <Button
                 key={mode}
                 type="button"
                 size="xs"
                 variant="ghost"
-                aria-pressed={editorMode === mode}
+                aria-pressed={mode === 'preview' ? preview : !preview && editorMode === mode}
                 className={cn(
                   'h-7 rounded-[5px] border px-2 text-[11px] font-medium',
-                  editorMode === mode
+                  (mode === 'preview' ? preview : !preview && editorMode === mode)
                     ? 'border-border bg-muted text-foreground'
                     : 'border-transparent text-muted-foreground hover:text-foreground',
                 )}
-                onClick={() => setEditorMode(mode)}
+                onClick={() => {
+                  if (mode === 'preview') setPreview(true);
+                  else {
+                    setEditorMode(mode);
+                    setPreview(false);
+                  }
+                }}
               >
-                {mode === 'live' ? 'Live' : 'Source'}
+                {mode === 'live' ? 'Live' : mode === 'source' ? 'Source' : 'Preview'}
               </Button>
             ))}
           </div>
@@ -449,16 +458,24 @@ export function Editor({
           <label className="sr-only" htmlFor="note-body">
             Markdown body
           </label>
-          <CodeMirrorEditor
-            key={note.id}
-            value={body}
-            onChange={onBodyChange}
-            mode={editorMode}
-            notes={notes}
-            onOpenNote={onOpenNote}
-            className="mt-6 w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
-            aria-label="Markdown body"
-          />
+          <div className="mt-6 min-h-[42vh] w-full">
+            <div hidden={preview}>
+              <CodeMirrorEditor
+                key={note.id}
+                value={body}
+                onChange={onBodyChange}
+                mode={editorMode}
+                notes={notes}
+                onOpenNote={onOpenNote}
+                notePath={note.path}
+                className="w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
+                aria-label="Markdown body"
+              />
+            </div>
+            <div hidden={!preview}>
+              {preview ? <MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} /> : null}
+            </div>
+          </div>
 
           <BacklinksPanel
             noteId={note.id}

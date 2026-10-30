@@ -16,6 +16,7 @@ export interface CodeMirrorEditorProps {
   mode?: 'source' | 'live';
   notes?: readonly LinkableNote[];
   onOpenNote?: (id: string) => void;
+  notePath: string;
   className?: string;
   'aria-label'?: string;
 }
