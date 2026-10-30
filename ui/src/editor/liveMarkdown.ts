@@ -24,6 +24,7 @@ const headingClass = new Map<string, string>([
 const hiddenMark = Decoration.mark({ class: 'cm-hidden' });
 const strongMark = Decoration.mark({ class: 'cm-strong' });
 const emphasisMark = Decoration.mark({ class: 'cm-emphasis' });
+const strikethroughMark = Decoration.mark({ class: 'cm-strikethrough' });
 const inlineCodeMark = Decoration.mark({ class: 'cm-inline-code' });
 const linkLabelMark = Decoration.mark({ class: 'cm-md-link' });
 
@@ -92,6 +93,10 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
         if (name === 'Emphasis') {
           ranges.push(emphasisMark.range(node.from, node.to));
+          return;
+        }
+        if (name === 'Strikethrough') {
+          ranges.push(strikethroughMark.range(node.from, node.to));
           return;
         }
         if (name === 'InlineCode') {
@@ -182,6 +187,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         if (
           name === 'HeaderMark' ||
           name === 'EmphasisMark' ||
+          name === 'StrikethroughMark' ||
           name === 'QuoteMark' ||
           name === 'CodeMark'
         ) {
@@ -237,6 +243,7 @@ export function liveMarkdown(options: LiveMarkdownOptions = {}): Extension {
       },
       '.cm-strong': { fontWeight: 650 },
       '.cm-emphasis': { fontStyle: 'italic' },
+      '.cm-strikethrough': { textDecoration: 'line-through' },
       '.cm-md-link': {
         color: 'var(--success)',
         textDecoration: 'underline',

@@ -1,5 +1,8 @@
-import { EditorState, type Extension } from '@codemirror/state';
+import { EditorState, Prec, type Extension } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { indentUnit } from '@codemirror/language';
+import { keymap } from '@codemirror/view';
+import { markdownEditingKeymap } from './markdownCommands.js';
 
 export type LineSeparator = '\n' | '\r\n';
 
@@ -19,7 +22,10 @@ export function createEditorState(options: CreateEditorStateOptions): EditorStat
   return EditorState.create({
     doc: options.doc,
     extensions: [
-      markdown({ base: markdownLanguage }),
+      EditorState.allowMultipleSelections.of(true),
+      markdown({ base: markdownLanguage, addKeymap: false }),
+      Prec.high(keymap.of(markdownEditingKeymap)),
+      indentUnit.of('    '),
       EditorState.lineSeparator.of(detectLineSeparator(options.doc)),
       ...(options.extensions ?? []),
     ],
