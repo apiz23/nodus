@@ -5,7 +5,7 @@
  * deliberately contain no filesystem, Node, or relay types.
  */
 
-import type { BackupManifest, FolderImpact } from '../storage/contracts.js';
+import type { BackupManifest, FolderImpact, VaultAttachment } from '../storage/contracts.js';
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
 import type {
   NoteDatabaseRow,
@@ -200,6 +200,7 @@ export interface UiBackupValidationResult {
     notes: number;
     databases: number;
     databaseViews: number;
+    attachments?: number;
   };
 }
 
@@ -207,9 +208,14 @@ export interface UiCreateNoteInput {
   title?: string;
   /** Existing vault-relative folder; omitted uses the default notes directory. */
   folder?: string;
+  /** Optional initial Markdown content, used when creating a conflict copy. */
+  body?: string;
+  /** Optional page icon to preserve when creating a copy. */
+  icon?: string | null;
 }
 
 export type UiFolderImpact = FolderImpact;
+export type UiAttachment = VaultAttachment;
 
 export interface UiSaveNoteInput {
   title: string;

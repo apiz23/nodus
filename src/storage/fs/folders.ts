@@ -8,6 +8,7 @@ import { StorageError, storageFailure, wrapInputError } from '../errors.js';
 import { writeFileAtomic } from './atomic.js';
 import { DATABASES_DIR, DATABASE_VIEWS_DIR, TEMP_PREFIX } from './layout.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
+import { isManagedAttachmentDirectory } from './scan.js';
 
 interface InventoryEntry {
   path: string;
@@ -20,8 +21,9 @@ interface InventoryEntry {
 function validPath(path: string): string {
   let valid: string;
   try { valid = validateFolderPath(path); } catch (error) { throw wrapInputError(error, 'Invalid folder path'); }
-  const first = valid.split('/')[0]?.toLowerCase();
-  if (first === DATABASES_DIR || first === DATABASE_VIEWS_DIR || valid.toLowerCase() === 'notes') {
+  const firstRaw = valid.split('/')[0];
+  const first = firstRaw?.toLowerCase();
+  if (first === DATABASES_DIR || first === DATABASE_VIEWS_DIR || firstRaw === 'attachments' || valid.toLowerCase() === 'notes') {
     throw new StorageError('INVALID_INPUT', `Folder path "${path}" is reserved by Nodus`);
   }
   return valid;
@@ -76,7 +78,7 @@ export async function listVaultFolders(root: string): Promise<string[]> {
       if (entry.name.startsWith('.')) continue;
       const path = relative ? `${relative}/${entry.name}` : entry.name;
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      if (!relative && [DATABASES_DIR, DATABASE_VIEWS_DIR].includes(entry.name.toLowerCase())) continue;
+      if (!relative && ([DATABASES_DIR, DATABASE_VIEWS_DIR].includes(entry.name.toLowerCase()) || (entry.name === 'attachments' && await isManagedAttachmentDirectory(join(absolute, entry.name))))) continue;
       result.push(path);
       await visit(join(absolute, entry.name), path);
     }

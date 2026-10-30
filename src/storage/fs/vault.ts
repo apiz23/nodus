@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, realpath, unlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
+import { extname, join, resolve } from 'node:path';
 import type {
   DatabaseStore,
   DatabaseSummary,
@@ -14,6 +14,7 @@ import type {
   StorageHealth,
   StorageIssue,
   VaultEntry,
+  VaultAttachment,
   VaultStorage,
 } from '../contracts.js';
 import type { DatabaseDefinition } from '../../database/schema.js';
@@ -29,11 +30,12 @@ import { validateNotePath } from '../../domain/paths.js';
 import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
-import { writeFileAtomic } from './atomic.js';
+import { writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
 import { databasePath, databaseViewPath, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
-import { walkVault, type WalkEntry } from './scan.js';
+import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
+import { attachmentPathId, createAttachmentPath, markdownReferencesAttachment, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from './attachments.js';
 import { createVaultFolder, deleteVaultFolder, inspectVaultFolder, listVaultFolders, moveVaultFolder } from './folders.js';
 
 interface ParsedNote {
@@ -137,6 +139,117 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     } catch (error) {
       throw wrapContentError(error, path);
     }
+  }
+
+  /** Read a bounded, non-symlink image asset from within this vault. */
+  async readImage(path: string): Promise<{ bytes: Buffer; contentType: string }> {
+    const imageTypes: Record<string, string> = {
+      '.avif': 'image/avif', '.gif': 'image/gif', '.jpeg': 'image/jpeg',
+      '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
+    };
+    if (path.startsWith('/') || path.includes('\\') || /[\u0000-\u001f\u007f:]/.test(path) || path.split('/').some((part) => part === '' || part === '.' || part === '..' || part.startsWith('.'))) {
+      throw new StorageError('UNSAFE_PATH', 'Invalid image path', { path });
+    }
+    const contentType = imageTypes[extname(path).toLowerCase()];
+    if (contentType === undefined) throw new StorageError('INVALID_INPUT', 'Unsupported image type', { path });
+    const absolute = await this.validateInternalPath(path);
+    let info;
+    try { info = await lstat(absolute); }
+    catch (error) { throw storageFailure(error, 'Read image', path); }
+    if (info.isSymbolicLink() || !info.isFile()) throw new StorageError('UNSAFE_PATH', 'Image must be a regular file inside the vault', { path });
+    if (info.size > 10 * 1024 * 1024) throw new StorageError('INVALID_INPUT', 'Image is larger than 10 MiB', { path });
+    const bytes = await this.readBytesAt(absolute, path);
+    if (bytes.length > 10 * 1024 * 1024) throw new StorageError('INVALID_INPUT', 'Image is larger than 10 MiB', { path });
+    return { bytes, contentType };
+  }
+
+  async listAttachments(): Promise<VaultAttachment[]> {
+    return withVaultRootLock(this.root, () => this.listAttachmentsUnlocked());
+  }
+
+  async createAttachment(name: string, data: Uint8Array): Promise<VaultAttachment> {
+    return withVaultRootLock(this.root, async () => {
+      if (data.byteLength > ATTACHMENT_MAX_BYTES) throw new StorageError('INVALID_INPUT', 'Attachments must be 10 MiB or smaller.');
+      const created = createAttachmentPath(name);
+      const valid = validateAttachmentBytes(created.path, data);
+      const directory = resolveInsideRoot(this.root, ATTACHMENTS_DIR);
+      await assertInsideRoot(this.root, directory, ATTACHMENTS_DIR);
+      await assertNotSymlink(directory, ATTACHMENTS_DIR);
+      const rootFolders = await listVaultFolders(this.root);
+      const conflictingFolder = rootFolders.find((folder) => folder.split('/')[0]?.normalize('NFC').toLowerCase() === ATTACHMENTS_DIR && folder !== ATTACHMENTS_DIR);
+      if (conflictingFolder) throw new StorageError('CONFLICT', `A folder named "${conflictingFolder}" already uses the attachments storage path on this filesystem. Rename it before adding attachments.`, { path: conflictingFolder });
+      if (await pathExists(directory) && !(await isManagedAttachmentDirectory(directory))) throw new StorageError('CONFLICT', 'A user folder named "attachments" already exists. Rename it before adding managed attachments.', { path: ATTACHMENTS_DIR });
+      await mkdir(directory, { recursive: true });
+      const absolute = await this.validateInternalPath(created.path);
+      try {
+        await writeFileAtomicExclusive(absolute, data);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new StorageError('CONFLICT', 'An attachment already exists at the generated path.', { path: created.path });
+        throw storageFailure(error, 'Write attachment', created.path);
+      }
+      return { id: created.id, path: created.path, name: created.name, contentType: valid.contentType, size: data.byteLength, references: [] };
+    });
+  }
+
+  async readAttachment(path: string): Promise<{ attachment: VaultAttachment; bytes: Buffer }> {
+    return withVaultRootLock(this.root, async () => {
+      const absolute = await this.validateAttachmentPath(path);
+      const bytes = await this.readAttachmentBytesAt(absolute, path);
+      const valid = validateAttachmentBytes(path, bytes);
+      return { attachment: { id: valid.id, path, name: valid.name, contentType: valid.contentType, size: bytes.length, references: [] }, bytes };
+    });
+  }
+
+  async deleteAttachment(path: string, confirmReferenced = false): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      const absolute = await this.validateAttachmentPath(path);
+      const bytes = await this.readAttachmentBytesAt(absolute, path);
+      validateAttachmentBytes(path, bytes);
+      const notes = await this.parseNotesStrict();
+      const references = notes.filter(({ note }) => markdownReferencesAttachment(note.body, note.path, path)).map(({ note }) => note.path);
+      if (references.length > 0 && !confirmReferenced) {
+        throw new StorageError('CONFLICT', `Attachment is referenced by ${references.length} note(s); confirm deletion to continue.`, { path, details: { paths: references } });
+      }
+      await assertNotSymlink(absolute, path);
+      const current = await this.readAttachmentBytesAt(absolute, path);
+      if (sha256Hex(current) !== sha256Hex(bytes)) throw new StorageError('STALE_WRITE', `Attachment "${path}" changed during deletion; refresh and retry.`, { path });
+      try { await unlink(absolute); } catch (error) { throw storageFailure(error, 'Delete attachment', path); }
+    });
+  }
+
+  private async validateAttachmentPath(path: string): Promise<string> {
+    if (attachmentPathId(path) === undefined) throw new StorageError('UNSAFE_PATH', 'Invalid attachment path', { path });
+    return this.validateInternalPath(path);
+  }
+
+  private async readAttachmentBytesAt(absolute: string, path: string): Promise<Buffer> {
+    let info;
+    try { info = await lstat(absolute); } catch (error) {
+      if (isMissing(error)) throw new StorageError('NOT_FOUND', `Attachment "${path}" was not found`, { path });
+      throw storageFailure(error, 'Read attachment', path);
+    }
+    if (info.isSymbolicLink() || !info.isFile()) throw new StorageError('UNSAFE_PATH', 'Attachment must be a regular file inside the vault', { path });
+    if (info.size > ATTACHMENT_MAX_BYTES) throw new StorageError('INVALID_CONTENT', 'Attachment is larger than 10 MiB.', { path });
+    const bytes = await this.readBytesAt(absolute, path);
+    if (bytes.length > ATTACHMENT_MAX_BYTES) throw new StorageError('INVALID_CONTENT', 'Attachment is larger than 10 MiB.', { path });
+    return bytes;
+  }
+
+  private async listAttachmentsUnlocked(): Promise<VaultAttachment[]> {
+    const { entries, issues, folders } = await walkVault(this.root);
+    const bad = issues.filter((issue) => issue.path === ATTACHMENTS_DIR || issue.path.startsWith(`${ATTACHMENTS_DIR}/`));
+    if (bad.length > 0) throw new StorageError('INVALID_CONTENT', 'Attachment storage contains invalid entries.', { details: { issues: bad.map((issue) => `${issue.path}: ${issue.message}`) } });
+    if (folders.includes(ATTACHMENTS_DIR)) throw new StorageError('CONFLICT', 'A user folder named "attachments" already exists and is not managed attachment storage.', { path: ATTACHMENTS_DIR });
+    const notes = await this.parseNotesStrict();
+    const attachments: VaultAttachment[] = [];
+    for (const entry of entries) {
+      if (entry.kind !== 'attachment') continue;
+      const bytes = await this.readAttachmentBytesAt(entry.absolute, entry.path);
+      const valid = validateAttachmentBytes(entry.path, bytes);
+      attachments.push({ id: valid.id, path: entry.path, name: valid.name, contentType: valid.contentType, size: bytes.length,
+        references: notes.filter(({ note }) => markdownReferencesAttachment(note.body, note.path, entry.path)).map(({ note }) => note.path) });
+    }
+    return attachments;
   }
 
   /**
@@ -528,6 +641,16 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       const notes = await this.parseNotesStrict();
       const databases = await this.parseDatabasesStrict();
       const views = await this.parseDatabaseViewsStrict();
+      const walked = await walkVault(this.root);
+      const attachmentIssues = walked.issues.filter((issue) => issue.path === ATTACHMENTS_DIR || issue.path.startsWith(`${ATTACHMENTS_DIR}/`));
+      if (attachmentIssues.length > 0) throw new StorageError('INVALID_CONTENT', 'Attachment storage contains invalid entries.', { details: { issues: attachmentIssues.map((issue) => `${issue.path}: ${issue.message}`) } });
+      const attachments: VaultEntry[] = [];
+      for (const entry of walked.entries) {
+        if (entry.kind !== 'attachment') continue;
+        const bytes = await this.readAttachmentBytesAt(entry.absolute, entry.path);
+        validateAttachmentBytes(entry.path, bytes);
+        attachments.push({ kind: 'attachment', id: attachmentPathId(entry.path)!, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
+      }
 
       return [
         ...notes.map(({ note, text, bytes }) => ({
@@ -545,6 +668,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
           rawBytes: Buffer.from(bytes),
         })),
         ...views.map(({ view, text, bytes, path }) => ({ kind: 'database-view' as const, id: view.id, path, text, rawBytes: Buffer.from(bytes) })),
+        ...attachments,
       ];
     });
   }
@@ -563,6 +687,12 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
           path: entry.path,
           message: 'Temporary file from an active or interrupted write; stop vault writers and preserve and inspect it before cleanup',
         });
+        continue;
+      }
+
+      if (entry.kind === 'attachment') {
+        try { validateAttachmentBytes(entry.path, await this.readAttachmentBytesAt(entry.absolute, entry.path)); }
+        catch (error) { issues.push(contentIssue(error, entry.path)); }
         continue;
       }
 
@@ -666,6 +796,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       parsedEntryPaths.add(key);
     }
 
+    const attachmentEntries = plan.entries.filter((entry) => entry.kind === 'attachment');
+    for (const entry of attachmentEntries) {
+      const bytes = entry.rawBytes;
+      const valid = bytes === undefined ? undefined : validateAttachmentBytes(entry.path, bytes);
+      if (!valid || valid.id !== entry.id) throw new StorageError('INVALID_CONTENT', `Import attachment "${entry.path}" does not match its ID or has no binary content.`, { path: entry.path });
+      await this.validateAttachmentPath(entry.path);
+    }
+
     const noteText = new Map<string, string>();
     const databaseText = new Map<string, string>();
     for (const entry of plan.entries) {
@@ -687,6 +825,11 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       expectedHashes.set(databasePath(database.id), sha256Hex(bytes));
     }
     for (const { path, bytes } of existingViews) expectedHashes.set(path, sha256Hex(bytes));
+    const existingAttachments = await this.listAttachmentsUnlocked();
+    for (const item of existingAttachments) {
+      const stored = await this.readBytesAt(await this.validateAttachmentPath(item.path), item.path);
+      expectedHashes.set(item.path, sha256Hex(stored));
+    }
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -723,6 +866,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       if (incomingViews.some((candidate) => candidate.id === view.id && candidate !== view)) throw new StorageError('DUPLICATE_ID', `Import contains saved view ID "${view.id}" more than once`, { details: { ids: [view.id] } });
       plannedViewPaths.add(folded);
     }
+    const plannedAttachmentPaths = new Set<string>();
+    const plannedAttachmentIds = new Set<string>();
+    for (const entry of attachmentEntries) {
+      if (plannedAttachmentIds.has(entry.id)) throw new StorageError('DUPLICATE_ID', `Import contains duplicate attachment ID "${entry.id}"`, { details: { ids: [entry.id] } });
+      plannedAttachmentIds.add(entry.id);
+      const folded = foldPath(entry.path);
+      if (plannedAttachmentPaths.has(folded)) throw new StorageError('CONFLICT', `Import contains duplicate attachment path "${entry.path}"`, { path: entry.path });
+      plannedAttachmentPaths.add(folded);
+    }
 
     const idConflicts = new Set<string>();
     const pathConflicts = new Set<string>();
@@ -745,6 +897,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       if (existingPath !== undefined) {
         if (existingPath.path !== path) pathConflicts.add(path);
         idConflicts.add(view.id);
+      }
+    }
+    for (const entry of attachmentEntries) {
+      const existingById = existingAttachments.find((candidate) => candidate.id === entry.id);
+      if (existingById && existingById.path !== entry.path) throw new StorageError('CONFLICT', `Attachment ID "${entry.id}" already belongs to "${existingById.path}" and cannot be moved by import`, { details: { ids: [entry.id], paths: [existingById.path, entry.path] } });
+      if (existingById) {
+        idConflicts.add(entry.id);
+        pathConflicts.add(entry.path);
       }
     }
 
@@ -799,6 +959,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let notes = 0;
     let databases = 0;
     let databaseViews = 0;
+    let attachments = 0;
 
     try {
       for (const note of plan.notes) {
@@ -833,6 +994,17 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         written.push(path);
       }
 
+      for (const entry of attachmentEntries) {
+        const path = entry.path;
+        const bytes = entry.rawBytes!;
+        const absolute = await this.validateAttachmentPath(path);
+        failedPath = path;
+        await this.assertImportTargetUnchanged(path, expectedHashes.get(path));
+        await writeFileAtomic(absolute, bytes);
+        attachments += 1;
+        written.push(path);
+      }
+
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
@@ -853,7 +1025,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases, databaseViews };
+    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }) };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
@@ -1079,6 +1251,12 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         `Path "${path}" is reserved for Nodus database metadata`,
         { path, details: { paths: [path] } },
       );
+    }
+    if (path.split('/')[0]?.normalize('NFC').toLowerCase() === ATTACHMENTS_DIR) {
+      const attachmentDirectory = resolveInsideRoot(this.root, ATTACHMENTS_DIR);
+      if (await pathExists(attachmentDirectory) && await isManagedAttachmentDirectory(attachmentDirectory)) {
+        throw new StorageError('INVALID_INPUT', `Path "${path}" is reserved for managed attachments`, { path });
+      }
     }
     return absolute;
   }

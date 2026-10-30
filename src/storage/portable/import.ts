@@ -10,6 +10,7 @@ import type { ImportOptions, ImportPlan, ImportReport, VaultEntry, VaultStorage 
 import { StorageError, storageFailure, wrapContentError } from '../errors.js';
 import { databasePath, databaseViewPath } from '../fs/layout.js';
 import { walkVault } from '../fs/scan.js';
+import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES } from '../fs/attachments.js';
 
 /**
  * Reads and fully validates a portable import directory.
@@ -58,6 +59,7 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
   const noteIds = new Map<string, string>();
   const databaseIds = new Map<string, string>();
   const viewIds = new Map<string, string>();
+  const attachmentIds = new Map<string, string>();
   const foldedPaths = new Map<string, string>();
 
   for (const entry of walk.entries) {
@@ -134,6 +136,21 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     assertNoPathCollision(entry.path, foldedPaths);
     databaseViews.push(view);
     entries.push({ kind: 'database-view', id: view.id, path: entry.path, text });
+  }
+
+  for (const entry of walk.entries) {
+    if (entry.kind !== 'attachment') continue;
+    let bytes: Buffer;
+    try { bytes = await readFile(entry.absolute); }
+    catch (error) { throw storageFailure(error, 'Read import attachment', entry.path); }
+    if (bytes.byteLength > ATTACHMENT_MAX_BYTES) throw new StorageError('INVALID_CONTENT', `Attachment "${entry.path}" exceeds the 10 MiB limit`, { path: entry.path });
+    const valid = validateAttachmentBytes(entry.path, bytes);
+    if (valid.id !== attachmentPathId(entry.path)) throw new StorageError('INVALID_CONTENT', `Attachment "${entry.path}" does not match its ID`, { path: entry.path });
+    const previous = attachmentIds.get(valid.id);
+    if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Import contains attachment ID "${valid.id}" more than once`, { details: { ids: [valid.id], paths: [previous, entry.path] } });
+    attachmentIds.set(valid.id, entry.path);
+    assertNoPathCollision(entry.path, foldedPaths);
+    entries.push({ kind: 'attachment', id: valid.id, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
   }
 
   return { entries, notes, databases, databaseViews };

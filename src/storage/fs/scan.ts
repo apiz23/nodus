@@ -3,9 +3,10 @@ import { join } from 'node:path';
 import type { StorageIssue } from '../contracts.js';
 import { storageFailure } from '../errors.js';
 import { DATABASES_DIR, DATABASE_VIEWS_DIR, TEMP_PREFIX } from './layout.js';
+import { attachmentPathId, ATTACHMENTS_DIR } from './attachments.js';
 
 export interface WalkEntry {
-  kind: 'note' | 'database' | 'database-view' | 'temp';
+  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'temp';
   absolute: string;
   /** Workspace-relative POSIX path. */
   path: string;
@@ -80,6 +81,10 @@ async function walkDirectory(
         await collectDatabaseViews(childAbsolute, childRelative, entries, issues);
         continue;
       }
+      if (relative === '' && dirent.name === ATTACHMENTS_DIR && await isManagedAttachmentDirectory(childAbsolute)) {
+        await collectAttachments(childAbsolute, childRelative, entries, issues);
+        continue;
+      }
       folders.push(childRelative);
       await walkDirectory(childAbsolute, childRelative, entries, issues, folders);
       continue;
@@ -88,6 +93,32 @@ async function walkDirectory(
     if (dirent.isFile() && dirent.name.endsWith('.md')) {
       entries.push({ kind: 'note', absolute: childAbsolute, path: childRelative });
     }
+  }
+}
+
+/** Avoid reinterpreting an existing user folder as managed storage unless all visible children use Nodus IDs. */
+export async function isManagedAttachmentDirectory(absolute: string): Promise<boolean> {
+  let children;
+  try { children = await readdir(absolute, { withFileTypes: true }); }
+  catch (error) { throw storageFailure(error, 'Read attachment directory', absolute); }
+  return children.every((child) => child.name.startsWith('.') || (!child.isSymbolicLink() && child.isFile() && attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) !== undefined));
+}
+
+async function collectAttachments(absolute: string, relative: string, entries: WalkEntry[], issues: StorageIssue[]): Promise<void> {
+  let files;
+  try { files = await readdir(absolute, { withFileTypes: true }); }
+  catch (error) { throw storageFailure(error, 'Read directory', relative); }
+  files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  for (const file of files) {
+    if (file.name.startsWith(TEMP_PREFIX)) { entries.push({ kind: 'temp', absolute: join(absolute, file.name), path: `${relative}/${file.name}` }); continue; }
+    if (file.name.startsWith('.')) continue;
+    const path = `${relative}/${file.name}`;
+    if (file.isSymbolicLink()) { issues.push({ code: 'UNSAFE_PATH', path, message: 'Symbolic links are not followed' }); continue; }
+    if (!file.isFile() || attachmentPathId(path) === undefined) {
+      issues.push({ code: 'INVALID_CONTENT', path, message: 'The attachments/ directory may only contain managed Nodus attachments' });
+      continue;
+    }
+    entries.push({ kind: 'attachment', absolute: join(absolute, file.name), path });
   }
 }
 

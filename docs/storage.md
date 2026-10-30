@@ -244,23 +244,25 @@ Behavior and limits:
 ```
 
 - Files are copied byte for byte with the same atomic write used for notes. A missing manifest means an interrupted or incomplete backup.
+- Managed media uses the reserved root `attachments/` directory, UUID-prefixed sanitized names, and preserved supported extensions. A pre-existing ordinary folder there remains user data and blocks managed uploads until renamed.
 - The target must be **empty** and outside the vault. A non-empty target fails with `CONFLICT` and is left untouched; a nonexistent target is created.
-- `format` is always `nodus-backup`; current manifests use version `2` to include saved views. Version-1 manifests remain readable and contain only notes and database definitions.
+- `format` is always `nodus-backup`; current manifests use version `3` to include binary attachments. Version-1 and version-2 manifests remain readable with their original rules; v1 contains notes/definitions and v2 also supports saved views.
 
 ### Manifest metadata and digest
 
-- Each v2 `files` entry carries `kind` (`note` | `database` | `database-view`), the document `id`, the vault-relative `path`, the lowercase hex SHA-256 of the UTF-8 content, and `bytes` (UTF-8 byte length).
-- V2 includes `formats` (note/database/database-view/backup versions), `counts` (notes/databases/databaseViews), and a canonical digest. V1 metadata remains optional under its original rules.
+- Each v2 `files` entry carries `kind` (`note` | `database` | `database-view`), the document `id`, the vault-relative `path`, the lowercase hex SHA-256 of the UTF-8 content, and `bytes` (UTF-8 byte length). V3 also supports `attachment` entries, whose `bytes` and SHA-256 cover original binary bytes.
+- V2 includes `formats` (note/database/database-view/backup versions), `counts` (notes/databases/databaseViews), and a canonical digest. V3 adds an attachment count; `formats.backup` identifies that manifest version. V1 metadata remains optional under its original rules.
 - `digest` is the SHA-256 of the manifest serialized canonically: fixed key order (`format`, `version`, `createdAt`, then `app`/`formats`/`counts` when present, then `files` with fixed entry keys), `JSON.stringify` without whitespace, encoded UTF-8. The `digest` field itself is excluded from its own input.
-- **Backward compatibility:** valid v1 manifests without `app`, `formats`, `counts`, `bytes`, or `digest` still validate. V1 cannot represent saved views. V2 is explicitly unsupported by older Nodus builds, which reject unknown backup versions rather than dropping saved views. V2 rejects unknown fields and requires byte lengths and digest.
+- **Backward compatibility:** valid v1 manifests without `app`, `formats`, `counts`, `bytes`, or `digest` still validate. V1 cannot represent saved views. Older Nodus builds reject newer backup versions rather than silently dropping saved views or attachments. V2 rejects unknown fields and requires byte lengths and digest. V3 stores managed media under `attachments/` and rejects unmanifested files there.
 - The hashes and digest are **integrity checks only**: they detect accidental or unauthorized byte changes. They do **not** authenticate the backup or prove who created it — anyone able to edit the backup can recompute them.
 
 ### Creating and validating backups
 
 Exposed through the local API (localhost only, origin-checked) and driven by Settings → Backup & restore (typed paths; Nodus has no file picker for backup folders):
 
-- `POST /api/backup` with `{ targetDir }` → 201 `{ targetDir, notes, databases, databaseViews }`.
+- `POST /api/backup` with `{ targetDir }` → 201 `{ targetDir, notes, databases, databaseViews, attachments? }`.
 - `POST /api/backup/validate` with `{ dir }` → 200 `{ manifest, counts }`; failures are 422 `CORRUPT_BACKUP` (with an `issues` list shown in the UI), 422 `UNSUPPORTED_VERSION`, or 404 for a missing directory.
+- `GET /api/attachments`, bounded `POST /api/attachments?name=…`, and `DELETE /api/attachments` manage validated files in the active vault. `GET /api/attachments/open?path=…` serves them with no-sniff and sandbox headers. Uploads are limited to 10 MiB per file; editor paste/drop batches allow up to 10 files and 25 MiB total. V3 backups include binary attachment entries.
 
 Destination and source rules (`assertBackupTargetAllowed`), in order:
 

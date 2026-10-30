@@ -53,6 +53,7 @@ import { pickFolder } from './folder-picker.js';
 import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_BODY_CHARS = 1_000_000;
 const MAX_TITLE_CHARS = 200;
 const NOW = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -161,6 +162,57 @@ export function createLocalApiMiddleware(
 
     const method = req.method ?? 'GET';
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    if (method === 'GET' && path === '/api/assets/image') {
+      const imagePath = url.searchParams.get('path');
+      if (imagePath === null || imagePath.length > 260) throw new ApiError(400, 'INVALID_INPUT', 'Invalid image path.');
+      const image = await (await getVault()).readImage(imagePath);
+      res.writeHead(200, {
+        'Content-Type': image.contentType,
+        'Content-Length': image.bytes.length,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      });
+      res.end(image.bytes);
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/attachments') {
+      return sendJson(res, 200, { attachments: await (await getVault()).listAttachments() });
+    }
+
+    if (method === 'GET' && path === '/api/attachments/open') {
+      const attachmentPath = url.searchParams.get('path');
+      if (attachmentPath === null || attachmentPath.length > 260) throw new ApiError(400, 'INVALID_INPUT', 'Invalid attachment path.');
+      const { attachment, bytes } = await (await getVault()).readAttachment(attachmentPath);
+      res.writeHead(200, {
+        'Content-Type': attachment.contentType,
+        'Content-Length': bytes.length,
+        'Content-Disposition': `inline; filename="${attachment.name.replace(/["\\\r\n]/g, '_')}"`,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      });
+      res.end(bytes);
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/attachments') {
+      const name = url.searchParams.get('name');
+      if (name === null) throw new ApiError(400, 'INVALID_INPUT', 'Attachment filename is required.');
+      const bytes = await readBinary(req, MAX_ATTACHMENT_BYTES);
+      const attachment = await (await getVault()).createAttachment(name, bytes);
+      return sendJson(res, 201, { attachment });
+    }
+
+    if (method === 'DELETE' && path === '/api/attachments') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['path', 'confirmReferenced'], 'request');
+      if (body.confirmReferenced !== undefined && typeof body.confirmReferenced !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'confirmReferenced must be a boolean.');
+      await (await getVault()).deleteAttachment(requireString(body.path, 'path'), body.confirmReferenced === true);
+      return sendJson(res, 200, { deleted: true });
+    }
 
     if (method === 'GET' && path === '/api/status') {
       return sendJson(res, 200, await buildStatus(await getVault()));
@@ -911,12 +963,13 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; attachments?: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
     manifest: validation.manifest,
-    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length },
+    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
+      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}) },
   };
 }
 
@@ -1221,6 +1274,27 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     if (error instanceof ApiError) throw error;
     throw new ApiError(400, 'INVALID_JSON', 'Request body is not valid JSON');
   }
+}
+
+async function readBinary(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const contentType = req.headers['content-type'] ?? '';
+  if (typeof contentType !== 'string' || !contentType.toLowerCase().startsWith('application/octet-stream')) {
+    throw new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Attachment body must be application/octet-stream.');
+  }
+  const length = req.headers['content-length'];
+  if (length !== undefined && (!/^\d+$/.test(length) || Number(length) > limit)) throw new ApiError(413, 'PAYLOAD_TOO_LARGE', 'Attachment exceeds the 10 MiB upload limit.');
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) tooLarge = true;
+    else if (!tooLarge) chunks.push(buffer);
+  }
+  if (tooLarge) throw new ApiError(413, 'PAYLOAD_TOO_LARGE', 'Attachment exceeds the 10 MiB upload limit.');
+  if (size === 0) throw new ApiError(400, 'INVALID_INPUT', 'Attachment is empty.');
+  return Buffer.concat(chunks, size);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

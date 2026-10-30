@@ -61,7 +61,7 @@ function canonicalDigest(manifest: {
 }): string {
   const app = manifest.app as { name: string; version: string };
   const formats = manifest.formats as { note: number; database: number; backup: number; databaseView?: number };
-  const counts = manifest.counts as { notes: number; databases: number; databaseViews?: number };
+  const counts = manifest.counts as { notes: number; databases: number; databaseViews?: number; attachments?: number };
   const files = (manifest.files as Array<Record<string, unknown>>).map((file) => ({
     kind: file.kind,
     id: file.id,
@@ -77,7 +77,7 @@ function canonicalDigest(manifest: {
         createdAt: manifest.createdAt,
         app: { name: app.name, version: app.version },
         formats: { note: formats.note, database: formats.database, ...(formats.databaseView === undefined ? {} : { databaseView: formats.databaseView }), backup: formats.backup },
-        counts: { notes: counts.notes, databases: counts.databases, ...(counts.databaseViews === undefined ? {} : { databaseViews: counts.databaseViews }) },
+        counts: { notes: counts.notes, databases: counts.databases, ...(counts.databaseViews === undefined ? {} : { databaseViews: counts.databaseViews }), ...(manifest.version >= 3 ? { attachments: counts.attachments } : {}) },
         files,
       }),
       'utf8',
@@ -116,11 +116,11 @@ describe('createBackup', () => {
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
       expect(manifest).toEqual({
         format: 'nodus-backup',
-        version: 2,
+        version: 3,
         createdAt: BACKUP_NOW,
         app: { name: pkg.name, version: pkg.version },
-        formats: { note: 1, database: 1, databaseView: 2, backup: 2 },
-        counts: { notes: 1, databases: 1, databaseViews: 0 },
+        formats: { note: 1, database: 1, databaseView: 2, backup: 3 },
+        counts: { notes: 1, databases: 1, databaseViews: 0, attachments: 0 },
         files: [
           {
             kind: 'note',
@@ -216,7 +216,7 @@ describe('validateBackup', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target);
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
-      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 3 }), 'utf8');
+      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 4 }), 'utf8');
 
       expect(await storageErrorCode(() => validateBackup(target))).toBe('UNSUPPORTED_VERSION');
     });
@@ -679,6 +679,9 @@ describe('manifest metadata', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target, { now: BACKUP_NOW });
       const manifest = await readManifestJson(target);
+      manifest.version = 2;
+      manifest.formats.backup = 2;
+      delete manifest.counts.attachments;
       manifest.formats.databaseView = 1;
       manifest.digest = canonicalDigest(manifest);
       await writeManifestJson(target, manifest);
@@ -792,7 +795,7 @@ describe('manifest metadata', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target, { now: BACKUP_NOW });
       const manifest = await readManifestJson(target);
-      manifest.counts = { notes: 2, databases: 1, databaseViews: 0 };
+      manifest.counts = { notes: 2, databases: 1, databaseViews: 0, attachments: 0 };
       await writeManifestJson(target, manifest);
 
       await expect(validateBackup(target)).rejects.toMatchObject({

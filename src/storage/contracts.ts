@@ -34,6 +34,22 @@ export interface FolderStore {
   deleteFolder(path: string, expectedToken: string): Promise<string[]>;
 }
 
+export interface VaultAttachment {
+  id: string;
+  path: string;
+  name: string;
+  contentType: string;
+  size: number;
+  references: string[];
+}
+
+export interface AttachmentStore {
+  listAttachments(): Promise<VaultAttachment[]>;
+  createAttachment(name: string, bytes: Uint8Array): Promise<VaultAttachment>;
+  readAttachment(path: string): Promise<{ attachment: VaultAttachment; bytes: Buffer }>;
+  deleteAttachment(path: string, confirmReferenced?: boolean): Promise<void>;
+}
+
 export type StorageIssueCode =
   | 'INVALID_CONTENT'
   | 'UNSUPPORTED_VERSION'
@@ -55,9 +71,9 @@ export interface StorageHealth {
   issues: StorageIssue[];
 }
 
-/** One serialized document, as stored or about to be stored. */
+/** One managed vault entry. Attachments carry original binary bytes and an empty text field. */
 export interface VaultEntry {
-  kind: 'note' | 'database' | 'database-view';
+  kind: 'note' | 'database' | 'database-view' | 'attachment';
   id: string;
   path: string;
   text: string;
@@ -122,6 +138,7 @@ export interface ImportReport {
   notes: number;
   databases: number;
   databaseViews: number;
+  attachments?: number;
 }
 
 export interface ImportPlan {
@@ -136,10 +153,11 @@ export interface ExportReport {
   notes: number;
   databases: number;
   databaseViews: number;
+  attachments?: number;
 }
 
 export interface BackupManifestFile {
-  kind: 'note' | 'database' | 'database-view';
+  kind: 'note' | 'database' | 'database-view' | 'attachment';
   id: string;
   path: string;
   sha256: string;
@@ -166,11 +184,12 @@ export interface BackupManifestCounts {
   notes: number;
   databases: number;
   databaseViews?: number;
+  attachments?: number;
 }
 
 export interface BackupManifest {
   format: 'nodus-backup';
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   createdAt: string;
   app?: BackupManifestApp;
   formats?: BackupManifestFormats;
@@ -187,7 +206,7 @@ export interface BackupManifest {
 /** Read-only result of comparing a validated backup against a live vault. */
 export interface RestorePreview {
   manifest: BackupManifest;
-  counts: { notes: number; databases: number; databaseViews: number };
+  counts: { notes: number; databases: number; databaseViews: number; attachments?: number };
   /** ID and path conflicts a restore would hit without `overwrite: true`. */
   conflicts: { ids: string[]; paths: string[] };
 }
@@ -197,6 +216,7 @@ export interface BackupReport {
   notes: number;
   databases: number;
   databaseViews: number;
+  attachments?: number;
 }
 
 export interface BackupValidation {
@@ -217,9 +237,9 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore, AttachmentStore {
   readonly root: string;
-  /** All valid documents as raw text, notes first, each group sorted by path. */
+  /** All valid managed entries. Markdown/schema documents carry text; attachments carry raw bytes. */
   snapshot(): Promise<VaultEntry[]>;
   /** Non-throwing diagnostic scan. I/O errors are still thrown. */
   checkHealth(): Promise<StorageHealth>;

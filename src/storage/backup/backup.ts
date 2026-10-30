@@ -39,6 +39,7 @@ import {
 import { isInsideRoot, resolveInsideRoot } from '../fs/safe-path.js';
 import { FileSystemVault } from '../fs/vault.js';
 import { walkVault } from '../fs/scan.js';
+import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from '../fs/attachments.js';
 
 /**
  * Creates a recovery snapshot: every note, database definition, and saved view, byte for
@@ -68,6 +69,11 @@ export async function createBackup(
   }
   const backupEntries = entries.map((entry) => {
     const bytes = entry.rawBytes ?? Buffer.from(entry.text, 'utf8');
+    if (entry.kind === 'attachment') {
+      const attachment = validateAttachmentBytes(entry.path, bytes);
+      if (attachment.id !== entry.id) throw new StorageError('INVALID_CONTENT', `Attachment at "${entry.path}" does not match its ID`, { path: entry.path });
+      return { entry, bytes };
+    }
     const text = decodeUtf8(bytes, entry.path, 'INVALID_CONTENT');
     if (text !== entry.text) {
       throw new StorageError('INVALID_CONTENT', `File "${entry.path}" is not valid UTF-8 text`, {
@@ -97,6 +103,7 @@ export async function createBackup(
   let notes = 0;
   let databases = 0;
   let databaseViews = 0;
+  let attachments = 0;
 
   try {
     for (const { entry, bytes } of backupEntries) {
@@ -110,7 +117,8 @@ export async function createBackup(
       });
       if (entry.kind === 'note') notes += 1;
       else if (entry.kind === 'database') databases += 1;
-      else databaseViews += 1;
+      else if (entry.kind === 'database-view') databaseViews += 1;
+      else attachments += 1;
     }
 
     const app = await readAppInfo();
@@ -120,7 +128,7 @@ export async function createBackup(
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
       formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION },
-      counts: { notes, databases, databaseViews },
+      counts: { notes, databases, databaseViews, attachments },
       files,
     };
     manifest.digest = digestOf(manifest);
@@ -129,7 +137,7 @@ export async function createBackup(
     throw storageFailure(error, 'Write backup', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews };
+  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }) };
 }
 
 /**
@@ -161,6 +169,21 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     const listed = new Set(manifest.files.filter((file) => file.kind === 'database-view').map((file) => file.path));
     if (walk.issues.some((issue) => issue.path.toLowerCase().startsWith(`${DATABASE_VIEWS_DIR}/`)) || walk.entries.some((entry) => entry.path.startsWith(`${DATABASE_VIEWS_DIR}/`) && (entry.kind !== 'database-view' || !listed.has(entry.path)))) {
       throw corruptBackup('Saved-view backup files are unsafe or missing from the manifest; no restore occurred');
+    }
+  }
+  const attachmentDirectory = (await readdir(target)).find((name) => name.toLowerCase() === ATTACHMENTS_DIR);
+  if (attachmentDirectory !== undefined) {
+    if (manifest.version < 3) throw corruptBackup('Legacy backup manifest cannot account for the attachments/ directory; no restore occurred');
+    const info = await lstat(join(target, attachmentDirectory));
+    if (attachmentDirectory !== ATTACHMENTS_DIR || !info.isDirectory() || info.isSymbolicLink()) throw corruptBackup('Attachment backup directory must be a regular attachments/ directory');
+    const children = await readdir(join(target, attachmentDirectory), { withFileTypes: true });
+    if (children.some((child) => child.isSymbolicLink() || !child.isFile() || attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) === undefined)) {
+      throw corruptBackup('Attachment backup directory contains an unrecognized or unsafe file');
+    }
+    const walk = await walkVault(target);
+    const listed = new Set(manifest.files.filter((file) => file.kind === 'attachment').map((file) => file.path));
+    if (walk.issues.some((issue) => issue.path.toLowerCase().startsWith(`${ATTACHMENTS_DIR}/`)) || walk.entries.some((entry) => entry.path.startsWith(`${ATTACHMENTS_DIR}/`) && (entry.kind !== 'attachment' || !listed.has(entry.path)))) {
+      throw corruptBackup('Attachment backup files are unsafe or missing from the manifest; no restore occurred');
     }
   }
   const issues: string[] = [];
@@ -223,6 +246,10 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
       issues.push(`Backup entry "${file.path}" is not a regular file`);
       continue;
     }
+    if (file.kind === 'attachment' && info.size > ATTACHMENT_MAX_BYTES) {
+      issues.push(`Attachment "${file.path}" exceeds the 10 MiB limit`);
+      continue;
+    }
 
     let bytes: Buffer;
     try {
@@ -241,6 +268,15 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     }
     if (sha256(bytes) !== file.sha256) {
       issues.push(`Hash mismatch for "${file.path}"`);
+      continue;
+    }
+
+    if (file.kind === 'attachment') {
+      try {
+        const attachment = validateAttachmentBytes(file.path, bytes);
+        if (attachment.id !== file.id) { issues.push(`Attachment at "${file.path}" does not match manifest ID`); continue; }
+      } catch (error) { issues.push(error instanceof Error ? error.message : String(error)); continue; }
+      entries.push({ kind: 'attachment', id: file.id, path: file.path, text: '', rawBytes: Buffer.from(bytes) });
       continue;
     }
 
@@ -381,15 +417,20 @@ export async function previewRestore(
   const viewIds = new Set<string>();
   const notePaths = new Set<string>();
   const viewPaths = new Set<string>();
+  const attachmentIds = new Set<string>();
+  const attachmentPaths = new Set<string>();
   for (const entry of existing) {
     if (entry.kind === 'note') {
       noteIds.add(entry.id);
       notePaths.add(foldPath(entry.path));
     } else if (entry.kind === 'database') {
       databaseIds.add(entry.id);
-    } else {
+    } else if (entry.kind === 'database-view') {
       viewIds.add(entry.id);
       viewPaths.add(foldPath(entry.path));
+    } else {
+      attachmentIds.add(entry.id);
+      attachmentPaths.add(foldPath(entry.path));
     }
   }
 
@@ -407,10 +448,15 @@ export async function previewRestore(
     if (viewIds.has(view.id)) ids.add(view.id);
     if (viewPaths.has(foldPath(path))) paths.add(path);
   }
+  for (const entry of validation.entries) if (entry.kind === 'attachment') {
+    if (attachmentIds.has(entry.id)) ids.add(entry.id);
+    if (attachmentPaths.has(foldPath(entry.path))) paths.add(entry.path);
+  }
 
   return {
     manifest: validation.manifest,
-    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length },
+    counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
+      ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}) },
     conflicts: { ids: [...ids].sort(), paths: [...paths].sort() },
   };
 }
@@ -494,7 +540,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   }
 
   const issues: string[] = [];
-  if (version === 2) rejectUnknownKeys(data, ['format', 'version', 'createdAt', 'app', 'formats', 'counts', 'files', 'digest'], 'manifest', issues);
+  if (version >= 2) rejectUnknownKeys(data, ['format', 'version', 'createdAt', 'app', 'formats', 'counts', 'files', 'digest'], 'manifest', issues);
   const files: BackupManifestFile[] = [];
 
   data.files.forEach((item: unknown, index: number) => {
@@ -502,11 +548,11 @@ async function readManifest(target: string): Promise<BackupManifest> {
       issues.push(`files[${index}] is not an object`);
       return;
     }
-    if (item.kind !== 'note' && item.kind !== 'database' && !(version === 2 && item.kind === 'database-view')) {
+    if (item.kind !== 'note' && item.kind !== 'database' && !(version >= 2 && item.kind === 'database-view') && !(version >= 3 && item.kind === 'attachment')) {
       issues.push(`files[${index}].kind is not supported by backup version ${version}`);
       return;
     }
-    if (version === 2) rejectUnknownKeys(item, ['kind', 'id', 'path', 'sha256', 'bytes'], `files[${index}]`, issues);
+    if (version >= 2) rejectUnknownKeys(item, ['kind', 'id', 'path', 'sha256', 'bytes'], `files[${index}]`, issues);
     if (typeof item.id !== 'string' || !isUuidV4(item.id)) {
       issues.push(`files[${index}].id must be a lowercase UUID v4`);
       return;
@@ -535,7 +581,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   // Optional metadata written by current builds; absent on legacy v1 manifests.
   let app: BackupManifestApp | undefined;
   if (data.app !== undefined) {
-    if (version === 2 && isRecord(data.app)) rejectUnknownKeys(data.app, ['name', 'version'], 'app', issues);
+    if (version >= 2 && isRecord(data.app)) rejectUnknownKeys(data.app, ['name', 'version'], 'app', issues);
     if (!isRecord(data.app) || typeof data.app.name !== 'string' || data.app.name.length === 0 ||
         typeof data.app.version !== 'string' || data.app.version.length === 0) {
       issues.push('app must contain non-empty string name and version');
@@ -550,11 +596,11 @@ async function readManifest(target: string): Promise<BackupManifest> {
         !isIntegerAtLeast(data.formats.note, 1) ||
         !isIntegerAtLeast(data.formats.database, 1) ||
         !isIntegerAtLeast(data.formats.backup, 1) ||
-        (version === 2 && !isIntegerAtLeast(data.formats.databaseView, 1))) {
-      issues.push('formats must contain positive integers note, database, backup, and for v2 databaseView');
+        (version >= 2 && !isIntegerAtLeast(data.formats.databaseView, 1))) {
+      issues.push('formats must contain positive integers note, database, backup, and for v2+ databaseView');
     } else {
-      if (version === 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', 'backup'], 'formats', issues);
-      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version === 2 ? { databaseView: data.formats.databaseView as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', 'backup'], 'formats', issues);
+      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}) };
     }
   }
 
@@ -563,15 +609,17 @@ async function readManifest(target: string): Promise<BackupManifest> {
     if (!isRecord(data.counts) ||
         !isIntegerAtLeast(data.counts.notes, 0) ||
         !isIntegerAtLeast(data.counts.databases, 0) ||
-        (version === 2 && !isIntegerAtLeast(data.counts.databaseViews, 0))) {
-      issues.push('counts must contain non-negative integers notes, databases, and for v2 databaseViews');
+        (version >= 2 && !isIntegerAtLeast(data.counts.databaseViews, 0)) ||
+        (version >= 3 && !isIntegerAtLeast(data.counts.attachments, 0))) {
+      issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, and attachments for v3+');
     } else {
-      if (version === 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews'], 'counts', issues);
-      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version === 2 ? { databaseViews: data.counts.databaseViews as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : [])], 'counts', issues);
+      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}) };
       const noteFiles = files.filter((file) => file.kind === 'note').length;
       const databaseFiles = files.filter((file) => file.kind === 'database').length;
       const viewFiles = files.filter((file) => file.kind === 'database-view').length;
-      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version === 2 && counts.databaseViews !== viewFiles)) {
+      const attachmentFiles = files.filter((file) => file.kind === 'attachment').length;
+      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version >= 2 && counts.databaseViews !== viewFiles) || (version >= 3 && counts.attachments !== attachmentFiles)) {
         issues.push('counts does not match the number of file entries');
       }
     }
@@ -584,14 +632,15 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (data.digest !== undefined && digest === undefined) {
     issues.push('digest must be a lowercase SHA-256 hex digest');
   }
-  if (version === 2 && (formats === undefined || counts === undefined)) issues.push('v2 manifests require formats and counts');
-  if (version === 2 && files.some((file) => file.bytes === undefined)) issues.push('v2 manifest file entries require byte lengths');
-  if (version === 2 && digest === undefined) issues.push('v2 manifests require a digest');
-  if (version === 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
+  if (version >= 2 && (formats === undefined || counts === undefined)) issues.push('v2+ manifests require formats and counts');
+  if (version >= 3 && counts?.attachments === undefined) issues.push('v3 manifests require attachment counts');
+  if (version >= 2 && files.some((file) => file.bytes === undefined)) issues.push('v2+ manifest file entries require byte lengths');
+  if (version >= 2 && digest === undefined) issues.push('v2+ manifests require a digest');
+  if (version >= 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
     if (formats.databaseView > DATABASE_VIEW_VERSION) throw new StorageError('UNSUPPORTED_VERSION', `Database view format version ${formats.databaseView} is newer than supported version ${DATABASE_VIEW_VERSION}`, { path: BACKUP_MANIFEST });
   }
   if (formats && formats.database > DATABASE_FORMAT_VERSION) throw new StorageError('UNSUPPORTED_VERSION', 'Backup requires a newer database format', { path: BACKUP_MANIFEST });
-  if (version === 2 && formats?.backup !== version) issues.push('formats.backup must match manifest version 2');
+  if (version >= 2 && formats?.backup !== version) issues.push(`formats.backup must match manifest version ${version}`);
 
   if (digest !== undefined && issues.length === 0) {
     if (files.some((file) => file.bytes === undefined)) {
@@ -599,7 +648,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
     } else {
       const candidate: BackupManifest = {
         format: BACKUP_FORMAT,
-        version: version as 1 | 2,
+        version: version as 1 | 2 | 3,
         createdAt: data.createdAt,
         ...(app === undefined ? {} : { app }),
         ...(formats === undefined ? {} : { formats }),
@@ -621,7 +670,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
 
   return {
     format: BACKUP_FORMAT,
-    version: version as 1 | 2,
+    version: version as 1 | 2 | 3,
     createdAt: data.createdAt,
     ...(app === undefined ? {} : { app }),
     ...(formats === undefined ? {} : { formats }),
@@ -662,7 +711,8 @@ function corruptBackup(message: string): StorageError {
   return new StorageError('CORRUPT_BACKUP', message, { path: BACKUP_MANIFEST });
 }
 
-function restorePathIssue(kind: 'note' | 'database' | 'database-view', id: string, path: string): string | undefined {
+function restorePathIssue(kind: 'note' | 'database' | 'database-view' | 'attachment', id: string, path: string): string | undefined {
+  if (kind === 'attachment') return attachmentPathId(path) === id ? undefined : `Attachment path "${path}" must be managed under attachments/ and match its ID`;
   if (kind === 'database-view') {
     const ids = viewPathFromManifest(path);
     return ids !== undefined && ids.path === path && ids.viewId === id
@@ -786,6 +836,7 @@ function canonicalDigestInput(
       notes: manifest.counts.notes,
       databases: manifest.counts.databases,
       ...(manifest.counts.databaseViews === undefined ? {} : { databaseViews: manifest.counts.databaseViews }),
+      ...(manifest.counts.attachments === undefined ? {} : { attachments: manifest.counts.attachments }),
     };
   }
   payload.files = manifest.files.map((file) =>

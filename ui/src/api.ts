@@ -28,6 +28,7 @@ import type {
   UiVaultStatus,
   UiApiErrorBody,
   UiFolderImpact,
+  UiAttachment,
 } from '../../src/ui-server/dto.js';
 import type { DatabaseView } from '../../src/database/database-view.js';
 
@@ -137,6 +138,24 @@ export const api = {
 
   folders(): Promise<{ folders: string[] }> {
     return request<{ folders: string[] }>('/api/folders');
+  },
+
+  attachments(): Promise<{ attachments: UiAttachment[] }> {
+    return request('/api/attachments');
+  },
+
+  async uploadAttachment(file: File): Promise<{ attachment: UiAttachment }> {
+    return request(`/api/attachments?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' },
+    });
+  },
+
+  deleteAttachment(path: string, confirmReferenced = false): Promise<{ deleted: true }> {
+    return request('/api/attachments', { method: 'DELETE', body: jsonBody({ path, confirmReferenced }) });
+  },
+
+  attachmentUrl(path: string): string {
+    return `/api/attachments/open?path=${encodeURIComponent(path)}`;
   },
 
   createFolder(path: string): Promise<{ path: string }> {
