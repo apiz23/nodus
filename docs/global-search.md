@@ -60,8 +60,9 @@ the popover opens.
 Operators are type-specific: text and URL support equals/contains/empty; numbers support equals,
 greater/less than/empty; checkboxes support checked/unchecked; dates support equals/before/after/empty;
 select supports is/is not/empty; multi-select supports contains/does not contain/contains all/empty;
-tags support contains/does not contain/contains all. Comparisons are Unicode-normalized and
-case-insensitive where appropriate. Missing values count as empty; explicit `false` is present and
+tags support contains/does not contain/contains all. A retained select option alias resolves to the
+same option as its current label for both search and filtering. Comparisons are Unicode-normalized
+and case-insensitive where appropriate. Missing values count as empty; explicit `false` is present and
 matches unchecked; empty text and empty arrays count as empty. Invalid values are not treated as
 missing and do not match filters. Tag comparisons use trimmed, case-insensitive NFC identity.
 

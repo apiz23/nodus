@@ -71,6 +71,45 @@ describe('metadata search and reusable filters', () => {
     expect(matchesNoteFilters(target, [tagFilter!, propertyFilter!], 'or')).toBe(true);
   });
 
+  it('matches select and multi-select filters through retained option aliases', () => {
+    const aliased: PropertyCatalog = { properties: [
+      { id: 'a1111111-1111-4111-8111-111111111111', key: 'status', name: 'Status', type: 'select', options: [
+        { id: 'a2111111-1111-4111-8111-111111111111', label: 'In progress', aliases: ['Open'] },
+      ] },
+      { id: 'a3111111-1111-4111-8111-111111111111', key: 'topics', name: 'Topics', type: 'multi-select', options: [
+        { id: 'a4111111-1111-4111-8111-111111111111', label: 'Research', aliases: ['Study'] },
+      ] },
+    ] };
+    const note = {
+      ...createNote({ id: 'a5111111-1111-4111-8111-111111111111', title: 'Alias filter', path: 'notes/alias.md', body: '', now: '2026-10-30T00:00:00Z' }),
+      extraFrontmatter: { status: 'In progress', topics: ['Research'] },
+    };
+    const index = buildSearchIndex([note], aliased);
+    const selected = validateNoteFilters([{ type: 'property', propertyId: aliased.properties[0]!.id, operator: 'is', value: 'Open' }], aliased);
+    expect(selected[0]?.value).toBe('In progress');
+    expect(searchIndex(index, '', 50, selected).map((result) => result.id)).toEqual([note.id]);
+    const membership = validateNoteFilters([{ type: 'property', propertyId: aliased.properties[1]!.id, operator: 'contains', value: 'Study' }], aliased);
+    expect(membership[0]?.value).toBe('Research');
+    expect(searchIndex(index, '', 50, membership).map((result) => result.id)).toEqual([note.id]);
+    expect(searchIndex(index, 'Open')[0]?.match).toMatchObject({ field: 'property', propertyId: aliased.properties[0]!.id });
+
+    // A legacy note still stores the retained alias. Both the raw alias and
+    // the current label identify the same option for search and filters.
+    const legacy = {
+      ...note,
+      id: 'a6111111-1111-4111-8111-111111111111',
+      path: 'notes/legacy-alias.md',
+      extraFrontmatter: { status: 'Open', topics: ['Study'] },
+    };
+    const legacyIndex = buildSearchIndex([legacy], aliased);
+    expect(searchIndex(legacyIndex, 'Open')[0]?.match).toMatchObject({ field: 'property', propertyId: aliased.properties[0]!.id });
+    expect(searchIndex(legacyIndex, 'In progress')[0]?.match).toMatchObject({ field: 'property', propertyId: aliased.properties[0]!.id });
+    const currentLabel = validateNoteFilters([{ type: 'property', propertyId: aliased.properties[0]!.id, operator: 'is', value: 'In progress' }], aliased);
+    expect(searchIndex(legacyIndex, '', 50, currentLabel).map((result) => result.id)).toEqual([legacy.id]);
+    const currentMembership = validateNoteFilters([{ type: 'property', propertyId: aliased.properties[1]!.id, operator: 'contains', value: 'Research' }], aliased);
+    expect(searchIndex(legacyIndex, '', 50, currentMembership).map((result) => result.id)).toEqual([legacy.id]);
+  });
+
   it('evaluates the supported type-specific operators and empty arrays consistently', () => {
     const typed: PropertyCatalog = { properties: [
       { id: 'a1111111-1111-4111-8111-111111111111', key: 'summary', name: 'Summary', type: 'text' },

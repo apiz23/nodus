@@ -1,5 +1,5 @@
 import type { NotePropertyDefinition, NotePropertyValue, PropertyCatalog } from '../properties/catalog.js';
-import { validateNotePropertyValue } from '../properties/catalog.js';
+import { canonicalizePropertyValue, validateNotePropertyValue } from '../properties/catalog.js';
 
 export type EmptyFilterOperator = 'is-empty' | 'is-not-empty';
 export type NoteFilter =
@@ -53,12 +53,12 @@ export function validateNoteFilters(value: unknown, catalog: PropertyCatalog): N
     if (property.type === 'multi-select' && operator === 'contains-all') {
       if (!Array.isArray(filterValue) || filterValue.length === 0) throw new Error('contains-all requires a non-empty array of option labels.');
       for (const item of filterValue) assertValid(property, [item]);
-      return { type: 'property', propertyId: property.id, operator, value: filterValue as string[] };
+      return { type: 'property', propertyId: property.id, operator, value: canonicalizePropertyValue(property, filterValue as string[]) as string[] };
     }
     if (property.type === 'multi-select' && ['contains', 'does-not-contain'].includes(operator)) {
       if (typeof filterValue !== 'string') throw new Error(`${operator} requires one option label.`);
       assertValid(property, [filterValue]);
-      return { type: 'property', propertyId: property.id, operator, value: filterValue };
+      return { type: 'property', propertyId: property.id, operator, value: (canonicalizePropertyValue(property, [filterValue]) as string[])[0]! };
     }
     if (property.type === 'multi-select') throw new Error(`Operator "${operator}" is not valid for multi-select.`);
     if (property.type === 'url' && operator === 'contains') {
@@ -66,7 +66,10 @@ export function validateNoteFilters(value: unknown, catalog: PropertyCatalog): N
       return { type: 'property', propertyId: property.id, operator, value: filterValue };
     }
     assertValid(property, filterValue);
-    return { type: 'property', propertyId: property.id, operator, value: filterValue as NotePropertyValue };
+    return { type: 'property', propertyId: property.id, operator,
+      value: property.type === 'select'
+        ? canonicalizePropertyValue(property, filterValue as string) as string
+        : filterValue as NotePropertyValue };
   });
 }
 

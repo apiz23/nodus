@@ -1,6 +1,6 @@
 import type { Note } from '../domain/note.js';
 import { readPageIcon } from '../ui-server/page-icon.js';
-import { projectPropertyValues, type NotePropertyValue, type PropertyCatalog } from '../properties/catalog.js';
+import { canonicalizePropertyValue, projectPropertyValues, propertyOptionLabels, type NotePropertyValue, type PropertyCatalog } from '../properties/catalog.js';
 import { matchesNoteFilters, type NoteFilter, type NoteFilterLogic } from './note-filters.js';
 
 export type SearchField = 'title' | 'alias' | 'path' | 'content' | 'tag' | 'property' | 'filter';
@@ -18,7 +18,7 @@ interface SearchDocument {
   title: SearchText; aliases: SearchText[]; path: SearchText; content: SearchText;
   tags: SearchText[];
   tagsRaw: string[];
-  properties: Array<{ id: string; name: SearchText; nameDisplay: string; value: SearchText; valueRaw: NotePropertyValue; invalid: boolean }>;
+  properties: Array<{ id: string; name: SearchText; nameDisplay: string; value: SearchText; canonicalValues: SearchText[]; valueRaw: NotePropertyValue; invalid: boolean }>;
   filterProperties: Record<string, NotePropertyValue>;
   invalidPropertyIds: Set<string>;
 }
@@ -45,6 +45,7 @@ function searchable(value: string): SearchText {
 /** Pre-normalized searchable fields, rebuilt only from authoritative parsed Markdown notes. */
 export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalog = { properties: [] }, catalogIssue?: string): SearchIndex {
   const metadataIssues: SearchMetadataIssue[] = [];
+  const propertyById = new Map(catalog.properties.map((property) => [property.id, property] as const));
   const documents = notes.map((note) => {
     const projection = projectPropertyValues(catalog, note.extraFrontmatter);
     for (const issue of projection.issues) metadataIssues.push({ noteId: note.id, key: issue.key, propertyId: issue.propertyId, message: issue.message });
@@ -54,7 +55,9 @@ export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalo
       const value = projection.values[property.id];
       if (!hasValue && !invalidPropertyIds.has(property.id)) return [];
       const valueDisplay = hasValue ? displayPropertyValue(value!) : '';
-      return [{ id: property.id, name: searchable(property.name), nameDisplay: property.name, value: searchable(valueDisplay), valueRaw: value!, invalid: invalidPropertyIds.has(property.id) }];
+      return [{ id: property.id, name: searchable(property.name), nameDisplay: property.name, value: searchable(valueDisplay),
+        canonicalValues: hasValue ? canonicalSearchValues(property, value!) : [],
+        valueRaw: value!, invalid: invalidPropertyIds.has(property.id) }];
     });
     return {
     note: { id: note.id, title: note.title, path: note.path, updatedAt: note.updatedAt,
@@ -62,7 +65,11 @@ export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalo
     title: searchable(note.title), aliases: note.aliases.map(searchable),
     path: searchable(note.path), content: searchable(note.body),
     tags: note.tags.map(searchable), tagsRaw: [...note.tags], properties,
-    filterProperties: projection.values, invalidPropertyIds,
+    filterProperties: Object.fromEntries(Object.entries(projection.values).map(([propertyId, value]) => {
+      const property = propertyById.get(propertyId);
+      return [propertyId, property === undefined ? value : canonicalizePropertyValue(property, value)];
+    })),
+    invalidPropertyIds,
   };
   });
   return { documents, metadataIssues, ...(catalogIssue === undefined ? {} : { catalogIssue }), properties: catalog.properties };
@@ -148,8 +155,31 @@ function findPropertyMatch(properties: SearchDocument['properties'], query: stri
       return { field: 'property', propertyId: property.id, propertyName: property.nameDisplay,
         text: `${prefix}${property.value.text}`, start: prefix.length + valueMatch.start, end: prefix.length + valueMatch.end };
     }
+    for (const canonical of property.canonicalValues) {
+      const canonicalMatch = matchIn(canonical, query, 'property');
+      if (canonicalMatch) {
+        const prefix = `${property.nameDisplay}: `;
+        return { field: 'property', propertyId: property.id, propertyName: property.nameDisplay,
+          text: `${prefix}${canonical.text}`, start: prefix.length + canonicalMatch.start, end: prefix.length + canonicalMatch.end };
+      }
+    }
   }
   return undefined;
+}
+
+/** Only the current/retained labels of options the note's own value resolves to. */
+function canonicalSearchValues(
+  property: PropertyCatalog['properties'][number],
+  value: NotePropertyValue,
+): SearchText[] {
+  if (property.type !== 'select' && property.type !== 'multi-select') return [];
+  const rawValues = Array.isArray(value) ? value : [value];
+  const rawFolded = new Set(rawValues
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.normalize('NFC').toLowerCase()));
+  return propertyOptionLabels(property, value)
+    .filter((item) => !rawFolded.has(item.normalize('NFC').toLowerCase()))
+    .map(searchable);
 }
 
 function displayPropertyValue(value: NotePropertyValue): string {
