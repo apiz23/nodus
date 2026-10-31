@@ -36,6 +36,7 @@ import type {
   UiValidateBackupInput,
   UiVaultPickResult,
   UiVaultStatus,
+  UiVaultBootstrap,
   UiApiErrorBody,
   UiFolderImpact,
   UiAttachment,
@@ -127,8 +128,20 @@ function jsonBody(value: unknown): string {
 }
 
 export const api = {
-  status(): Promise<UiVaultStatus> {
-    return request<UiVaultStatus>('/api/status');
+  status(): Promise<UiVaultBootstrap> {
+    return request<UiVaultBootstrap>('/api/status');
+  },
+
+  gettingStartedCompleted(): Promise<{ completed: boolean }> {
+    return request<{ completed: boolean }>('/api/preferences/getting-started');
+  },
+
+  setGettingStartedCompleted(completed: boolean): Promise<{ completed: boolean }> {
+    return request<{ completed: boolean }>('/api/preferences/getting-started', { method: 'PUT', body: jsonBody({ completed }) });
+  },
+
+  createDefaultVault(): Promise<UiVaultStatus> {
+    return request<UiVaultStatus>('/api/vault/default', { method: 'POST' });
   },
 
   pickVault(): Promise<UiVaultPickResult> {

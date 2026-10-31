@@ -1,6 +1,6 @@
 # ADR: Portable note properties for structured databases
 
-- **Status:** Accepted; Milestones 1 and 2 (format, storage/API projection, and explicit property update) are implemented. The database browser displays and edits supported typed properties, explicitly adds note membership, and supports schema creation plus additive/rename edits with stable IDs. Saved Table, Kanban, and Calendar views use a separate portable format. Property/option deletion, relations, and graph UI remain unimplemented.
+- **Status:** Accepted. This ADR records the portable note-property decision at the time it was written (2026-10-28). Subsequent Phase 7 milestones added saved views, relations, formulas, and graph UI; current behavior is documented in [database format](database-format.md), [database views](database-views.md), [relations](database-relations.md), and [formulas](database-formulas.md). Property/option deletion remains unimplemented.
 - **Date:** 2026-10-28
 
 ## Context

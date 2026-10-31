@@ -176,6 +176,20 @@ export interface UiVaultStatus {
   };
 }
 
+export type UiVaultSetupReason = 'first-run' | 'saved-vault-unavailable' | 'preferences-invalid' | 'environment-vault-unavailable';
+
+export interface UiVaultSetupState {
+  setupRequired: true;
+  reason: UiVaultSetupReason;
+  /** Present only when a previously selected location needs recovery. */
+  savedVaultPath?: string;
+  message: string;
+}
+
+export type UiVaultBootstrap =
+  | (UiVaultStatus & { setupRequired?: false })
+  | UiVaultSetupState;
+
 export interface UiApiErrorBody {
   error: {
     code: string;

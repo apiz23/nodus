@@ -1,4 +1,4 @@
-# Nodus Database Definition Format (versions 1–2)
+# Nodus Database Definition Format (versions 1–3)
 
 A database definition is a separate, versioned JSON file. It describes a database's properties and select options. It does not contain rows, query logic, or view configuration. Saved views use a separate versioned format; see [Saved database view format](database-views.md). Database schema v1 is unchanged.
 
@@ -38,7 +38,7 @@ Abbreviated. The full file, covering all six property types, is `test/fixtures/d
 | Field | Required | Rule |
 |---|---|---|
 | `format` | yes | Must be `"nodus-database"`. |
-| `version` | yes | Integer. Version `1` for legacy fields; version `2` adds relations and rollups. |
+| `version` | yes | Integer. Version `1` supports base properties; version `2` adds relations and rollups; version `3` adds formula properties. |
 | `id` | yes | Lowercase UUID v4. |
 | `name` | yes | Non-empty, no leading or trailing whitespace. |
 | `properties` | yes | Array. May be empty. |
@@ -51,10 +51,11 @@ No other top-level keys are allowed.
 |---|---|---|
 | `id` | yes | Lowercase UUID v4, unique within the database. |
 | `name` | yes | Non-empty, no leading or trailing whitespace. Unique within the database, case-insensitively. |
-| `type` | yes | One of `text`, `number`, `checkbox`, `date`, `select`, `multi-select`; version 2 also supports `relation` and `rollup`. |
+| `type` | yes | Base types are `text`, `number`, `checkbox`, `date`, `select`, and `multi-select`; version 2 adds `relation` and `rollup`; version 3 adds `formula`. |
 | `options` | select and multi-select only | Array of options. Required for those two types. Forbidden for all others. |
+| `formula` | formula only | Object containing a non-empty `expression`; required for a formula property and forbidden for other types. |
 
-Version 2 adds mutually exclusive `relation` and `rollup` configuration keys on their corresponding types. See [relations and rollups](database-relations.md). Other property keys are rejected.
+Version 2 adds mutually exclusive `relation` and `rollup` configuration keys on their corresponding types. See [relations and rollups](database-relations.md). Version 3 adds a `formula` configuration containing a non-empty `expression`; formula output types and values are derived and are not persisted in this schema. See [database formulas](database-formulas.md). Configuration keys on a different property type are rejected.
 
 ## Select options
 
@@ -69,9 +70,9 @@ No other option keys are allowed.
 
 | Code | When |
 |---|---|
-| `INVALID_DATABASE` | Invalid JSON, wrong `format`, wrong types or shapes, invalid IDs, blank names, duplicate IDs or names, unknown or unsupported property type, options on a non-select type, a missing `options` array on a select type, unknown keys (including any view or formula configuration). |
+| `INVALID_DATABASE` | Invalid JSON, wrong `format`, wrong types or shapes, invalid IDs, blank names, duplicate IDs or names, unknown or unsupported property type, options on a non-select type, a missing `options` array on a select type, invalid formula syntax/configuration, or unknown keys. |
 | `INVALID_FIELD` | `version` missing, non-integer, or less than 1. |
-| `UNSUPPORTED_VERSION` | `version` is greater than `2`. |
+| `UNSUPPORTED_VERSION` | `version` is greater than `3`. |
 
 ## Serialization
 
@@ -79,23 +80,24 @@ No other option keys are allowed.
 
 ## Separate formats and deferrals
 
-These are deferred. Their validation rules are not defined yet, so the parser rejects them rather than guessing:
+These are separate from the database definition format, or remain deferred:
 
 - Relations and rollups are now defined in database version 2; version 1 rejects these types.
 - Table or other view definitions. Unknown keys such as `views` are rejected.
-- Filters and sorting live in portable saved views. Formulas and automations remain deferred.
+- Filters and sorting live in portable saved views. Automations remain deferred.
+- Formula source expressions live in schema v3; calculated values remain derived and are not schema or note data.
 - Database rows live in note `nodus_data` YAML, independently of schema files.
 - Query and derived-value evaluation operate on vault snapshots; results are not schema data.
 
 ## Export and migration
 
 - The file is plain JSON. It can be read or exported with any JSON tool.
-- Versioning follows the compatibility policy in the README. Readers accept versions 1–2. Older readers reject version 2 with `UNSUPPORTED_VERSION`. New writers retain version 1 for schemas containing only legacy properties.
+- Versioning follows the compatibility policy in the README. Readers accept versions 1–3. Older readers reject a newer schema version with `UNSUPPORTED_VERSION`. New writers retain the lowest compatible version: 1 for base properties, 2 when relations/rollups are present, and 3 when formulas are present.
 - No migrations exist. The migration contract in [note-format.md](note-format.md#migration-contract) applies to this format as well.
 
 ## Current schema editor
 
-The UI can create a schema, add properties, rename schemas and properties, add select/multi-select options, and rename existing options. Existing property and option IDs are retained. Property types are selected when a property is created and are read-only afterward; property and option removal are not offered, so existing note values are not orphaned by these UI actions. Schema writes are validated by the same version-aware parser/serializer and use a raw-file SHA-256 precondition. Unsupported or malformed on-disk schema files cannot be edited through the UI or replacement API; they are rejected without rewriting the file. No schema edit rewrites note Markdown or property values.
+The UI can create a schema, add properties, configure formulas, rename schemas and properties, add select/multi-select options, and rename existing options. Existing property and option IDs are retained. Property types are selected when a property is created and are read-only afterward; property and option removal are not offered, so existing note values are not orphaned by these UI actions. Schema writes are validated by the same version-aware parser/serializer and use a raw-file SHA-256 precondition. Unsupported or malformed on-disk schema files cannot be edited through the UI or replacement API; they are rejected without rewriting the file. No schema edit rewrites note Markdown or property values.
 
 ## Decisions
 

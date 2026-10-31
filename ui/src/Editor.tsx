@@ -432,6 +432,7 @@ export function Editor({
             )}
           </div>
 
+          <h1 className="sr-only">{title || 'Untitled page'}</h1>
           <label className="sr-only" htmlFor="note-title">
             Note title
           </label>

@@ -73,6 +73,7 @@ describe('editor layout and title field', () => {
 
   it('keeps the title large and truncates overflow at the editor width', () => {
     const markup = render(false);
+    expect(markup).toContain(`<h1 class="sr-only">${note.title}</h1>`);
     expect(markup).toContain('<label class="sr-only" for="note-title">Note title</label>');
     expect(markup).toContain('id="note-title"');
     expect(markup).toContain('type="text"');

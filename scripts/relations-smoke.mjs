@@ -7,6 +7,7 @@ import { chromium } from 'playwright';
 
 const root = await mkdtemp(join(tmpdir(), 'nodus-relations-'));
 process.env.NODUS_VAULT = root;
+process.env.NODUS_PREFERENCES_PATH = join(root, 'app-preferences.json');
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const DB = id(1), TASKS = id(2), COST = id(3), DONE = id(4), STATUS = id(5), OPEN = id(6), DATE = id(7);
 let server, browser;
@@ -45,6 +46,8 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${base}/app`);
+  await page.getByRole('heading', { name: 'Getting started', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Got it', exact: true }).click();
   let projectRowRequests = 0;
   page.on('request', (request) => {
     if (new URL(request.url()).pathname === `/api/databases/${DB}/rows`) projectRowRequests++;

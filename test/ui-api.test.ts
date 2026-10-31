@@ -10,8 +10,9 @@ import { createNote, type Note } from '../src/domain/note.js';
 import { parseNote, serializeNote } from '../src/format/note-format.js';
 import { createBackup } from '../src/storage/backup/backup.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
-import { createLocalApiMiddleware } from '../src/ui-server/api.js';
+import { createLocalApiMiddleware, type LocalApiOptions } from '../src/ui-server/api.js';
 import type { UiDatabase, UiNote, UiVaultPickResult, UiVaultStatus } from '../src/ui-server/dto.js';
+import { readLastVaultPreference, writeLastVaultPreference } from '../src/ui-server/app-preferences.js';
 import { withTempDir } from './tmp.js';
 
 const NOW = '2026-10-25T12:00:00Z';
@@ -56,8 +57,9 @@ interface StartedApi {
 async function startApi(
   vaultPath: string,
   folderPicker?: () => Promise<string | null>,
+  options: Partial<LocalApiOptions> = {},
 ): Promise<StartedApi> {
-  const middleware = createLocalApiMiddleware({ vaultPath, now: () => NOW, folderPicker });
+  const middleware = createLocalApiMiddleware({ vaultPath, now: () => NOW, folderPicker, ...options });
   const server = createServer((req, res) => {
     middleware(req, res, () => {
       res.statusCode = 404;
@@ -102,6 +104,138 @@ function noteFixture(id: string, title: string, path: string, body: string): Not
 }
 
 describe('local UI API', () => {
+  it('asks before creating a first-run vault, then restores the last selected vault', async () => {
+    await withTempDir(async (dir) => {
+      const defaultVault = join(dir, 'vault');
+      const existingVault = join(dir, 'existing');
+      await FileSystemVault.open(existingVault);
+      const preferencesPath = join(dir, 'app-config', 'preferences.json');
+      const options = { interactiveStartup: true, defaultVaultPath: defaultVault, preferencesPath };
+      const first = await startApi(defaultVault, undefined, options);
+      try {
+        const bootstrap = await json<{ setupRequired: true; reason: string }>(first.base, '/api/status');
+        expect(bootstrap.body).toMatchObject({ setupRequired: true, reason: 'first-run' });
+        await expect(stat(defaultVault)).rejects.toMatchObject({ code: 'ENOENT' });
+
+        const created = await json<UiVaultStatus>(first.base, '/api/vault/default', { method: 'POST' });
+        expect(created.status).toBe(200);
+        expect(created.body.counts.notes).toBe(0);
+        expect((await readLastVaultPreference(preferencesPath))).toEqual({ kind: 'valid', path: await realpath(defaultVault) });
+        expect((await json<{ completed: boolean }>(first.base, '/api/preferences/getting-started')).body.completed).toBe(false);
+        await json(first.base, '/api/preferences/getting-started', { method: 'PUT', body: { completed: true } });
+        expect((await json<{ completed: boolean }>(first.base, '/api/preferences/getting-started')).body.completed).toBe(true);
+
+        const switched = await json<UiVaultStatus>(first.base, '/api/vault/open', {
+          method: 'POST', body: { path: existingVault },
+        });
+        expect(switched.status).toBe(200);
+        expect((await json<{ completed: boolean }>(first.base, '/api/preferences/getting-started')).body.completed).toBe(false);
+        expect((await readLastVaultPreference(preferencesPath))).toEqual({ kind: 'valid', path: await realpath(existingVault) });
+      } finally {
+        await stopApi(first);
+      }
+
+      const restarted = await startApi(defaultVault, undefined, options);
+      try {
+        const status = await json<UiVaultStatus>(restarted.base, '/api/status');
+        expect(status.body.vault.path).toBe(await realpath(existingVault));
+      } finally {
+        await stopApi(restarted);
+      }
+    });
+  });
+
+  it('does not create a replacement when the saved vault is missing', async () => {
+    await withTempDir(async (dir) => {
+      const missingVault = join(dir, 'moved-vault');
+      const fallbackVault = join(dir, 'default-vault');
+      const preferencesPath = join(dir, 'preferences.json');
+      await writeLastVaultPreference(preferencesPath, missingVault);
+      const started = await startApi(fallbackVault, undefined, {
+        interactiveStartup: true, defaultVaultPath: fallbackVault, preferencesPath,
+      });
+      try {
+        const status = await json<{ setupRequired: true; reason: string; savedVaultPath: string }>(started.base, '/api/status');
+        expect(status.body).toMatchObject({ setupRequired: true, reason: 'saved-vault-unavailable', savedVaultPath: missingVault });
+        await expect(stat(missingVault)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(fallbackVault)).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('recovers from malformed preferences without opening the default path', async () => {
+    await withTempDir(async (dir) => {
+      const defaultVault = join(dir, 'default-vault');
+      const preferencesPath = join(dir, 'preferences.json');
+      await writeFile(preferencesPath, '{not-json', 'utf8');
+      const started = await startApi(defaultVault, undefined, {
+        interactiveStartup: true, defaultVaultPath: defaultVault, preferencesPath,
+      });
+      try {
+        const status = await json<{ setupRequired: true; reason: string }>(started.base, '/api/status');
+        expect(status.body).toMatchObject({ setupRequired: true, reason: 'preferences-invalid' });
+        await expect(stat(defaultVault)).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('lets NODUS_VAULT override the saved preference at startup', async () => {
+    await withTempDir(async (dir) => {
+      const savedVault = join(dir, 'saved-vault');
+      const configuredVault = join(dir, 'configured-vault');
+      await FileSystemVault.open(savedVault);
+      await FileSystemVault.open(configuredVault);
+      const preferencesPath = join(dir, 'preferences.json');
+      await writeLastVaultPreference(preferencesPath, savedVault);
+      const started = await startApi(savedVault, undefined, {
+        interactiveStartup: true,
+        configuredVaultPath: configuredVault,
+        defaultVaultPath: join(dir, 'default-vault'),
+        preferencesPath,
+      });
+      try {
+        const status = await json<UiVaultStatus>(started.base, '/api/status');
+        expect(status.body.vault.path).toBe(await realpath(configuredVault));
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('keeps the current vault active when the application preference cannot be written', async () => {
+    await withTempDir(async (dir) => {
+      const currentVault = join(dir, 'current');
+      const nextVault = join(dir, 'next');
+      await FileSystemVault.open(currentVault);
+      await FileSystemVault.open(nextVault);
+      const preferencesBlocker = join(dir, 'not-a-directory');
+      await writeFile(preferencesBlocker, 'blocker', 'utf8');
+      const started = await startApi(currentVault, undefined, {
+        interactiveStartup: true,
+        configuredVaultPath: currentVault,
+        defaultVaultPath: currentVault,
+        preferencesPath: join(preferencesBlocker, 'preferences.json'),
+      });
+      try {
+        expect((await json<UiVaultStatus>(started.base, '/api/status')).body.vault.path).toBe(await realpath(currentVault));
+        const failed = await json<{ error: { code: string; message: string } }>(started.base, '/api/vault/open', {
+          method: 'POST', body: { path: nextVault },
+        });
+        expect(failed.status).toBe(500);
+        expect(failed.body.error.code).toBe('PREFERENCE_WRITE_FAILED');
+        expect(failed.body.error.message).not.toContain(preferencesBlocker);
+        const status = await json<UiVaultStatus>(started.base, '/api/status');
+        expect(status.body.vault.path).toBe(await realpath(currentVault));
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('starts with an empty workspace and reports no sync connection', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

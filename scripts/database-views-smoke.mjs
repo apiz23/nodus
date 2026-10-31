@@ -29,7 +29,7 @@ try {
   await new Promise((resolveClose) => reservation.close(resolveClose));
   const base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, [join(root, 'node_modules/vite/bin/vite.js'), '--config', 'ui/vite.config.ts', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
-    cwd: root, env: { ...process.env, NODUS_VAULT: vault, NODUS_ALLOWED_ORIGINS: base }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: root, env: { ...process.env, NODUS_VAULT: vault, NODUS_PREFERENCES_PATH: join(temporary, 'app-config', 'preferences.json'), NODUS_ALLOWED_ORIGINS: base }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   closed = new Promise((resolveClose) => child.once('close', resolveClose));
   let logs = '';
@@ -77,6 +77,8 @@ try {
   page.on('console', (message) => { if (message.type() === 'error' && !/(409 \(Conflict\)|500 \(Internal Server Error\))/.test(message.text())) errors.push(message.text()); });
   page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/api/') && response.status() >= 400) failures.push([response.request().method(), new URL(response.url()).pathname, response.status()]); });
   await page.goto(`${base}/app`);
+  await page.getByRole('heading', { name: 'Getting started', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Got it', exact: true }).click();
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
 

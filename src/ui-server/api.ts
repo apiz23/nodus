@@ -52,10 +52,13 @@ import type {
   UiSaveNoteInput,
   UiVaultPickResult,
   UiVaultStatus,
+  UiVaultBootstrap,
+  UiVaultSetupState,
   UiBacklinksResponse,
   UiRelationBacklinksResponse,
 } from './dto.js';
 import { pickFolder } from './folder-picker.js';
+import { applicationPreferencesPath, gettingStartedCompleted, readLastVaultPreference, setGettingStartedCompleted, writeLastVaultPreference } from './app-preferences.js';
 import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -67,6 +70,14 @@ const NOW = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 export interface LocalApiOptions {
   /** Initial vault before the user selects another folder. */
   vaultPath: string;
+  /** Explicit NODUS_VAULT override; retains its create-if-missing startup behavior. */
+  configuredVaultPath?: string;
+  /** Legacy project-local default, activated only after explicit user choice. */
+  defaultVaultPath?: string;
+  /** Restore persisted selection and show onboarding when no vault is configured. */
+  interactiveStartup?: boolean;
+  /** Injectable per-user preference file path. */
+  preferencesPath?: string;
   /** Injectable clock for tests. */
   now?: () => string;
   /** Injectable native folder picker for tests. */
@@ -102,10 +113,14 @@ class ApiError extends Error {
 export function createLocalApiMiddleware(
   options: LocalApiOptions,
 ): (req: IncomingMessage, res: ServerResponse, next: NextFunction) => void {
-  let activeVaultPath = resolve(options.vaultPath);
+  let activeVaultPath: string | null = options.interactiveStartup ? null : resolve(options.vaultPath);
   const clock = options.now ?? NOW;
   const chooseFolder = options.folderPicker ?? pickFolder;
+  const preferencesFile = options.preferencesPath ?? applicationPreferencesPath();
+  const defaultVaultPath = resolve(options.defaultVaultPath ?? options.vaultPath);
   let vaultPromise: Promise<FileSystemVault> | undefined;
+  let setupState: UiVaultSetupState | null = null;
+  let startupPromise: Promise<void> | undefined;
   type KnowledgeSnapshot = { notes: Note[]; catalog: PropertyCatalog; catalogIssue?: string };
   const loadKnowledgeSnapshot = async (vault: FileSystemVault): Promise<KnowledgeSnapshot> => {
     const notes = await vault.snapshotNotes();
@@ -146,7 +161,72 @@ export function createLocalApiMiddleware(
     for (const index of relationIndexes.values()) index.markDirty();
   } };
 
-  const getVault = (): Promise<FileSystemVault> => {
+  const ensureStartup = (): Promise<void> => {
+    if (startupPromise !== undefined) return startupPromise;
+    if (!options.interactiveStartup) {
+      startupPromise = Promise.resolve();
+      return startupPromise;
+    }
+    startupPromise = (async () => {
+      if (options.configuredVaultPath !== undefined) {
+        try {
+          await activateVault(options.configuredVaultPath, { create: true, persist: false });
+        } catch {
+          setupState = {
+            setupRequired: true,
+            reason: 'environment-vault-unavailable',
+            message: 'The vault configured by NODUS_VAULT could not be opened. Check its path and permissions. You can choose another vault now, but NODUS_VAULT will override that choice again until the environment setting is corrected or removed.',
+          };
+        }
+        return;
+      }
+
+      let preference;
+      try {
+        preference = await readLastVaultPreference(preferencesFile);
+      } catch {
+        setupState = {
+          setupRequired: true,
+          reason: 'preferences-invalid',
+          message: 'Nodus could not read its saved vault preference. Your vault files were not changed. Choose an existing vault or create the default vault to recover.',
+        };
+        return;
+      }
+      if (preference.kind === 'missing') {
+        setupState = {
+          setupRequired: true,
+          reason: 'first-run',
+          message: 'Choose where Nodus should keep your notes. A vault is a folder of Markdown notes and database files that stays on this device.',
+        };
+        return;
+      }
+      if (preference.kind === 'invalid') {
+        setupState = {
+          setupRequired: true,
+          reason: 'preferences-invalid',
+          message: 'The saved vault preference is malformed. Your vault files have not been changed. Choose an existing vault or create the default vault to recover.',
+        };
+        return;
+      }
+      try {
+        await activateVault(preference.path, { create: false, persist: false });
+      } catch {
+        setupState = {
+          setupRequired: true,
+          reason: 'saved-vault-unavailable',
+          savedVaultPath: preference.path,
+          message: 'The previously selected vault is missing or inaccessible. Nodus has not created a replacement. Reconnect the folder or choose another vault.',
+        };
+      }
+    })();
+    return startupPromise;
+  };
+
+  const getVault = async (): Promise<FileSystemVault> => {
+    await ensureStartup();
+    if (setupState !== null || activeVaultPath === null) {
+      throw new ApiError(409, 'VAULT_SETUP_REQUIRED', setupState?.message ?? 'Choose a vault to continue.');
+    }
     if (vaultPromise === undefined) {
       vaultPromise = FileSystemVault.open(activeVaultPath).catch((error: unknown) => {
         vaultPromise = undefined;
@@ -156,36 +236,56 @@ export function createLocalApiMiddleware(
     return vaultPromise;
   };
 
-  const switchVault = async (selected: string): Promise<UiVaultStatus> => {
+  const activateVault = async (selected: string, activation: { create: boolean; persist: boolean }): Promise<UiVaultStatus> => {
     const selectedPath = resolve(selected);
     let info;
     try {
       info = await stat(selectedPath);
     } catch {
-      throw new ApiError(400, 'INVALID_VAULT', 'The selected folder does not exist.');
+      if (!activation.create) throw new ApiError(400, 'INVALID_VAULT', 'The selected folder does not exist. Choose an existing vault folder, or use the default-vault action to create one.');
+      info = undefined;
     }
-    if (!info.isDirectory()) {
+    if (info !== undefined && !info.isDirectory()) {
       throw new ApiError(400, 'INVALID_VAULT', 'The selected path is not a folder.');
     }
 
     const nextVault = await FileSystemVault.open(selectedPath);
+    const status = await buildStatus(nextVault);
+    if (activation.persist) {
+      try {
+        await writeLastVaultPreference(preferencesFile, nextVault.root);
+      } catch {
+        throw new ApiError(500, 'PREFERENCE_WRITE_FAILED', 'Nodus could not save the selected folder on this device. The active vault was not changed. Check application configuration permissions and try again.');
+      }
+    }
     activeVaultPath = nextVault.root;
     vaultPromise = Promise.resolve(nextVault);
+    setupState = null;
     indexes.clear();
-    return buildStatus(nextVault);
+    relationIndexes.clear();
+    return status;
+  };
+
+  const switchVault = (selected: string): Promise<UiVaultStatus> => activateVault(selected, { create: false, persist: options.interactiveStartup === true });
+
+  const createDefaultVault = async (): Promise<UiVaultStatus> => {
+    await ensureStartup();
+    return activateVault(defaultVaultPath, { create: true, persist: options.interactiveStartup === true });
   };
 
   const chooseVault = async (): Promise<UiVaultPickResult> => {
+    await ensureStartup();
     const selected = await chooseFolder();
     if (selected === null) return { canceled: true };
     return { canceled: false, status: await switchVault(selected) };
   };
 
   const openVault = async (selected: string): Promise<UiVaultStatus> => {
+    await ensureStartup();
     if (!isAbsolute(selected)) {
       throw new ApiError(400, 'INVALID_VAULT', 'Vault path must be absolute.');
     }
-    await assertVaultAllowed(selected, activeVaultPath);
+    await assertVaultAllowed(selected, activeVaultPath ?? defaultVaultPath);
     return switchVault(selected);
   };
 
@@ -252,11 +352,31 @@ export function createLocalApiMiddleware(
     }
 
     if (method === 'GET' && path === '/api/status') {
-      return sendJson(res, 200, await buildStatus(await getVault()));
+      await ensureStartup();
+      if (setupState !== null) return sendJson(res, 200, setupState satisfies UiVaultBootstrap);
+      return sendJson(res, 200, await buildStatus(await getVault()) satisfies UiVaultBootstrap);
+    }
+
+    if (method === 'GET' && path === '/api/preferences/getting-started') {
+      const vault = await getVault();
+      return sendJson(res, 200, { completed: await gettingStartedCompleted(preferencesFile, vault.root) });
+    }
+
+    if (method === 'PUT' && path === '/api/preferences/getting-started') {
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['completed'], 'request');
+      if (typeof body.completed !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'completed must be a boolean.');
+      const vault = await getVault();
+      await setGettingStartedCompleted(preferencesFile, vault.root, body.completed);
+      return sendJson(res, 200, { completed: body.completed });
     }
 
     if (method === 'POST' && path === '/api/vault/pick') {
       return sendJson(res, 200, await chooseVault());
+    }
+
+    if (method === 'POST' && path === '/api/vault/default') {
+      return sendJson(res, 200, await createDefaultVault());
     }
 
     if (method === 'POST' && path === '/api/vault/open') {

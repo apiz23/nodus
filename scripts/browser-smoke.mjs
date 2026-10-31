@@ -43,13 +43,14 @@ async function reserveLoopbackPort() {
   return address.port;
 }
 
-function startVite(vaultPath, port) {
+function startVite(vaultPath, port, preferencesPath) {
   const viteEntry = join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
   const child = spawn(process.execPath, [viteEntry, '--config', 'ui/vite.config.ts', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: projectRoot,
     env: {
       ...process.env,
       NODUS_VAULT: vaultPath,
+      NODUS_PREFERENCES_PATH: preferencesPath,
       NODUS_ALLOWED_ORIGINS: `http://127.0.0.1:${port}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -124,7 +125,7 @@ async function main() {
     const port = await reserveLoopbackPort();
     const baseUrl = `http://127.0.0.1:${port}`;
 
-    started = startVite(vaultPath, port);
+    started = startVite(vaultPath, port, join(tempRoot, 'app-config', 'preferences.json'));
     await waitForVite(started, port);
 
     // Do not open a browser until the child Vite process has announced its listener,
@@ -200,6 +201,40 @@ async function main() {
     await page.waitForURL(`${baseUrl}/app`);
     await page.getByRole('heading', { name: 'Open a note to begin' }).waitFor({ state: 'visible' });
     await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
+
+    // The optional guide appears once for an existing vault, offers real
+    // workspace destinations, persists dismissal, and remains reopenable.
+    await page.getByRole('heading', { name: 'Getting started' }).waitFor({ state: 'visible' });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, 'Getting started guide overflows the mobile viewport');
+    await page.getByRole('button', { name: 'Open Discovery' }).click();
+    await page.getByRole('heading', { name: 'Discovery' }).waitFor({ state: 'visible' });
+    await page.locator('#workspace-sidebar').getByRole('button', { name: 'All notes' }).click();
+    await page.locator('#workspace-sidebar').getByRole('button', { name: 'Getting started' }).click();
+    await page.getByRole('button', { name: 'Got it' }).click();
+    await page.getByRole('heading', { name: 'Getting started' }).waitFor({ state: 'hidden' });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await page.getByRole('heading', { name: 'Getting started' }).count(), 0, 'Dismissed guide reappeared after reload');
+    await page.locator('#workspace-sidebar').getByRole('button', { name: 'Getting started' }).click();
+    await page.getByRole('heading', { name: 'Getting started' }).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'Got it' }).click();
+    await page.getByRole('button', { name: 'Databases' }).click();
+    await page.getByRole('heading', { name: 'Bring related notes together' }).waitFor({ state: 'visible' });
+    await page.getByText(/Each row is a note; properties describe details/).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'New database' }).last().click();
+    const firstDatabaseSheet = page.getByRole('dialog', { name: 'New database schema' });
+    await firstDatabaseSheet.waitFor({ state: 'visible' });
+    await firstDatabaseSheet.getByRole('textbox', { name: 'Database name' }).fill('Getting started database');
+    await firstDatabaseSheet.getByRole('button', { name: 'Create database' }).click();
+    await firstDatabaseSheet.waitFor({ state: 'hidden' });
+    await page.getByRole('heading', { name: 'Getting started database' }).waitFor({ state: 'visible' });
+    const createdGettingStartedDatabase = (await (await fetch(`${baseUrl}/api/databases`)).json()).databases
+      .find((database) => database.name === 'Getting started database');
+    assert(createdGettingStartedDatabase, 'First database was not created');
+    await rm(join(expectedVaultPath, createdGettingStartedDatabase.path), { force: true });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'All notes' }).click();
 
     await page.getByRole('button', { name: 'New folder' }).click();
     const createFolderDialog = page.getByRole('dialog', { name: 'Create folder' });

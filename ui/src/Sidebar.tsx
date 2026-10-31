@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import {
   ChevronDown,
+  CircleHelp,
   Database,
   Compass,
   FileText,
@@ -68,6 +69,7 @@ interface SidebarProps {
   collapsed: boolean;
   onExpandForSearch: () => void;
   onOpenAnotherVault: () => void;
+  onOpenGuide: () => void;
   switchingVault: boolean;
   navigationLocked: boolean;
   filters?: readonly NoteFilter[];
@@ -120,6 +122,7 @@ export function Sidebar({
   collapsed,
   onExpandForSearch,
   onOpenAnotherVault,
+  onOpenGuide,
   switchingVault,
   navigationLocked,
   filters = [],
@@ -436,6 +439,9 @@ export function Sidebar({
         </div>
 
         <div className={cn('flex w-full items-center justify-end gap-2 border-t border-sidebar-border px-1 pt-2', compact && 'md:justify-center')}>
+          <Button type="button" variant="ghost" size={compact ? 'icon' : 'sm'} className={cn('mr-auto text-muted-foreground', compact && 'md:mr-0 md:size-9')} onClick={onOpenGuide} aria-label="Getting started" title={compact ? 'Getting started' : undefined}>
+            <CircleHelp className="size-4" />{compact ? null : 'Getting started'}
+          </Button>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

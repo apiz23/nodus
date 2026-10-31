@@ -180,9 +180,9 @@ export function SettingsView({
                     </div>
                   </div>
                   <p className="mt-3 max-w-[62ch] text-[11px] leading-relaxed text-muted-foreground">
-                    Path is sent only to the local Nodus server and must be an absolute folder. The
-                    choice applies for this server session. Set <code>NODUS_VAULT</code> to make it
-                    permanent. Folders outside the allowed roots are rejected; set{' '}
+                    The selected folder is remembered in a per-user Nodus preference and stays
+                    separate from vault contents. <code>NODUS_VAULT</code>, when set, overrides
+                    the saved choice at startup. Folders outside the allowed roots are rejected; set{' '}
                     <code>NODUS_VAULT_ROOTS</code> (a <code>PATH</code>-delimited list) to allow
                     more roots.
                   </p>

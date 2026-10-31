@@ -1120,9 +1120,12 @@ export function DatabasesView({
           ) : databases.length === 0 ? (
             <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center">
               <div className="mb-4 grid size-10 place-items-center rounded-md bg-muted/60 text-muted-foreground"><Database className="size-5" /></div>
-              <h2 className="text-sm font-semibold">No database definitions</h2>
-              <p className="mt-1 max-w-[48ch] text-xs leading-relaxed text-muted-foreground">
-                Database schemas are portable JSON files under <code>databases/</code>. This vault has none yet.
+              <h2 className="text-sm font-semibold">Bring related notes together</h2>
+              <p className="mt-1 max-w-[52ch] text-xs leading-relaxed text-muted-foreground">
+                A database is a structured view of notes. Each row is a note; properties describe details such as status, date, or category. Table, List, Kanban, and Calendar views help you browse the same notes in different ways.
+              </p>
+              <p className="mt-2 max-w-[52ch] text-xs leading-relaxed text-muted-foreground">
+                Create a database and choose its properties, then use <span className="font-medium text-foreground">Add note</span> to make the first row or add an existing note.
               </p>
               <Button type="button" size="sm" className="mt-4" onClick={() => openSchemaEditor(true)} disabled={schemaSaving}>
                 <Plus data-icon="inline-start" /> New database

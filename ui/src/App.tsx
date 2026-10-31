@@ -10,6 +10,7 @@ import type {
   UiNote,
   UiNoteSummary,
   UiVaultStatus,
+  UiVaultSetupState,
 } from '../../src/ui-server/dto';
 import type { TagOperation } from '../../src/domain/tags';
 import type { NotePropertyValue } from '../../src/properties/catalog';
@@ -23,9 +24,11 @@ import { ConflictResolutionDialog, type NoteConflict } from './editor/ConflictRe
 import { ExternalChangeDialog, ExternalChangeNotice } from './editor/ExternalChangeDialog';
 import { DiscoveryView } from './DiscoveryView';
 import { GraphView } from './GraphView';
+import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
 import { Sidebar } from './Sidebar';
+import { VaultOnboarding } from './VaultOnboarding';
 import { useNoteSearch } from './useNoteSearch';
 import { scheduleAutosave } from './scheduleAutosave';
 import { saveResultDisposition } from './saveResultDisposition';
@@ -75,8 +78,11 @@ function messageOf(error: unknown): string {
 export default function App() {
   const [view, setView] = useState<View>('notes');
   const [status, setStatus] = useState<UiVaultStatus | null>(null);
+  const [vaultSetup, setVaultSetup] = useState<UiVaultSetupState | null>(null);
+  const [vaultSetupError, setVaultSetupError] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [gettingStartedVisible, setGettingStartedVisible] = useState(false);
 
   const [notes, setNotes] = useState<UiNoteSummary[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -165,6 +171,7 @@ export default function App() {
   const lastExternalCheckRef = useRef({ noteId: '', timestamp: 0 });
   const draftValuesRef = useRef({ title: draftTitle, body: draftBody, icon: draftIcon, revision: draftRevisionRef.current });
   const writerIdRef = useRef<string | null>(null);
+  const firstRunInFlightRef = useRef(false);
   if (writerIdRef.current === null) writerIdRef.current = createWriterId();
   const journalRef = useRef<DraftJournal | null>(null);
   if (journalRef.current === null) journalRef.current = new IndexedDbDraftJournal();
@@ -238,7 +245,17 @@ export default function App() {
     setStatusError(null);
     try {
       const next = await api.status();
-      if (request === vaultRequestRef.current) setStatus(next);
+      if (request === vaultRequestRef.current) {
+        if ('setupRequired' in next && next.setupRequired) {
+          setVaultSetup(next);
+          setStatus(null);
+        } else {
+          setVaultSetup(null);
+          setStatus(next);
+          const guide = await api.gettingStartedCompleted().catch(() => ({ completed: false }));
+          if (request === vaultRequestRef.current) setGettingStartedVisible(!guide.completed);
+        }
+      }
     } catch (error) {
       if (request === vaultRequestRef.current) setStatusError(messageOf(error));
     } finally {
@@ -341,6 +358,10 @@ export default function App() {
     noteRequestRef.current += 1;
     draftRevisionRef.current += 1;
     setStatus(nextStatus);
+    const guide = await api.gettingStartedCompleted().catch(() => ({ completed: false }));
+    setGettingStartedVisible(!guide.completed);
+    setVaultSetup(null);
+    setVaultSetupError(null);
     setVaultPathDraft(nextStatus.vault.path);
     setQuery('');
     setActiveNote(null);
@@ -443,6 +464,42 @@ export default function App() {
     }
   }
 
+  async function finishFirstRun(open: () => Promise<UiVaultStatus | null>): Promise<void> {
+    if (firstRunInFlightRef.current || vaultSwitching || pickingVault || openingVault) return;
+    firstRunInFlightRef.current = true;
+    setVaultSetupError(null);
+    setStatusError(null);
+    setVaultSwitching(true);
+    setOpeningVault(true);
+    try {
+      const next = await open();
+      if (next !== null) await applyVault(next);
+    } catch (error) {
+      setVaultSetupError(messageOf(error));
+    } finally {
+      firstRunInFlightRef.current = false;
+      setVaultSwitching(false);
+      setPickingVault(false);
+      setOpeningVault(false);
+    }
+  }
+
+  function createFirstVault(): void {
+    void finishFirstRun(() => api.createDefaultVault());
+  }
+
+  function pickFirstVault(): void {
+    void finishFirstRun(async () => {
+      const result = await api.pickVault();
+      if (result.canceled) return null;
+      return result.status;
+    });
+  }
+
+  function openFirstVault(path: string): void {
+    void finishFirstRun(() => api.openVault({ path }));
+  }
+
   async function refreshDatabases(): Promise<void> {
     const request = vaultRequestRef.current;
     setDatabasesLoading(true);
@@ -511,12 +568,43 @@ export default function App() {
       setNotesLoading(true);
       setDatabasesLoading(true);
       setStatusLoading(true);
-      const [statusResult, notesResult, databasesResult, foldersResult] = await Promise.allSettled([
-        api.status(),
+      let bootstrap;
+      try {
+        bootstrap = await api.status();
+      } catch (error) {
+        if (!cancelled && vaultRequest === vaultRequestRef.current) {
+          setStatusError(messageOf(error));
+          setStatusLoading(false);
+          setNotesLoading(false);
+          setDatabasesLoading(false);
+        }
+        return;
+      }
+      if (cancelled || vaultRequest !== vaultRequestRef.current) return;
+
+      if ('setupRequired' in bootstrap && bootstrap.setupRequired) {
+        setStatus(null);
+        setStatusError(null);
+        setVaultSetup(bootstrap);
+        setVaultSetupError(null);
+        setStatusLoading(false);
+        setNotesLoading(false);
+        setDatabasesLoading(false);
+        return;
+      }
+
+      const currentStatus: UiVaultStatus = bootstrap;
+      setStatus(currentStatus);
+      setVaultSetup(null);
+      setStatusError(null);
+
+      const [notesResult, databasesResult, foldersResult] = await Promise.allSettled([
         api.notes(),
         api.databases(),
         api.folders(),
       ]);
+      const guide = await api.gettingStartedCompleted().catch(() => ({ completed: false }));
+      if (!cancelled && vaultRequest === vaultRequestRef.current) setGettingStartedVisible(!guide.completed);
       if (cancelled || vaultRequest !== vaultRequestRef.current) return;
 
       if (foldersResult.status === 'fulfilled') {
@@ -526,31 +614,21 @@ export default function App() {
         setFolderError(messageOf(foldersResult.reason));
       }
 
-      if (statusResult.status === 'fulfilled') {
-        setStatus(statusResult.value);
-        setStatusError(null);
-      } else {
-        setStatusError(messageOf(statusResult.reason));
-      }
       setStatusLoading(false);
 
       if (notesResult.status === 'fulfilled') {
         setNotes(notesResult.value.notes);
         setNotesError(null);
-        if (statusResult.status === 'fulfilled') {
-          void journalRef.current!.pruneMissing(statusResult.value.vault.path, recoveryNoteIds(notesResult.value.notes, activeNoteRef.current, dirtyRef.current)).catch(() => {
-            setDraftJournalError('Could not remove recovery records for notes no longer in this vault.');
-          });
-        }
+        void journalRef.current!.pruneMissing(currentStatus.vault.path, recoveryNoteIds(notesResult.value.notes, activeNoteRef.current, dirtyRef.current)).catch(() => {
+          setDraftJournalError('Could not remove recovery records for notes no longer in this vault.');
+        });
         const first = notesResult.value.notes[0];
         if (first !== undefined && request === noteRequestRef.current) {
           setSelectedNoteId(first.id);
           setNoteLoading(true);
           try {
             const result = await api.note(first.id);
-            const recovered = statusResult.status === 'fulfilled'
-              ? await findRecoveryEntries(statusResult.value.vault.path, result.note)
-              : [];
+            const recovered = await findRecoveryEntries(currentStatus.vault.path, result.note);
             if (!cancelled && vaultRequest === vaultRequestRef.current && request === noteRequestRef.current) {
               setActiveNote(result.note);
               baseNoteRef.current = result.note;
@@ -1415,6 +1493,19 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [vaultSwitching, vaultWorkInFlight, modal, commandOpen]);
 
+  if (vaultSetup !== null) {
+    return (
+      <VaultOnboarding
+        setup={vaultSetup}
+        error={vaultSetupError}
+        busy={vaultSwitching || pickingVault || openingVault}
+        onCreateDefault={createFirstVault}
+        onBrowseExisting={pickFirstVault}
+        onOpenPath={openFirstVault}
+      />
+    );
+  }
+
   if (status === null && statusError !== null) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
@@ -1503,6 +1594,7 @@ export default function App() {
             window.setTimeout(() => searchRef.current?.focus(), 0);
           }}
           onOpenAnotherVault={() => void chooseVault()}
+          onOpenGuide={() => setGettingStartedVisible(true)}
           switchingVault={vaultSwitching || pickingVault || openingVault}
           navigationLocked={vaultSwitching || pickingVault || openingVault || vaultWorkInFlight || folderMutationInFlightRef.current}
         />
@@ -1536,6 +1628,25 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {gettingStartedVisible ? (
+          <GettingStartedGuide
+            onNavigate={(next, focusSearch) => {
+              setView(next);
+              if (focusSearch) {
+                setSidebarCollapsed(false);
+                setSidebarOpen(!desktop);
+                window.setTimeout(() => searchRef.current?.focus(), 0);
+              } else {
+                setSidebarOpen(false);
+              }
+            }}
+            onDismiss={() => {
+              setGettingStartedVisible(false);
+              void api.setGettingStartedCompleted(true).catch(() => setGettingStartedVisible(true));
+            }}
+          />
+        ) : null}
 
         {statusError !== null ? (
           <div className="flex items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-4 py-1.5 text-xs text-destructive">

@@ -7,8 +7,18 @@ import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, '..');
-const vaultPath = resolve(projectRoot, process.env.NODUS_VAULT ?? 'vault');
-const localApi = createLocalApiMiddleware({ vaultPath });
+const configuredVaultValue = process.env.NODUS_VAULT?.trim() || undefined;
+const vaultPath = resolve(projectRoot, configuredVaultValue ?? 'vault');
+const configuredVaultPath = configuredVaultValue === undefined
+  ? undefined
+  : resolve(projectRoot, configuredVaultValue);
+const localApi = createLocalApiMiddleware({
+  vaultPath,
+  defaultVaultPath: resolve(projectRoot, 'vault'),
+  configuredVaultPath,
+  preferencesPath: process.env.NODUS_PREFERENCES_PATH,
+  interactiveStartup: true,
+});
 const localUiOrigins = [
   'http://127.0.0.1:5173',
   'http://localhost:5173',

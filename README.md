@@ -2,23 +2,23 @@
 
 Nodus is a local-first, Markdown-native knowledge workspace that combines linked notes with structured databases.
 
-**Plain Markdown files. Portable database definitions and saved views. Local-first sync.**
+**Plain Markdown files. Portable database definitions and saved views. Local-first storage.**
 
 Your notes are ordinary Markdown files. YAML frontmatter is optional; when present, Nodus preserves its metadata. Notes work without an account or network connection and remain usable outside Nodus.
 
 ## Status
 
-**Markdown storage and workspace features implemented, including Phase 5 database relations and rollups.** The package provides:
+**Markdown storage and workspace features implemented, including the Phase 7 database experience.** The package provides:
 
 - Phase 1 domain, format, and migration contracts.
 - A filesystem vault adapter: create, read, update, move, and delete notes and database definitions.
 - Vault-level duplicate ID detection, path containment, and per-file atomic writes.
 - Portable export/import that validates before writing and refuses silent overwrites.
 - Verified backups with SHA-256 manifests, validation, and explicit-overwrite restoration.
-- A local React UI (`ui/`) with a live Markdown editor, task checkboxes, wiki links, page icons, title/alias/path/content search, backlinks with linked mentions, a command palette (`Ctrl/Cmd+K`), and a limited database browser/schema editor for note rows and typed properties.
+- A local React UI (`ui/`) with a live Markdown editor, task checkboxes, wiki links, page icons, attachments, title/alias/path/content search, backlinks, a command palette (`Ctrl/Cmd+K`), and a database browser/schema editor.
 - A relay server, sync client, and conflict handling (`src/relay/`, `src/sync/`) — **experimental**. They are not wired to any npm script, CLI bin, or the UI.
 
-The database browser supports saved Table, Kanban, and Calendar views with typed sorting, AND filters, and property visibility. View configurations are portable JSON; card moves and dates use revision-checked Markdown property writes. Relations (single/multiple), derived reverse fields, and rollups are supported across these views. Also absent: database/property/option removal, graph view, attachments, and a web/mobile client.
+The database browser supports saved Table, List, Kanban, and Calendar views with typed sorting, AND filters, grouping, and property visibility. View configurations are portable JSON; card moves and dates use revision-checked Markdown property writes. Relations (single/multiple), derived reverse fields, rollups, and formula properties with a formula editor are supported. A note graph view is also implemented. Database/property/option removal, integrated sync, and web/mobile clients are not implemented.
 
 ## Storage
 
@@ -38,7 +38,7 @@ See [Storage](docs/storage.md) for the contracts, layout, error codes, guarantee
 
 ## Scope and deferrals
 
-These remain **not implemented** and need a new approval before work starts:
+The table records current status; deferred items need a separate design and approval before implementation:
 
 | Item | Status | Reason |
 |---|---|---|
@@ -46,11 +46,13 @@ These remain **not implemented** and need a new approval before work starts:
 | Folder entity | Deferred | Folders are implied by note paths. No explicit folder format is approved. |
 | Attachment metadata | Deferred | Requires a blob storage decision. |
 | Link references (stored records) | Deferred | Search and discovery share an in-memory, rebuildable Markdown snapshot; link records are not persisted. |
-| Saved database views | Implemented | Portable Table, Kanban, and Calendar views; explicit save, rename, duplicate, switch, and conditional delete. |
+| Saved database views | Implemented | Portable Table, List, Kanban, and Calendar views; explicit save, rename, duplicate, switch, and conditional delete. |
 | Relations and rollups | Implemented | Stable note IDs, single/multiple forward fields, derived reverse fields and typed rollups; see [relations](docs/database-relations.md). |
+| Formula properties | Implemented | Safe formula engine, derived query values, dependency diagnostics, and schema-sheet authoring; see [formula properties](docs/database-formulas.md). |
+| Note graph | Implemented | Derived graph and navigation UI; link records are not persisted. |
 | Cross-device sync | **Experimental** | A relay and sync client exist (`src/relay/`, `src/sync/`) but are not wired to any script, bin, or the UI. No multi-device setup is supported. |
 
-Also out of scope: database/property/option removal, formulas, automations, graph views, accounts, AI, telemetry, and third-party data transfer.
+Also not implemented: database/property/option removal, automations, accounts, AI, telemetry, and third-party data transfer.
 
 ## Consistency boundaries
 
@@ -77,6 +79,7 @@ Also out of scope: database/property/option removal, formulas, automations, grap
 - [Global Search and index refresh](docs/global-search.md)
 - [Database definition format](docs/database-format.md)
 - [Database relations and rollups](docs/database-relations.md)
+- [Database formulas](docs/database-formulas.md)
 - [Saved database view format](docs/database-views.md)
 - [Storage, export/import, and backups](docs/storage.md)
 - [Editor behavior](docs/editor.md)
@@ -111,7 +114,7 @@ pnpm dev
 NODUS_VAULT=/path/to/your/vault pnpm dev
 ```
 
-Open `http://127.0.0.1:5173` for the public landing page, or `http://127.0.0.1:5173/app` for the local workspace. If `NODUS_VAULT` is omitted, the server uses `./vault` and creates it on first use.
+Open `http://127.0.0.1:5173` for the public landing page, or `http://127.0.0.1:5173/app` for the local workspace. On first launch, choose to create/use the default `./vault` folder or open an existing folder. Later launches restore the last successfully selected vault. If `NODUS_VAULT` is set, it overrides the saved choice and retains the existing create-if-missing behavior.
 
 Production-style local preview:
 
@@ -122,11 +125,11 @@ pnpm preview
 
 Open `http://127.0.0.1:4173` for the landing page, or `http://127.0.0.1:4173/app` for the workspace.
 
-The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, title/alias/path/content search with deterministic ranking, backlinks and ambiguous linked mentions, command palette (`Ctrl/Cmd+K`), and a limited database browser/schema editor. Users can create schemas, add typed properties, rename schemas/properties/options, and add select options while retaining stable IDs. Existing property types and options cannot be removed from the UI. The browser discovers notes with explicit membership, displays and edits supported typed properties, requires confirmation when adding a note to a database, and provides sorting, typed filters, and column visibility saved through named Table, Kanban, and Calendar views. Relations support record selection/navigation and derived reverse fields. Rollups support count, conditional count, numeric sum, completed-task count, and completion percentage. Graph UI is not implemented. The app preserves frontmatter fields and stable UUIDs; note and schema saves check raw file hashes and refuse to overwrite an external edit.
+The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, title/alias/path/content search with deterministic ranking, wiki-link and database-relation backlinks, command palette (`Ctrl/Cmd+K`), and database schema editing. Users can create schemas, add typed properties, rename schemas/properties/options, configure formulas, and add select options while retaining stable IDs. Existing property types and options cannot be removed from the UI. The browser discovers notes with explicit membership, displays and edits supported source values, requires confirmation when adding a note to a database, and provides sorting, typed filters, grouping, and property visibility saved through Table, List, Kanban, and Calendar views. Relations support record selection/navigation and derived reverse fields. Rollups support count, conditional count, numeric sum, completed-task count, and completion percentage. Formula properties are derived and read-only in rows; their editor provides stable-ID references, function help, validation, and preview. Graph UI and attachments are implemented. The app preserves frontmatter fields and stable UUIDs; note and schema saves check raw file hashes and refuse to overwrite an external edit.
 
-The active vault can also be changed from **Settings**: type an absolute folder path and choose **Use folder**, or use **Browse…** for the host OS picker. **This endpoint only accepts directories inside an allow-list of roots.** Roots come from `NODUS_VAULT_ROOTS` (a list separated by `:` on macOS/Linux, `;` on Windows) and default to the parent directory of the current vault; the user's home directory is not allowed unless listed. Targets and roots are resolved with `realpath` before the containment check, so a symlink pointing outside the roots is rejected. Failures return HTTP 403 with error code `VAULT_NOT_ALLOWED` and are shown inline in Settings. The request origin must still match the UI (`NODUS_ALLOWED_ORIGINS` can override the allowed origins), and the API binds to `127.0.0.1` only. The change lasts for the current server session; set `NODUS_VAULT` to make it permanent.
+The active vault can also be changed from the sidebar vault menu or **Settings**: type an absolute folder path and choose **Use folder**, or use **Browse…** for the host OS picker. A successful choice is remembered outside the vault. `NODUS_VAULT` overrides this preference at startup. If a saved folder is unavailable, Nodus does not create a replacement; it offers recovery choices. **Typed paths are restricted to an allow-list of roots.** Roots come from `NODUS_VAULT_ROOTS` (a list separated by `:` on macOS/Linux, `;` on Windows) and default to the parent directory of the current vault (or the default vault location during first-run setup); the user's home directory is not allowed unless listed. The native folder picker is an explicit user selection. Targets and roots are resolved with `realpath` before the containment check, so a symlink escape is rejected. Failures return HTTP 403 with error code `VAULT_NOT_ALLOWED` and are shown in the UI. The request origin must still match the UI (`NODUS_ALLOWED_ORIGINS` can override the allowed origins), and the API binds to `127.0.0.1` only.
 
-**Not implemented in the UI:** sync connection (the relay/sync code exists but is not wired in), filesystem watcher, database/property/option removal, graph view, and any web/mobile client. Sync status shows **Not connected / Phase 4**.
+**Not implemented in the UI:** sync connection (the relay/sync code exists but is not wired in), filesystem watcher, database/property/option removal, and any web/mobile client. Sync status shows **Not connected / Phase 4**.
 
 The API binds to `127.0.0.1` only.
 

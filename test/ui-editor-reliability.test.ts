@@ -49,7 +49,7 @@ const mockApi = vi.hoisted(() => ({
   status: vi.fn(), notes: vi.fn(), folders: vi.fn(), databases: vi.fn(), note: vi.fn(), saveNote: vi.fn(),
   createNote: vi.fn(),
   openVault: vi.fn(), pickVault: vi.fn(),
-  search: vi.fn(), deleteNote: vi.fn(),
+  search: vi.fn(), deleteNote: vi.fn(), gettingStartedCompleted: vi.fn(),
 }));
 const mockJournal = vi.hoisted(() => ({
   list: vi.fn(), write: vi.fn(), adopt: vi.fn(), clearThrough: vi.fn(), deleteNote: vi.fn(),
@@ -177,6 +177,7 @@ beforeEach(() => {
   mockApi.search.mockResolvedValue({ results: [] });
   mockApi.createNote.mockResolvedValue({ note: makeNote('synthetic-created', '') });
   mockApi.deleteNote.mockResolvedValue({ deleted: true });
+  mockApi.gettingStartedCompleted.mockResolvedValue({ completed: false });
   mockJournal.list.mockResolvedValue([]);
   mockJournal.write.mockResolvedValue(undefined);
   mockJournal.adopt.mockResolvedValue(undefined);

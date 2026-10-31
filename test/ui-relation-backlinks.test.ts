@@ -124,6 +124,37 @@ describe('incoming database relation backlinks', () => {
     });
   });
 
+  it('switches relation projections with the active vault', async () => {
+    await withTempDir(async (dir) => {
+      const first = await FileSystemVault.open(join(dir, 'first'));
+      const second = await FileSystemVault.open(join(dir, 'second'));
+      for (const vault of [first, second]) {
+        await vault.createDatabase(sourceSchema());
+        await vault.createDatabase(targetSchema);
+        await vault.createNote(record(TARGET, 'Task', 'tasks/task.md', { [TARGET_DB]: {} }));
+      }
+      await first.createNote(record(SOURCE_A, 'First vault source', 'projects/first.md', { [SOURCE_DB]: { [FORWARD]: [TARGET] } }));
+      await second.createNote(record(SOURCE_B, 'Second vault source', 'projects/second.md', { [SOURCE_DB]: { [FORWARD]: [TARGET] } }));
+
+      const started = await api(first.root);
+      try {
+        const before = await fetch(`${started.base}/api/notes/${TARGET}/relation-backlinks`).then((response) => response.json()) as UiRelationBacklinksResponse;
+        expect(before.backlinks.map((link) => link.sourceId)).toEqual([SOURCE_A]);
+
+        const switched = await fetch(`${started.base}/api/vault/open`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: second.root }),
+        });
+        expect(switched.ok).toBe(true);
+
+        const after = await fetch(`${started.base}/api/notes/${TARGET}/relation-backlinks`).then((response) => response.json()) as UiRelationBacklinksResponse;
+        expect(after.backlinks.map((link) => link.sourceId)).toEqual([SOURCE_B]);
+      } finally {
+        await stop(started.server);
+      }
+    });
+  });
+
   it('keeps source rows when their target database was deleted and marks the backlink incompatible', () => {
     const notes = [record(TARGET, 'Unassigned note', 'notes/target.md', {}), record(SOURCE_A, 'Project', 'projects/p.md', { [SOURCE_DB]: { [FORWARD]: [TARGET] } })];
     const backlinks = projectIncomingRelations(notes, new Map([[SOURCE_DB, sourceSchema()]])).get(TARGET);

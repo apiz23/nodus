@@ -90,6 +90,7 @@ function renderSidebar(
         collapsed,
         onExpandForSearch: () => {},
         onOpenAnotherVault: () => {},
+        onOpenGuide: () => {},
         switchingVault: false,
         navigationLocked: false,
       }),
