@@ -1450,7 +1450,7 @@ export default function App() {
           minSize={!desktop ? 0 : sidebarCollapsed ? 64 : 200}
           maxSize={!desktop ? 0 : sidebarCollapsed ? 64 : 480}
           groupResizeBehavior="preserve-pixel-size"
-          className="min-h-0 overflow-hidden"
+          className="min-h-0 overflow-hidden transition-[flex-basis] duration-200 ease-out motion-reduce:transition-none"
           onResize={({ inPixels }) => {
             if (!desktop || sidebarCollapsed || inPixels < 200) return;
             sidebarWidthRef.current = inPixels;

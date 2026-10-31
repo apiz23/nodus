@@ -7,18 +7,24 @@ export function RelationSchemaFields({ property, database, databases, onChange }
   property: Property; database: DatabaseDefinition; databases: DatabaseDefinition[]; onChange: (update: Partial<Property>) => void;
 }) {
   const schemas = [...databases.filter((item) => item.id !== database.id), database];
-  const choice = (label: string, value: string | undefined, items: { id: string; name: string }[], select: (id: string) => void) => <label className="flex flex-col gap-1 text-xs">{label}
-    <Select value={value || ''} onValueChange={select}><SelectTrigger aria-label={`${property.name} ${label}`}><SelectValue placeholder="Choose…" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+  const choice = (label: string, value: string | undefined, items: { id: string; name: string; disabled?: boolean }[], select: (id: string) => void) => <label className="flex flex-col gap-1 text-xs">{label}
+    <Select value={value || ''} onValueChange={select}><SelectTrigger aria-label={`${property.name} ${label}`}><SelectValue placeholder="Choose…" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={item.id} disabled={item.disabled}>{item.name}</SelectItem>)}</SelectContent></Select>
   </label>;
   if (property.type === 'relation') {
     const relation = property.relation!;
     const target = schemas.find((item) => item.id === relation.databaseId);
     const forward = target?.properties.filter((item) => item.type === 'relation' && !item.relation?.reversePropertyId && item.relation?.databaseId === database.id) ?? [];
+    const targetChoices = target ? schemas : [...schemas, { id: relation.databaseId, name: 'Unavailable target database' }];
+    const forwardChoices = relation.reversePropertyId && !forward.some((item) => item.id === relation.reversePropertyId)
+      ? [...forward.map((item) => ({ id: item.id, name: item.name })), { id: relation.reversePropertyId, name: 'Unavailable forward relation' }]
+      : forward.map((item) => ({ id: item.id, name: item.name }));
     return <div className="grid gap-2 sm:grid-cols-2">
-      {choice('Target database', relation.databaseId, schemas, (databaseId) => onChange({ relation: { ...relation, databaseId, reversePropertyId: undefined } }))}
-      {choice('Direction', relation.reversePropertyId === undefined ? 'forward' : 'reverse', [{ id: 'forward', name: 'Forward (editable)' }, { id: 'reverse', name: 'Reverse (computed)' }], (direction) => onChange({ relation: { ...relation, cardinality: direction === 'reverse' ? 'many' : relation.cardinality, reversePropertyId: direction === 'reverse' ? forward[0]?.id ?? '' : undefined } }))}
-      {relation.reversePropertyId !== undefined ? choice('Forward property', relation.reversePropertyId, forward, (reversePropertyId) => onChange({ relation: { ...relation, reversePropertyId } })) : choice('Cardinality', relation.cardinality, [{ id: 'one', name: 'One record' }, { id: 'many', name: 'Multiple records' }], (cardinality) => onChange({ relation: { ...relation, cardinality: cardinality as 'one' | 'many' } }))}
-      <p className="text-xs text-muted-foreground sm:col-span-2">References use stable note IDs. Reverse fields are read-only. Changing configuration preserves existing Markdown values; incompatible references need repair.</p>
+      {choice('Target database', relation.databaseId, targetChoices, (databaseId) => onChange({ relation: { ...relation, databaseId, reversePropertyId: undefined } }))}
+      {choice('Direction', relation.reversePropertyId === undefined ? 'forward' : 'reverse', [{ id: 'forward', name: 'Forward (editable)' }, { id: 'reverse', name: 'Reverse (computed)', disabled: forward.length === 0 && relation.reversePropertyId === undefined }], (direction) => onChange({ relation: { ...relation, cardinality: direction === 'reverse' ? 'many' : relation.cardinality, reversePropertyId: direction === 'reverse' ? forward[0]?.id ?? '' : undefined } }))}
+      {relation.reversePropertyId !== undefined ? choice('Forward property', relation.reversePropertyId, forwardChoices, (reversePropertyId) => onChange({ relation: { ...relation, reversePropertyId } })) : choice('Cardinality', relation.cardinality, [{ id: 'one', name: 'One record' }, { id: 'many', name: 'Multiple records' }], (cardinality) => onChange({ relation: { ...relation, cardinality: cardinality as 'one' | 'many' } }))}
+      {target ? <p className="text-xs text-muted-foreground sm:col-span-2">Links point to records in <span className="font-medium text-foreground">{target.name}</span>. {relation.reversePropertyId === undefined ? relation.cardinality === 'one' ? 'Each note can link to one record.' : 'Each note can link to multiple records.' : 'This mirrors the selected forward relation and is read-only.'} Changing the target or cardinality keeps stored note values; links that no longer fit must be repaired.</p>
+        : <p className="text-xs text-destructive sm:col-span-2" role="alert">The configured target database is unavailable. Stored references remain intact. Choose an available database to repair this property.</p>}
+      {relation.reversePropertyId !== undefined && !forward.some((item) => item.id === relation.reversePropertyId) ? <p className="text-xs text-destructive sm:col-span-2" role="alert">The configured forward relation is unavailable or no longer points to this database. Choose a valid forward relation; stored references are preserved.</p> : null}
     </div>;
   }
   if (property.type !== 'rollup') return null;

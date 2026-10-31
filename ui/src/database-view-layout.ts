@@ -61,11 +61,13 @@ export function groupDatabaseRows(rows: readonly UiDatabaseRow[], property: Prop
   const noValue = (value: unknown) => value === undefined || value === null || value === '';
   let unknown: UiDatabaseRow[] = [];
   for (const row of rows) {
+    if(property.type==='formula'&&row.issues.some(issue=>issue.propertyId===property.id&&issue.code==='FORMULA_ERROR')){const bucket=buckets.get('__formula-error__')??[];bucket.push(row);buckets.set('__formula-error__',bucket);continue;}
     const value = valueFor(row);
     if (noValue(value)) continue;
     const key = property.type === 'select' && typeof value === 'string'
       ? (property.options ?? []).some((option) => option.id === value) ? value : '__unknown__'
-      : property.type === 'checkbox' && typeof value === 'boolean' ? String(value) : '__unknown__';
+      : property.type === 'checkbox' && typeof value === 'boolean' ? String(value)
+      : property.type==='formula'&&['string','number','boolean'].includes(typeof value)?`formula:${typeof value}:${String(value)}`:'__unknown__';
     const bucket = buckets.get(key) ?? [];
     bucket.push(row);
     buckets.set(key, bucket);
@@ -83,9 +85,12 @@ export function groupDatabaseRows(rows: readonly UiDatabaseRow[], property: Prop
       if (members?.length) groups.push({ id, name, rows: members });
     }
     unknown = buckets.get('__unknown__') ?? [];
+  } else if(property.type==='formula'){
+    for(const [id,members] of buckets)if(id!=='__unknown__'&&id!=='__formula-error__')groups.push({id,name:id.slice(id.indexOf(':',8)+1),rows:members});
+    groups.sort((a,b)=>a.name.localeCompare(b.name));unknown=buckets.get('__unknown__')??[];const failed=buckets.get('__formula-error__');if(failed?.length)groups.push({id:'__formula-error__',name:'Formula error',rows:failed});
   }
   if (unknown.length) groups.push({ id: '__unknown__', name: 'Unknown value', rows: unknown });
-  const unassigned = rows.filter((row) => noValue(valueFor(row)));
+  const unassigned = rows.filter((row) => noValue(valueFor(row))&&!(property.type==='formula'&&row.issues.some(issue=>issue.propertyId===property.id&&issue.code==='FORMULA_ERROR')));
   if (unassigned.length) groups.push({ id: '__no-value__', name: 'No value', rows: unassigned });
   return groups;
 }

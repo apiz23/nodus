@@ -21,6 +21,16 @@ export function databaseIdentityLabel(database: Pick<UiDatabase, 'id' | 'name' |
 export function filterOperators(property: Property): DatabaseFilterOperator[] {
   switch (property.type) {
     case 'text': return ['contains', 'equals', 'is-empty', 'is-not-empty'];
+    case 'formula': {
+      const empty = ['is-empty', 'is-not-empty'] as const;
+      switch (property.formula?.resultType) {
+        case 'string': return ['contains', 'equals', ...empty];
+        case 'number': return ['equals', 'greater', 'less', ...empty];
+        case 'boolean': return ['is', ...empty];
+        case 'date': return ['equals', 'before', 'after', ...empty];
+        default: return ['contains', 'equals', 'greater', 'less', 'is', 'before', 'after', ...empty];
+      }
+    }
     case 'rollup':
     case 'number': return ['equals', 'greater', 'less', 'is-empty', 'is-not-empty'];
     case 'relation': return property.relation?.cardinality === 'one' ? ['is'] : ['includes'];
@@ -41,6 +51,7 @@ export function initialFilterValue(property: Property): unknown {
     case 'checkbox': return true;
     case 'select':
     case 'multi-select': return property.options?.[0]?.id ?? '';
+    case 'formula': return '';
   }
 }
 
@@ -50,6 +61,19 @@ export function isValidFilter(property: Property, operator: string, value: unkno
   switch (property.type) {
     case 'text':
       return typeof value === 'string' && (operator === 'equals' || value.length > 0);
+    case 'formula':
+      switch (property.formula?.resultType) {
+        case 'string': return operator === 'equals' ? typeof value === 'string' : operator === 'contains' && typeof value === 'string' && value.length > 0;
+        case 'number': return typeof value === 'number' && Number.isFinite(value);
+        case 'boolean': return operator === 'is' && typeof value === 'boolean';
+        case 'date': return typeof value === 'string' && isCalendarDate(value);
+        default:
+          if (operator === 'contains') return typeof value === 'string' && value.length > 0;
+          if (operator === 'greater' || operator === 'less') return (typeof value === 'number' && Number.isFinite(value)) || typeof value === 'string';
+          if (operator === 'before' || operator === 'after') return typeof value === 'string' && isCalendarDate(value);
+          if (operator === 'is') return typeof value === 'boolean';
+          return operator === 'equals' && (typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)));
+      }
     case 'relation': return typeof value === 'string' && isUuidV4(value);
     case 'rollup':
     case 'number': return typeof value === 'number' && Number.isFinite(value);
@@ -75,27 +99,29 @@ export function filterDatabaseRows(
   });
 
   return rows.filter((row) => active.every(({ filter, property }) => {
+    if(property.type==='formula'&&row.issues.some(issue=>issue.propertyId===property.id&&issue.code==='FORMULA_ERROR'))return false;
     const actual = row.values[property.id];
     if (filter.operator === 'is-empty') return actual === undefined || actual === null || actual === '' || (Array.isArray(actual) && actual.length === 0);
     if (filter.operator === 'is-not-empty') return actual !== undefined && actual !== null && actual !== '' && !(Array.isArray(actual) && actual.length === 0);
     if (actual === undefined || actual === null) return false;
     switch (filter.operator) {
       case 'contains':
-        return property.type === 'text' && typeof actual === 'string'
+        return (property.type === 'text'||property.type==='formula') && typeof actual === 'string'
           && actual.toLocaleLowerCase().includes((filter.value as string).toLocaleLowerCase());
       case 'equals':
-        if (property.type === 'text') return typeof actual === 'string' && actual === filter.value;
+        if (property.type === 'text'||property.type==='formula') return typeof actual===typeof filter.value&&actual===filter.value;
         if ((property.type === 'number' || property.type === 'rollup')) return typeof actual === 'number' && actual === filter.value;
         if (property.type === 'date') return typeof actual === 'string' && isCalendarDate(actual) && actual === filter.value;
         return false;
-      case 'greater': return (property.type === 'number' || property.type === 'rollup') && typeof actual === 'number' && Number.isFinite(actual) && actual > (filter.value as number);
-      case 'less': return (property.type === 'number' || property.type === 'rollup') && typeof actual === 'number' && Number.isFinite(actual) && actual < (filter.value as number);
+      case 'greater': return (property.type === 'number' || property.type === 'rollup') ? typeof actual==='number'&&typeof filter.value==='number'&&actual>filter.value : property.type==='formula'&&compareFormulaValues(actual,filter.value)>0;
+      case 'less': return (property.type === 'number' || property.type === 'rollup') ? typeof actual==='number'&&typeof filter.value==='number'&&actual<filter.value : property.type==='formula'&&compareFormulaValues(actual,filter.value)<0;
       case 'is':
+        if(property.type==='formula')return typeof actual===typeof filter.value&&actual===filter.value;
         if (property.type === 'checkbox') return typeof actual === 'boolean' && actual === filter.value;
         if (property.type === 'select' || property.type === 'relation') return typeof actual === 'string' && actual === filter.value;
         return false;
-      case 'before': return property.type === 'date' && typeof actual === 'string' && isCalendarDate(actual) && actual < (filter.value as string);
-      case 'after': return property.type === 'date' && typeof actual === 'string' && isCalendarDate(actual) && actual > (filter.value as string);
+      case 'before': return (property.type === 'date' || (property.type === 'formula' && property.formula?.resultType === 'date')) && typeof actual === 'string' && isCalendarDate(actual) && actual < (filter.value as string);
+      case 'after': return (property.type === 'date' || (property.type === 'formula' && property.formula?.resultType === 'date')) && typeof actual === 'string' && isCalendarDate(actual) && actual > (filter.value as string);
       case 'includes': return (property.type === 'multi-select' || property.type === 'relation') && Array.isArray(actual) && actual.includes(filter.value as string);
     }
   }));
@@ -107,33 +133,23 @@ export function sortDatabaseRows(
   field: DatabaseSortField,
   direction: DatabaseSortDirection,
 ): UiDatabaseRow[] {
-  const property = field === 'title' ? undefined : properties.find((item) => item.id === field);
-  const factor = direction === 'asc' ? 1 : -1;
-  return [...rows].sort((left, right) => {
-    const a = sortableValue(left, property, field);
-    const b = sortableValue(right, property, field);
-    if (a === undefined || b === undefined) {
-      if (a !== undefined) return -1;
-      if (b !== undefined) return 1;
-    } else {
-      const compared = typeof a === 'number' && typeof b === 'number'
-        ? a - b
-        : typeof a === 'boolean' && typeof b === 'boolean'
-          ? Number(a) - Number(b)
-          : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
-      if (compared !== 0) return compared * factor;
-    }
-    return left.noteId.localeCompare(right.noteId);
-  });
+  return sortDatabaseRowsBy(rows, properties, [{ propertyId: field, direction }]);
 }
 
 export function sortDatabaseRowsBy(rows: readonly UiDatabaseRow[], properties: readonly Property[], sorts: readonly { propertyId: DatabaseSortField; direction: DatabaseSortDirection }[]): UiDatabaseRow[] {
   const priorities = sorts.length ? sorts : [{ propertyId: 'title', direction: 'asc' as const }];
-  return [...rows].sort((left, right) => {
-    for (const sort of priorities) {
-      const property = sort.propertyId === 'title' ? undefined : properties.find((item) => item.id === sort.propertyId);
-      const a = sortableValue(left, property, sort.propertyId);
-      const b = sortableValue(right, property, sort.propertyId);
+  const propertyById = new Map(properties.map((property) => [property.id, property]));
+  const comparators = priorities.map((sort) => ({
+    direction: sort.direction === 'asc' ? 1 : -1,
+    value: sortableAccessor(sort.propertyId === 'title' ? undefined : propertyById.get(sort.propertyId), sort.propertyId),
+  }));
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  const keyed = rows.map((row) => ({ row, values: comparators.map(({ value }) => value(row)) }));
+  keyed.sort((left, right) => {
+    for (let index = 0; index < comparators.length; index += 1) {
+      const condition = comparators[index]!;
+      const a = left.values[index];
+      const b = right.values[index];
       if (a === undefined || b === undefined) {
         if (a !== undefined) return -1;
         if (b !== undefined) return 1;
@@ -141,11 +157,12 @@ export function sortDatabaseRowsBy(rows: readonly UiDatabaseRow[], properties: r
       }
       const compared = typeof a === 'number' && typeof b === 'number' ? a - b
         : typeof a === 'boolean' && typeof b === 'boolean' ? Number(a) - Number(b)
-          : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
-      if (compared !== 0) return compared * (sort.direction === 'asc' ? 1 : -1);
+          : collator.compare(String(a), String(b));
+      if (compared !== 0) return compared * condition.direction;
     }
-    return left.noteId.localeCompare(right.noteId);
+    return left.row.noteId.localeCompare(right.row.noteId);
   });
+  return keyed.map(({ row }) => row);
 }
 
 export function selectDatabaseRows(
@@ -161,21 +178,31 @@ export function selectDatabaseRows(
     : sortDatabaseRows(filtered, properties, sortField, direction ?? 'asc');
 }
 
-function sortableValue(row: UiDatabaseRow, property: Property | undefined, field: DatabaseSortField): string | number | boolean | undefined {
-  if (field === 'title' || property === undefined) return row.title || undefined;
-  const value = row.values[property.id];
-  if (property.type === 'relation') return row.relations?.[property.id]?.map((ref) => ref.title ?? ref.id).sort().join(', ') || undefined;
-  if ((property.type === 'number' || property.type === 'rollup')) return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-  if (property.type === 'checkbox') return typeof value === 'boolean' ? value : undefined;
-  if (property.type === 'text') return typeof value === 'string' ? value : undefined;
-  if (property.type === 'date') return typeof value === 'string' && isCalendarDate(value) ? value : undefined;
-  if (property.type === 'select') {
-    return typeof value === 'string' ? property.options?.find((option) => option.id === value)?.name : undefined;
-  }
-  if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-    return value.map((id) => property.options?.find((option) => option.id === id)?.name ?? id).sort().join(', ');
-  }
-  return undefined;
+function sortableAccessor(property: Property | undefined, field: DatabaseSortField): (row: UiDatabaseRow) => string | number | boolean | undefined {
+  if (field === 'title' || property === undefined) return (row) => row.title || undefined;
+  const optionNames = new Map((property.options ?? []).map((option) => [option.id, option.name]));
+  if (property.type === 'relation') return (row) => row.relations?.[property.id]?.map((ref) => ref.title ?? ref.id).sort().join(', ') || undefined;
+  if (property.type === 'number' || property.type === 'rollup') return (row) => {
+    const value = row.values[property.id];
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  };
+  if (property.type === 'checkbox') return (row) => typeof row.values[property.id] === 'boolean' ? row.values[property.id] as boolean : undefined;
+  if (property.type === 'text') return (row) => typeof row.values[property.id] === 'string' ? row.values[property.id] as string : undefined;
+  if (property.type === 'formula') return (row) => {const value=row.values[property.id];return typeof value==='string'||typeof value==='number'||typeof value==='boolean'?value:undefined;};
+  if (property.type === 'date') return (row) => {
+    const value = row.values[property.id];
+    return typeof value === 'string' && isCalendarDate(value) ? value : undefined;
+  };
+  if (property.type === 'select') return (row) => {
+    const value = row.values[property.id];
+    return typeof value === 'string' ? optionNames.get(value) : undefined;
+  };
+  return (row) => {
+    const value = row.values[property.id];
+    return Array.isArray(value) && value.every((item) => typeof item === 'string')
+      ? value.map((id) => optionNames.get(id) ?? id).sort().join(', ')
+      : undefined;
+  };
 }
 
 function isCalendarDate(value: string): boolean {
@@ -183,5 +210,6 @@ function isCalendarDate(value: string): boolean {
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+function compareFormulaValues(a:unknown,b:unknown):number{if(typeof a!==typeof b)return Number.NaN;if(typeof a==='number'&&typeof b==='number')return a-b;if(typeof a==='string'&&typeof b==='string')return a.localeCompare(b);return Number.NaN;}
 
-export function hasBlockingRowIssues(row: UiDatabaseRow, property?: Property): boolean { return row.issues.some((issue) => !['MISSING_TARGET', 'INCOMPATIBLE_TARGET', 'INVALID_CONFIGURATION', 'CIRCULAR_ROLLUP', 'ROLLUP_ERROR'].includes(issue.code) && !(property?.type === 'relation' && issue.propertyId === property.id && ['TYPE_MISMATCH', 'INVALID_VALUE'].includes(issue.code))); }
+export function hasBlockingRowIssues(row: UiDatabaseRow, property?: Property): boolean { return row.issues.some((issue) => !['MISSING_TARGET', 'INCOMPATIBLE_TARGET', 'INVALID_CONFIGURATION', 'CIRCULAR_ROLLUP', 'ROLLUP_ERROR', 'FORMULA_ERROR'].includes(issue.code) && !(property?.type === 'relation' && issue.propertyId === property.id && ['TYPE_MISMATCH', 'INVALID_VALUE'].includes(issue.code))); }

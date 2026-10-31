@@ -4,6 +4,8 @@ import type { UiDatabaseRow } from '../src/ui-server/dto.js';
 import {
   filterDatabaseRows,
   databaseIdentityLabel,
+  filterOperators,
+  hasBlockingRowIssues,
   isValidFilter,
   selectDatabaseRows,
   sortDatabaseRows,
@@ -140,6 +142,38 @@ describe('database table session controls', () => {
     expect(filterDatabaseRows(records, properties, [{ id: 'a', propertyId: IDS.status, operator: 'is-empty' }]).map((item) => item.noteId)).toEqual(['missing', 'null', 'empty', 'zero']);
     expect(filterDatabaseRows(records, properties, [{ id: 'b', propertyId: IDS.beta, operator: 'is-empty' }]).map((item) => item.noteId)).toEqual(['missing', 'null', 'empty', 'false']);
     expect(filterDatabaseRows(records, properties, [{ id: 'c', propertyId: IDS.blue, operator: 'is-empty' }]).map((item) => item.noteId)).toContain('empty');
+  });
+
+  it('uses inferred formula result types for date, number, boolean, and string filters', () => {
+    const formulaNumber: Property = { id: 'formula-number', name: 'Total', type: 'formula', formula: { expression: '1 + 1', resultType: 'number' } };
+    const formulaDate: Property = { id: 'formula-date', name: 'Date', type: 'formula', formula: { expression: 'date("2026-01-01")', resultType: 'date' } };
+    const formulaBoolean: Property = { id: 'formula-boolean', name: 'Ready', type: 'formula', formula: { expression: 'true', resultType: 'boolean' } };
+    const formulaString: Property = { id: 'formula-string', name: 'Label', type: 'formula', formula: { expression: '"abc"', resultType: 'string' } };
+    const formulaProperties = [formulaNumber, formulaDate, formulaBoolean, formulaString];
+    const formulaRows = [
+      row('formula-a', 'A', { 'formula-number': 3, 'formula-date': '2026-01-01', 'formula-boolean': true, 'formula-string': 'abc' }),
+      row('formula-b', 'B', { 'formula-number': 5, 'formula-date': '2026-02-01', 'formula-boolean': false, 'formula-string': 'xyz' }),
+      { ...row('formula-error', 'Error', { 'formula-number': null }), issues: [{ propertyId: 'formula-number', code: 'FORMULA_ERROR', message: 'invalid' }] } as UiDatabaseRow,
+    ];
+
+    expect(filterOperators(formulaDate)).toEqual(['equals', 'before', 'after', 'is-empty', 'is-not-empty']);
+    expect(isValidFilter(formulaNumber, 'greater', 2)).toBe(true);
+    expect(isValidFilter(formulaNumber, 'greater', '2')).toBe(false);
+    expect(isValidFilter(formulaBoolean, 'is', true)).toBe(true);
+    expect(isValidFilter(formulaString, 'contains', 'b')).toBe(true);
+    expect(filterDatabaseRows(formulaRows, formulaProperties, [{ id: 'date', propertyId: formulaDate.id, operator: 'before', value: '2026-01-15' }]).map((item) => item.noteId)).toEqual(['formula-a']);
+    expect(filterDatabaseRows(formulaRows, formulaProperties, [{ id: 'number', propertyId: formulaNumber.id, operator: 'greater', value: 2 }]).map((item) => item.noteId)).toEqual(['formula-a', 'formula-b']);
+    expect(filterDatabaseRows(formulaRows, formulaProperties, [{ id: 'boolean', propertyId: formulaBoolean.id, operator: 'is', value: true }]).map((item) => item.noteId)).toEqual(['formula-a']);
+    expect(filterDatabaseRows(formulaRows, formulaProperties, [{ id: 'string', propertyId: formulaString.id, operator: 'contains', value: 'B' }]).map((item) => item.noteId)).toEqual(['formula-a']);
+  });
+
+  it('keeps source-property editing available when a derived formula has a row error', () => {
+    const record = {
+      ...row('formula-error-note', 'Formula error', { [IDS.alpha]: 'source value' }),
+      issues: [{ noteId: 'formula-error-note', path: 'notes/Formula error.md', databaseId: IDS.dbA, propertyId: IDS.beta, code: 'FORMULA_ERROR', message: 'Division by zero' }],
+    } as UiDatabaseRow;
+    expect(hasBlockingRowIssues(record)).toBe(false);
+    expect(hasBlockingRowIssues(record, properties[0])).toBe(false);
   });
 
   it('does not mutate rows or schemas while sorting/filtering', () => {

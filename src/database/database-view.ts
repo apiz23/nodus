@@ -112,7 +112,7 @@ export function diagnoseDatabaseView(view: DatabaseView, database?: DatabaseDefi
   const groupId = view.type === 'table' || view.type === 'list' ? view.settings?.groupPropertyId : undefined;
   if (groupId !== undefined) {
     const property = byId.get(groupId);
-    if (property && property.type !== 'select' && property.type !== 'checkbox') issues.push({ code: 'INVALID_REFERENCE', propertyId: groupId, message: `Grouping requires a Select or Checkbox property; saved view was preserved.` });
+    if (property && property.type !== 'select' && property.type !== 'checkbox' && property.type !== 'formula') issues.push({ code: 'INVALID_REFERENCE', propertyId: groupId, message: `Grouping requires a Select, Checkbox, or Formula property; saved view was preserved.` });
   }
   const refs = new Set([...view.visiblePropertyIds, ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...(view.sorts ?? []).filter((sort) => sort.propertyId !== 'title').map((sort) => sort.propertyId), ...view.filters.map((filter) => filter.propertyId)]);
   for (const id of refs) if (!byId.has(id)) issues.push({ code: 'MISSING_PROPERTY', propertyId: id, message: `Property "${id}" is missing; saved view was preserved.` });
@@ -140,6 +140,7 @@ export function validateViewReferences(view: DatabaseView, database: DatabaseDef
 }
 
 function filterFits(property: Property, operator: ViewFilterOperator, value: unknown): boolean {
+  if(property.type==='formula')return ['equals','greater','less','contains','is','before','after'].includes(operator)&&(['string','number','boolean'].includes(typeof value)||(typeof value==='string'&&/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)));
   const matches = (operators: ViewFilterOperator[], type: string) => operators.includes(operator) && property.type === type;
   if (matches(['contains', 'equals'], 'text')) return typeof value === 'string' && (operator === 'equals' || value.length > 0);
   if (property.type === 'relation') return (property.relation?.cardinality === 'one' ? operator === 'is' : operator === 'includes') && typeof value === 'string' && isUuidV4(value);

@@ -53,7 +53,7 @@ it('measures the production database rows endpoint with deterministic temporary 
           expect(row.values[TEXT]).toBe(`Value ${Number(row.noteId.slice(-12)) - 1}`);
           expect(row.contentHash).toMatch(/^[a-f0-9]{64}$/);
         }
-        return { elapsed, rows: body.rows.length };
+        return { elapsed, rows: body.rows.length, responseBytes: Buffer.byteLength(JSON.stringify(body)) };
       };
       // Files have just been generated. This is a first API request, NOT a cold-cache run.
       const first = await request();
@@ -61,25 +61,22 @@ it('measures the production database rows endpoint with deterministic temporary 
       const samples = [];
       for (let index = 0; index < iterations; index++) samples.push((await request()).elapsed);
 
-      // Separate instrumented request: inclusive snapshot time and disjoint parse
-      // buckets. Spy/timer overhead is not included in the primary latency samples.
-      let inSnapshot = false;
-      const profile = { snapshotMs: 0, snapshotParseMs: 0, routeParseMs: 0, projectionMs: 0, snapshotParseCalls: 0, routeParseCalls: 0, projectionCalls: 0 };
-      const originalSnapshot = FileSystemVault.prototype.snapshot;
+      // Separate instrumented request. Spy/timer overhead is not included in primary latency samples.
+      const profile = { databaseSnapshotMs: 0, noteParseMs: 0, projectionMs: 0, noteParseCalls: 0, projectionCalls: 0 };
+      const originalSnapshot = FileSystemVault.prototype.databaseRowsSnapshot;
       const originalParse = noteFormat.parseNote;
       const originalProjection = properties.projectNoteProperties;
-      const snapshot = vi.spyOn(FileSystemVault.prototype, 'snapshot').mockImplementation(async function (this: FileSystemVault) {
-        inSnapshot = true;
+      const snapshot = vi.spyOn(FileSystemVault.prototype, 'databaseRowsSnapshot').mockImplementation(async function (this: FileSystemVault) {
         const start = performance.now();
         try { return await originalSnapshot.call(this); }
-        finally { profile.snapshotMs += performance.now() - start; inSnapshot = false; }
+        finally { profile.databaseSnapshotMs += performance.now() - start; }
       });
       const parse = vi.spyOn(noteFormat, 'parseNote').mockImplementation((...args) => {
         const start = performance.now();
         try { return originalParse(...args); }
         finally {
-          if (inSnapshot) { profile.snapshotParseCalls++; profile.snapshotParseMs += performance.now() - start; }
-          else { profile.routeParseCalls++; profile.routeParseMs += performance.now() - start; }
+          profile.noteParseCalls++;
+          profile.noteParseMs += performance.now() - start;
         }
       });
       const project = vi.spyOn(properties, 'projectNoteProperties').mockImplementation((...args) => {
@@ -89,11 +86,10 @@ it('measures the production database rows endpoint with deterministic temporary 
       });
       try {
         await request();
-        expect(profile.snapshotParseCalls).toBe(count);
-        expect(profile.routeParseCalls).toBe(count);
+        expect(profile.noteParseCalls).toBe(count);
         expect(profile.projectionCalls).toBe(count);
       } finally { project.mockRestore(); parse.mockRestore(); snapshot.mockRestore(); }
-      const result = { notes: count, markdownBytes: bytes, rows: first.rows, firstRequestMs: first.elapsed, warmups, iterations, medianMs: percentile(samples, 0.5), p95Ms: percentile(samples, 0.95), minMs: Math.min(...samples), maxMs: Math.max(...samples), samplesMs: samples, profile };
+      const result = { notes: count, markdownBytes: bytes, rows: first.rows, responseBytes: first.responseBytes, firstRequestMs: first.elapsed, warmups, iterations, medianMs: percentile(samples, 0.5), p95Ms: percentile(samples, 0.95), minMs: Math.min(...samples), maxMs: Math.max(...samples), samplesMs: samples, profile };
       results.push(result);
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } finally {

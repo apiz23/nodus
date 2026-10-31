@@ -20,7 +20,7 @@ it('serves derived rows and validates relation writes, read-only fields, stale r
       { id: COUNT, name: 'Count', type: 'rollup', rollup: { relationPropertyId: REL, operation: 'count' } },
     ] });
     for (const noteId of [SOURCE, TARGET, OTHER]) {
-      const note = createNote({ id: noteId, title: `Record ${noteId}`, path: `${noteId}.md`, body: '[[Portable]] body', now: NOW });
+      const note = createNote({ id: noteId, title: `Record ${noteId}`, path: `${noteId}.md`, body: '[[Portable]] body', now: NOW, ...(noteId === TARGET ? { aliases: ['Target alias'], tags: ['picker-tag'] } : {}) });
       if (noteId !== OTHER) note.extraFrontmatter.nodus_data = { format: 'nodus-note-properties', version: 1, databases: { [DB]: noteId === SOURCE ? { [REL]: [TARGET] } : {} } };
       await vault.createNote(note);
     }
@@ -36,9 +36,17 @@ it('serves derived rows and validates relation writes, read-only fields, stale r
       const input = { databaseId: DB, propertyId: REL, value: [], baseHash: current.hash };
       expect((await rows()).rows.find((row) => row.noteId === SOURCE)?.values[COUNT]).toBe(1);
       expect((await rows()).relationCandidates?.[DB]?.map((note) => note.id)).toEqual([SOURCE, TARGET]);
-      for (const value of [[OTHER], [id(999)], [TARGET, TARGET], TARGET]) {
+      expect((await rows()).relationCandidates?.[DB]?.find((note) => note.id === TARGET)).toMatchObject({ aliases: ['Target alias'], tags: ['picker-tag'] });
+      for (const { value, issueCode } of [
+        { value: [OTHER], issueCode: 'INCOMPATIBLE_TARGET' },
+        { value: [id(999)], issueCode: 'MISSING_TARGET' },
+        { value: [TARGET, TARGET], issueCode: 'INVALID_VALUE' },
+        { value: TARGET, issueCode: 'INVALID_VALUE' },
+      ]) {
         const rejected = await request({ ...input, value });
         expect(rejected.status).toBe(422);
+        const error = await rejected.json() as { error: { structuredDataIssues: { code: string }[] } };
+        expect(error.error.structuredDataIssues).toContainEqual(expect.objectContaining({ code: issueCode }));
         expect(await readFile(join(vault.root, current.note.path), 'utf8')).toBe(current.text);
       }
       expect((await request({ ...input, propertyId: COUNT, value: 99 })).status).toBe(422);

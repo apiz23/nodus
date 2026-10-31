@@ -66,6 +66,13 @@ interface ParsedDatabase {
 
 interface ParsedDatabaseView { view: DatabaseView; text: string; bytes: Buffer; path: string }
 
+export interface DatabaseRowsVaultSnapshot {
+  notes: Array<{ note: Note; hash: string }>;
+  databases: Array<{ database: DatabaseDefinition; hash: string }>;
+}
+
+const DATABASE_ROWS_READ_BATCH_SIZE = 32;
+
 const NOTE_NOT_FOUND = (id: string) =>
   new StorageError('NOT_FOUND', `Note "${id}" was not found`, { details: { ids: [id] } });
 
@@ -321,18 +328,20 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   /** Relation target validation and the conditional source write share one root lock. */
   async setNoteProperty(id: string, input: SetNotePropertyInput | { databaseId: string; membershipOnly: true; confirmCreate: boolean }, options: { expectedHash: string; now: string }): Promise<SetNotePropertyResult> {
     return withVaultRootLock(this.root, async () => {
-      const parsed = await this.parseNotesStrict();
-      const current = parsed.find(({ note }) => note.id === id);
+      // One lock-scoped scan supplies current source bytes, all target notes, and schemas.
+      // Relation validation must not combine independently read vault revisions.
+      const snapshot = await this.databaseRowsSnapshotUnlocked();
+      const current = snapshot.notes.find(({ note }) => note.id === id);
       if (!current) throw NOTE_NOT_FOUND(id);
-      if (sha256Hex(current.bytes) !== options.expectedHash) throw staleWrite(current.note.path, sha256Hex(current.bytes));
-      const schemas = new Map((await this.parseDatabasesStrict()).map(({ database }) => [database.id, database]));
+      if (current.hash !== options.expectedHash) throw staleWrite(current.note.path, current.hash);
+      const schemas = new Map(snapshot.databases.map(({ database }) => [database.id, database]));
       const result = 'membershipOnly' in input ? addNoteDatabaseMembership(current.note, schemas, input.databaseId, input.confirmCreate) : setNotePropertyValue(current.note, schemas, input);
       if (!result.ok) return result;
       const property = 'propertyId' in input ? schemas.get(input.databaseId)!.properties.find((property) => property.id === input.propertyId)! : undefined;
       const updated = { ...current.note, extraFrontmatter: result.extraFrontmatter, updatedAt: options.now };
-      const notes = parsed.map(({ note }) => note.id === id ? updated : note);
+      const notes = snapshot.notes.map(({ note }) => note.id === id ? updated : note);
       const problem = property && 'propertyId' in input ? relationWriteIssue(property, notes, schemas, input.remove ? null : input.value) : undefined;
-      if (problem) return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: property!.id, code: 'INCOMPATIBLE_TARGET', message: problem }] };
+      if (problem) return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: property!.id, code: problem.code, message: problem.message }] };
       const absolute = await this.validateNoteTarget(updated.path);
       await this.assertUnchanged(absolute, updated.path, options.expectedHash);
       await this.writeDocument(updated.path, this.serializeNoteInput(updated));
@@ -764,6 +773,58 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   async snapshot(): Promise<VaultEntry[]> {
     return withVaultRootLock(this.root, () => this.snapshotUnlocked());
+  }
+
+  /** Reads the parsed note and schema data required by database rows under one root lock and one vault walk. */
+  async databaseRowsSnapshot(): Promise<DatabaseRowsVaultSnapshot> {
+    return withVaultRootLock(this.root, () => this.databaseRowsSnapshotUnlocked());
+  }
+
+  /** Caller must hold the vault root lock. */
+  private async databaseRowsSnapshotUnlocked(): Promise<DatabaseRowsVaultSnapshot> {
+      const { entries, issues } = await walkVault(this.root);
+      const databaseIssue = issues.find((issue) => issue.path === 'databases' || issue.path.startsWith('databases/'));
+      if (databaseIssue) throw new StorageError('INVALID_CONTENT', databaseIssue.message, { path: databaseIssue.path });
+
+      const noteEntries = entries.filter((entry) => entry.kind === 'note');
+      const databaseEntries = entries.filter((entry) => entry.kind === 'database');
+      const notes: DatabaseRowsVaultSnapshot['notes'] = [];
+      const seenNotes = new Map<string, string>();
+      for (let offset = 0; offset < noteEntries.length; offset += DATABASE_ROWS_READ_BATCH_SIZE) {
+        const batch = noteEntries.slice(offset, offset + DATABASE_ROWS_READ_BATCH_SIZE);
+        const reads = await Promise.allSettled(batch.map(async (entry) => {
+          const bytes = await this.readBytes(entry);
+          const text = decodeVaultText(bytes, entry.path);
+          return { note: parseNote(text, entry.path), hash: sha256Hex(bytes) };
+        }));
+        for (const [index, read] of reads.entries()) {
+          const entry = batch[index]!;
+          let result: { note: Note; hash: string };
+          try {
+            if (read.status === 'rejected') throw read.reason;
+            result = read.value;
+          } catch (error) { throw wrapContentError(error, entry.path); }
+          const previous = seenNotes.get(result.note.id);
+          if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Note ID "${result.note.id}" is used by both "${previous}" and "${entry.path}"`, { details: { ids: [result.note.id], paths: [previous, entry.path] } });
+          seenNotes.set(result.note.id, entry.path);
+          notes.push({ note: result.note, hash: result.hash });
+        }
+      }
+
+      const databases: DatabaseRowsVaultSnapshot['databases'] = [];
+      for (const entry of databaseEntries) {
+        let database: DatabaseDefinition;
+        let hash: string;
+        try {
+          const bytes = await this.readBytes(entry);
+          database = parseDatabase(decodeVaultText(bytes, entry.path));
+          hash = sha256Hex(bytes);
+        } catch (error) { throw wrapContentError(error, entry.path); }
+        const expected = databasePath(database.id);
+        if (entry.path !== expected) throw new StorageError('INVALID_CONTENT', `Database ID "${database.id}" must be stored at "${expected}", found "${entry.path}"`, { path: entry.path, details: { ids: [database.id], paths: [entry.path] } });
+        databases.push({ database, hash });
+      }
+      return { notes, databases };
   }
 
   async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {

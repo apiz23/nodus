@@ -25,7 +25,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
@@ -34,14 +34,16 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
-import { CodeMirrorEditor } from './editor/CodeMirrorEditor';
-import { MarkdownPreview } from './editor/MarkdownPreview';
 import { BacklinksPanel } from './BacklinksPanel';
+import { RelationBacklinksPanel } from './RelationBacklinksPanel';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
 import { TagEditor } from './editor/TagEditor';
 import { PropertyEditor } from './editor/PropertyEditor';
 import type { NotePropertyValue } from '../../src/properties/catalog';
+
+const CodeMirrorEditor = lazy(() => import('./editor/CodeMirrorEditor').then((module) => ({ default: module.CodeMirrorEditor })));
+const MarkdownPreview = lazy(() => import('./editor/MarkdownPreview').then((module) => ({ default: module.MarkdownPreview })));
 
 interface EditorProps {
   note: UiNote | null;
@@ -502,24 +504,31 @@ export function Editor({
           </label>
           <div className="mt-6 min-h-[42vh] w-full">
             <div hidden={preview}>
-              <CodeMirrorEditor
-                key={note.id}
-                value={body}
-                onChange={onBodyChange}
-                mode={editorMode}
-                notes={notes}
-                onOpenNote={onOpenNote}
-                notePath={note.path}
-                className="w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
-                aria-label="Markdown body"
-              />
+              <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading Markdown editor…</div>}>
+                <CodeMirrorEditor
+                  key={note.id}
+                  value={body}
+                  onChange={onBodyChange}
+                  mode={editorMode}
+                  notes={notes}
+                  onOpenNote={onOpenNote}
+                  notePath={note.path}
+                  className="w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
+                  aria-label="Markdown body"
+                />
+              </Suspense>
             </div>
             <div hidden={!preview}>
-              {preview ? <MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} /> : null}
+              {preview ? <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading preview…</div>}><MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} /></Suspense> : null}
             </div>
           </div>
 
           <BacklinksPanel
+            noteId={note.id}
+            revision={backlinksRevision}
+            onOpenNote={onOpenNote}
+          />
+          <RelationBacklinksPanel
             noteId={note.id}
             revision={backlinksRevision}
             onOpenNote={onOpenNote}

@@ -23,8 +23,8 @@ try {
   };
   await request('/databases', 'POST', { database: { id: TASKS, name: 'Tasks', properties: [{ id: COST, name: 'Cost', type: 'number' }, { id: DONE, name: 'Done', type: 'checkbox' }] } });
   await request('/databases', 'POST', { database: { id: DB, name: 'Projects', properties: [{ id: STATUS, name: 'Status', type: 'select', options: [{ id: OPEN, name: 'Open' }] }, { id: DATE, name: 'Date', type: 'date' }] } });
-  const seed = async (title, databaseId, values) => {
-    let { note } = await request('/notes', 'POST', { title });
+  const seed = async (title, databaseId, values, tags = []) => {
+    let { note } = await request('/notes', 'POST', { title, tags });
     for (const [propertyId, value] of values) {
       const saved = await request(`/notes/${note.id}/properties`, 'PUT', { databaseId, propertyId, value, confirmCreate: true, baseHash: note.contentHash });
       note = { ...note, contentHash: saved.contentHash };
@@ -34,6 +34,7 @@ try {
   const project = await seed('Project Alpha', DB, [[STATUS, OPEN], [DATE, '2026-10-29']]);
   const first = await seed('Task One', TASKS, [[COST, 3], [DONE, false]]);
   const second = await seed('Task Two', TASKS, [[COST, 7], [DONE, true]]);
+  const third = await seed('Task Three', TASKS, [[COST, 11], [DONE, false]], ['relation-picker-demo']);
   const derivedDb = id(70), sourceDb = id(71), forward = id(72), reverse = id(73);
   await request('/databases', 'POST', { database: { id: sourceDb, name: 'Z relation sources', properties: [{ id: forward, name: 'Targets', type: 'relation', relation: { databaseId: derivedDb, cardinality: 'many' } }] } });
   await request('/databases', 'POST', { database: { id: derivedDb, name: 'Z derived records', properties: [{ id: reverse, name: 'Sources', type: 'relation', relation: { databaseId: sourceDb, cardinality: 'many', reversePropertyId: forward } }] } });
@@ -44,11 +45,17 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${base}/app`);
+  let projectRowRequests = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === `/api/databases/${DB}/rows`) projectRowRequests++;
+  });
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
   const choose = async (label, name) => {
     await page.getByRole('combobox', { name: label, exact: true }).click();
     await page.getByRole('option', { name, exact: true }).click();
+    const continueButton = page.getByRole('button', { name: 'Continue', exact: true });
+    if (await continueButton.isVisible().catch(() => false)) await continueButton.click();
   };
   await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
   let propertyCount = 2;
@@ -80,7 +87,11 @@ try {
   const completion = schema.properties.find((property) => property.name === 'Completion');
   const saveCell = async () => {
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await page.getByText('Property saved.', { exact: true }).waitFor();
+    try { await page.getByText('Property saved.', { exact: true }).waitFor(); }
+    catch (error) {
+      console.error('Property save did not complete:', await page.locator('[role="alert"]').allInnerTexts());
+      throw error;
+    }
   };
   await page.getByRole('button', { name: 'Edit Related tasks for Project Alpha', exact: true }).click();
   await page.getByRole('button', { name: 'Related tasks for Project Alpha', exact: true }).click();
@@ -91,6 +102,16 @@ try {
   await page.locator(`[aria-label="Total cost for Project Alpha"]`).filter({ hasText: '10' }).waitFor();
   assert.equal(await page.locator('[aria-label="Completion for Project Alpha"]').innerText(), '50.0%');
   assert.equal(await page.getByRole('button', { name: 'Edit Total cost for Project Alpha', exact: true }).count(), 0);
+
+  await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
+  await choose('Related tasks Cardinality', 'One record');
+  await page.getByRole('button', { name: 'Save schema', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'This change may make saved relation values invalid.' }).waitFor();
+  assert.match(await page.getByRole('alert').filter({ hasText: 'This change may make saved relation values invalid.' }).innerText(), /1 note has a stored value/);
+  await page.getByRole('button', { name: 'Review changes', exact: true }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  assert.deepEqual((await request(`/databases/${DB}/rows`)).rows.find((row) => row.noteId === project.id).values[relation.id], [first.id, second.id]);
+
   await page.getByRole('button', { name: 'Edit Lead task for Project Alpha', exact: true }).click();
   await page.getByRole('button', { name: 'Lead task for Project Alpha', exact: true }).click();
   const option = page.getByRole('option', { name: 'Choose Task One', exact: true });
@@ -112,7 +133,7 @@ try {
   await choose('Parent projects Forward property', 'Related tasks');
   await page.getByRole('button', { name: 'Save schema', exact: true }).click();
   await page.getByRole('dialog', { name: 'Edit database schema' }).waitFor({ state: 'hidden' });
-  await page.getByRole('row').filter({ hasText: 'Task One' }).getByRole('button', { name: 'Project Alpha', exact: true }).waitFor();
+  await page.getByRole('row').filter({ hasText: 'Task One' }).getByRole('button', { name: /Open related record Project Alpha/ }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Edit Parent projects for Task One', exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Edit Done for Task One', exact: true }).click();
   await page.getByRole('button', { name: 'Done for Task One', exact: true }).click();
@@ -131,23 +152,71 @@ try {
     await choose('View', new RegExp(`^${type} relations`));
     if (type === 'calendar') await page.getByLabel('Month', { exact: true }).fill('2026-10');
     const layout = type === 'kanban' ? page.getByRole('region', { name: 'Kanban grouped by Status' }) : type === 'calendar' ? page.getByRole('region', { name: 'Calendar by Date' }) : page.getByRole('table').first();
-    await layout.getByRole('button', { name: 'Task One', exact: true }).first().waitFor();
+    await layout.getByRole('button', { name: /Open related record Task One/ }).first().waitFor();
     assert.match(await layout.innerText(), /10/);
   }
-  // Return to table before testing stale selection, deletion and reference repair.
   await choose('View', /^table relations/);
+  await page.getByRole('table').getByRole('button', { name: /Open related record Task One/ }).first().click();
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).inputValue(), 'Task One');
+  const incoming = page.getByRole('region', { name: 'Incoming database relation records' });
+  const sourceLink = incoming.getByRole('button', { name: /Open Project Alpha in Projects, linked through Related tasks/ });
+  await sourceLink.waitFor();
+  await incoming.getByText(/reciprocal: Parent projects/).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const relationPanelBounds = await incoming.boundingBox();
+  assert(relationPanelBounds && relationPanelBounds.x >= 0 && relationPanelBounds.x + relationPanelBounds.width <= 390, 'incoming relations should fit the mobile viewport');
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'incoming relations should not introduce mobile horizontal overflow');
+  await sourceLink.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).inputValue(), 'Project Alpha');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await selectDb('Projects');
+  await choose('View', /^table relations/);
+  // Return to table before testing stale selection, deletion and reference repair.
   const old = (await request(`/notes/${first.id}`)).note;
   const renamed = (await request(`/notes/${first.id}`, 'PUT', { title: 'Renamed task', body: old.body, baseHash: old.contentHash })).note;
   await request(`/notes/${first.id}/move`, 'POST', { path: 'moved/task.md', baseHash: renamed.contentHash });
   await request(`/notes/${second.id}`, 'DELETE', { baseHash: (await request(`/notes/${second.id}`)).note.contentHash });
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await page.getByRole('table').getByRole('button', { name: 'Renamed task', exact: true }).first().waitFor();
-  await page.getByText(`Missing/deleted: ${second.id}`, { exact: true }).waitFor();
+  await page.getByRole('table').getByRole('button', { name: /Open related record Renamed task/ }).first().waitFor();
+  await page.getByText('Missing record', { exact: true }).waitFor();
+  assert.equal((await page.getByRole('row').filter({ hasText: 'Project Alpha' }).innerText()).includes(second.id), false);
   await page.getByRole('button', { name: 'Edit Related tasks for Project Alpha', exact: true }).click();
-  await page.getByRole('button', { name: `Remove relation ${second.id}`, exact: true }).click();
+  await page.getByRole('button', { name: `Remove missing relation ${second.id.slice(-8)}`, exact: true }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByText('Missing record', { exact: true }).waitFor();
+  assert.deepEqual((await request(`/databases/${DB}/rows`)).rows.find((row) => row.noteId === project.id).values[relation.id], [first.id, second.id]);
+
+  await page.getByRole('button', { name: 'Edit Related tasks for Project Alpha', exact: true }).click();
+  await page.getByRole('button', { name: 'Related tasks for Project Alpha', exact: true }).click();
+  const relationSearch = page.getByRole('combobox', { name: 'Related tasks for Project Alpha', exact: true });
+  const requestsBeforeSearch = projectRowRequests;
+  await relationSearch.fill('relation-picker-demo');
+  const replacement = page.getByRole('option', { name: 'Choose Task Three', exact: true });
+  await replacement.waitFor();
+  assert.equal(projectRowRequests, requestsBeforeSearch, 'relation picker search should use loaded target candidates without another rows request');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'missing/deleted' }).waitFor();
+  await page.getByRole('button', { name: `Remove missing relation ${second.id.slice(-8)}`, exact: true }).click();
   await saveCell();
-  assert.equal((await request(`/databases/${DB}/rows`)).rows[0].values[total.id], 3);
-  await page.getByRole('table').getByRole('button', { name: 'Renamed task', exact: true }).first().click();
+  const repaired = (await request(`/databases/${DB}/rows`)).rows.find((row) => row.noteId === project.id);
+  assert.deepEqual(repaired.values[relation.id], [first.id, third.id]);
+  assert.equal(repaired.values[total.id], 14);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Edit Related tasks for Project Alpha', exact: true }).click();
+  await page.getByRole('button', { name: 'Related tasks for Project Alpha', exact: true }).click();
+  const pickerBounds = await page.locator('[data-slot="popover-content"]').boundingBox();
+  assert(pickerBounds && pickerBounds.x >= 0 && pickerBounds.x + pickerBounds.width <= 390, 'relation picker should fit the mobile viewport');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('table').getByRole('button', { name: /Open related record Renamed task/ }).first().click();
   await page.waitForFunction(() => document.querySelector('#note-title')?.value === 'Renamed task');
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await selectDb('Z derived records');
@@ -181,7 +250,7 @@ try {
   assert.equal(membershipWrites, 0);
   assert.deepEqual((await request(`/notes/${deferredMember.id}/properties`)).rows, []);
   assert.deepEqual(errors, []);
-  console.log('Relations smoke passed: UI schema configuration, single/multiple selection, derived reverse links, rollups after edits, all saved layouts, filters, rename/move/delete, repair, and stable-ID navigation.');
+  console.log('Relations smoke passed: UI schema configuration, single/multiple selection, forward and incoming relation navigation, derived reciprocal links, rollups after edits, all saved layouts, filters, rename/move/delete, repair, and stable-ID navigation.');
 } finally {
   await browser?.close(); await server?.close(); await rm(root, { recursive: true, force: true });
 }

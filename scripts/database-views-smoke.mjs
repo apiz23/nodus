@@ -67,7 +67,7 @@ try {
     }
     return note;
   }
-  const alpha = await fixture('Alpha card', [[STATUS, READY], [DATE, '2026-10-28']]);
+  const alpha = await fixture('Alpha card', [[STATUS, READY], [DATE, '2026-10-28'], [NUMBER, 3]]);
   const beta = await fixture('Beta card', [[NUMBER, 2]]);
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext();
@@ -79,6 +79,88 @@ try {
   await page.goto(`${base}/app`);
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+
+  // Formula editing uses the existing schema flow, stable property UUID
+  // completions, derived preview, draft-safe cancel behavior, and a narrow layout.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
+  const schemaDialog = page.getByRole('dialog', { name: 'Edit database schema' });
+  await schemaDialog.getByRole('button', { name: 'Add property', exact: true }).click();
+  await schemaDialog.getByLabel('Property 4 name', { exact: true }).fill('Double estimate');
+  await schemaDialog.getByLabel('Property 4 type', { exact: true }).click();
+  await page.getByRole('option', { name: 'Formula', exact: true }).click();
+  await schemaDialog.getByRole('button', { name: 'Configure formula', exact: true }).click();
+  const formulaEditor = page.getByRole('region', { name: 'Formula editor for Double estimate' });
+  const formulaInput = formulaEditor.getByRole('textbox', { name: 'Formula for Double estimate' });
+  await formulaInput.fill('@{est');
+  const estimateSuggestion = page.getByRole('option').filter({ hasText: 'Estimate' });
+  await estimateSuggestion.first().waitFor();
+  await formulaInput.press('Enter');
+  assert.equal((await formulaInput.textContent()).trim(), `@{${NUMBER}}`);
+  await formulaInput.press('End');
+  await formulaInput.pressSequentially(' * 2');
+  await formulaEditor.getByText(/Formula is valid\./).waitFor();
+  await formulaEditor.getByText('6', { exact: true }).waitFor();
+  await formulaEditor.getByRole('button', { name: 'Apply formula', exact: true }).click();
+
+  // A later invalid edit can be canceled without replacing the valid draft.
+  await schemaDialog.getByRole('button', { name: 'Edit formula', exact: true }).click();
+  const formulaEdit = page.getByRole('region', { name: 'Formula editor for Double estimate' });
+  const formulaDraft = formulaEdit.getByRole('textbox', { name: 'Formula for Double estimate' });
+  await formulaDraft.fill('1 +');
+  await formulaEdit.getByRole('button', { name: 'Cancel formula edit', exact: true }).click();
+  await schemaDialog.getByText(new RegExp(`@\\{${NUMBER}\\} \\* 2`)).waitFor();
+  const schemaSaved = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/databases/${DB}` && response.request().method() === 'PUT');
+  await schemaDialog.getByRole('button', { name: 'Save schema', exact: true }).click();
+  assert.equal((await schemaSaved).status(), 200);
+  await schemaDialog.waitFor({ state: 'hidden' });
+  const formulaSchema = await request('/api/databases');
+  const formulaProperty = formulaSchema.databases.find((database) => database.id === DB).properties.find((property) => property.name === 'Double estimate');
+  assert.equal(formulaProperty.type, 'formula');
+  assert.equal(formulaProperty.formula.expression, `@{${NUMBER}} * 2`);
+  const alphaRow = (await request(`/api/notes/${alpha.id}/properties`)).rows[0];
+  assert.equal(alphaRow.values[NUMBER], 3, 'Formula integration changed the source value');
+  assert.equal(alphaRow.values[formulaProperty.id], 6, 'Formula was not projected as a derived value');
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  const formulaColumns = page.getByRole('group', { name: 'Visible columns' });
+  assert.equal(await formulaColumns.getByRole('checkbox', { name: /Double estimate/ }).isChecked(), true);
+  await page.keyboard.press('Escape');
+  const renderedFormulaTable = await page.getByRole('region', { name: 'Database table records' }).innerText();
+  assert.match(renderedFormulaTable, /Double estimate/);
+  assert.match(renderedFormulaTable, /Alpha card[\s\S]*\b6\b/);
+
+  // Runtime errors stay distinct from null and expose a compact accessible
+  // diagnostic instead of breaking the table row.
+  await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
+  const errorSchemaDialog = page.getByRole('dialog', { name: 'Edit database schema' });
+  await errorSchemaDialog.getByRole('button', { name: 'Add property', exact: true }).click();
+  await errorSchemaDialog.getByLabel('Property 5 name', { exact: true }).fill('Division diagnostic');
+  await errorSchemaDialog.getByLabel('Property 5 type', { exact: true }).click();
+  await page.getByRole('option', { name: 'Formula', exact: true }).click();
+  await errorSchemaDialog.getByRole('button', { name: 'Configure formula', exact: true }).click();
+  const errorFormulaEditor = page.getByRole('region', { name: 'Formula editor for Division diagnostic' });
+  await errorFormulaEditor.getByRole('textbox', { name: 'Formula for Division diagnostic' }).fill(`1 / (@{${NUMBER}} - 3)`);
+  await errorFormulaEditor.getByText(/Formula is valid\./).waitFor();
+  await errorFormulaEditor.getByRole('button', { name: 'Apply formula', exact: true }).click();
+  const errorSchemaSaved = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/databases/${DB}` && response.request().method() === 'PUT');
+  await errorSchemaDialog.getByRole('button', { name: 'Save schema', exact: true }).click();
+  const errorSchemaResponse = await errorSchemaSaved;
+  assert.equal(errorSchemaResponse.status(), 200, JSON.stringify(await errorSchemaResponse.json()));
+  await errorSchemaDialog.waitFor({ state: 'hidden' });
+  const updatedDatabases = await request('/api/databases');
+  const errorProperty = updatedDatabases.databases.find((database) => database.id === DB).properties.find((property) => property.name === 'Division diagnostic');
+  const diagnosticProjection = await request(`/api/notes/${alpha.id}/properties`);
+  const diagnosticRow = diagnosticProjection.rows[0];
+  assert.equal(diagnosticRow.values[errorProperty.id], null);
+  assert.equal(diagnosticProjection.issues.find((issue) => issue.propertyId === errorProperty.id).formulaErrorCode, 'DIVISION_BY_ZERO');
+  const errorControl = page.getByRole('button', { name: 'Show formula error for Division diagnostic on Alpha card', exact: true });
+  await errorControl.waitFor();
+  await errorControl.click();
+  await page.getByRole('status').filter({ hasText: 'DIVISION_BY_ZERO' }).waitFor();
+  await page.getByRole('status').filter({ hasText: 'Division by zero' }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1280, height: 900 });
+
   const controls = page.getByRole('region', { name: 'Saved database views' });
   const selector = controls.getByLabel('View', { exact: true });
   async function createView(name, type) {
@@ -285,7 +367,7 @@ try {
   await page.unroute(viewRoute);
   assert.deepEqual(failures, expectedFailures);
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: saved table reload/filter/columns/sort, table/list grouping and collapse, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});

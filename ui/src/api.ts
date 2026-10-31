@@ -3,6 +3,7 @@ import type {
   ImportReport,
   RestorePreview,
   UiBacklinksResponse,
+  UiRelationBacklinksResponse,
   UiDiscoveryResponse,
   UiNoteGraph,
   UiBackupValidationResult,
@@ -241,6 +242,9 @@ export const api = {
   },
   backlinks(id: string, refresh = false): Promise<UiBacklinksResponse> {
     return request<UiBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/backlinks${refresh ? '?refresh=true' : ''}`);
+  },
+  relationBacklinks(id: string, refresh = false): Promise<UiRelationBacklinksResponse> {
+    return request<UiRelationBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/relation-backlinks${refresh ? '?refresh=true' : ''}`);
   },
 
   createNote(input: UiCreateNoteInput): Promise<{ note: UiNote }> {

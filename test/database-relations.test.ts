@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createNote, type Note } from '../src/domain/note.js';
 import { parseDatabase, serializeDatabase, type DatabaseDefinition, type Property } from '../src/database/schema.js';
 import { projectRelations } from '../src/database/relations.js';
+import { projectIncomingRelations } from '../src/database/relations.js';
 import { setNotePropertyValue } from '../src/database/note-properties.js';
 import { diagnoseDatabaseView, serializeDatabaseView, parseDatabaseView } from '../src/database/database-view.js';
 import { selectDatabaseRows } from '../ui/src/database-table.js';
@@ -44,7 +45,7 @@ describe('portable database relations and rollups', () => {
     expect(parseDatabase(serializeDatabase(projects))).toEqual(projects);
     expect(parseDatabase(serializeDatabase(tasks))).toEqual(tasks);
     expect(() => parseDatabase(serializeDatabase(projects).replace('"version": 2', '"version": 1'))).toThrow();
-    expect(() => parseDatabase(serializeDatabase(projects).replace('"version": 2', '"version": 3'))).toThrow(/newer/);
+    expect(() => parseDatabase(serializeDatabase(projects).replace('"version": 2', '"version": 4'))).toThrow(/newer/);
   });
 
   it.each([
@@ -212,12 +213,15 @@ describe('portable database relations and rollups', () => {
       const imported = await FileSystemVault.open(join(root, 'imported')); await imported.applyImport(await planImport(exportRoot));
       const definitions = new Map((await imported.listDatabases()).map((db) => [db.id, db.id]));
       const actualSchemas = new Map(await Promise.all([...definitions.keys()].map(async (id) => [id, await imported.readDatabase(id)] as const)));
-      const graph = projectRelations(await imported.snapshotNotes(), actualSchemas);
+      const importedNotes = await imported.snapshotNotes();
+      const graph = projectRelations(importedNotes, actualSchemas);
+      const incoming = projectIncomingRelations(importedNotes, actualSchemas);
       expect(graph.rows.get(P)?.get(DB)?.values[SUM]).toBe(10);
       expect(graph.rows.get(T1)?.get(TASKS)?.values[REV]).toEqual([P]);
+      expect(incoming.get(T1)).toEqual(expect.arrayContaining([expect.objectContaining({ sourceId: P, sourceDatabaseId: DB, propertyId: REL, status: 'resolved' })]));
       expect(await readFile(join(imported.root, `${P}.md`), 'utf8')).not.toContain(COUNT);
       const manifestPath = join(backup, 'nodus-backup.json');
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')); manifest.formats.database = 3;
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')); manifest.formats.database = 4;
       await writeFile(manifestPath, JSON.stringify(manifest));
       await expect(validateBackup(backup)).rejects.toMatchObject({ code: 'UNSUPPORTED_VERSION' });
     });

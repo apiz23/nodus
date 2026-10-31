@@ -1646,7 +1646,7 @@ describe('local UI API', () => {
             }],
           },
         },
-        { label: 'unsupported version', schema: { ...propertyDatabase, version: 3 } },
+        { label: 'unsupported version', schema: { ...propertyDatabase, version: 4 } },
       ];
       try {
         for (const [index, item] of invalidSchemas.entries()) {

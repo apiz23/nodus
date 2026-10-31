@@ -100,5 +100,24 @@ export { graphFromLinkIndex, type GraphNode, type GraphEdge, type NoteGraph } fr
 
 export { buildSearchIndex, searchIndex, type SearchIndex, type SearchResult, type SearchMatch, type SearchField } from './search/search-index.js';
 
-export { projectRelations, configurationIssues, type RelationReference, type RelatedRow } from './database/relations.js';
+export { projectRelations, configurationIssues, type RelationReference, type RelatedRow, type RelationDiagnostic } from './database/relations.js';
+export { validateRelationValue, type RelationCardinality, type RelationPropertyConfiguration, type RelationTargetId, type RelationTargetReference, type RelationTargetStatus, type RelationValue, type RelationValueValidationResult, type RelationWriteDiagnostic } from './database/relation-contract.js';
+export type { RelationDiagnosticCode } from './database/note-properties.js';
 export { ROLLUP_OPERATIONS, databaseVersion, isDerivedProperty, type RollupOperation } from './database/schema.js';
+export {
+  DEFAULT_FORMULA_EVALUATION_LIMITS,
+  type FormulaBinaryOperator,
+  type FormulaDiagnostic,
+  type FormulaError,
+  type FormulaErrorCode,
+  type FormulaEvaluationLimits,
+  type FormulaExpression,
+  type FormulaFunctionDefinition,
+  type FormulaLiteralValue,
+  type FormulaSourceSpan,
+  type FormulaType,
+  type FormulaUnaryOperator,
+  type FormulaValue,
+} from './database/formula-contract.js';
+export { FORMULA_FUNCTIONS, parseFormula, validateFormula, evaluateFormula, type FormulaSchema, type FormulaProperty, type FormulaPropertyValues, type FormulaResult } from './database/formula-engine.js';
+export { tokenizeFormula, type FormulaToken, type FormulaTokenKind } from './database/formula-tokenizer.js';

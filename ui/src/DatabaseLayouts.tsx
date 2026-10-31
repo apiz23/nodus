@@ -1,7 +1,9 @@
 import { hasBlockingRowIssues } from './database-table';
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { CalendarClock, ChevronLeft, ChevronRight, Pencil, Plus } from 'lucide-react';
+import { isDerivedProperty } from '../../src/database/schema.js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -59,29 +61,58 @@ export function KanbanView(props: LayoutProps) {
 
 export function ListView(props: Omit<LayoutProps, 'property'> & { groupProperty?: Property }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const groups = props.groupProperty ? groupDatabaseRows(props.rows, props.groupProperty) : [{ id: '__all__', name: '', rows: props.rows }];
-  return <section aria-label="Database list view" className="my-4 divide-y rounded-md border bg-card">
-    {groups.map((group) => <section key={group.id} aria-label={group.name ? `${group.name} group` : undefined}>
-      {props.groupProperty ? <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
-        <Button type="button" variant="ghost" size="sm" className="h-auto px-1 py-0 font-medium" aria-expanded={!collapsed.has(group.id)} onClick={() => setCollapsed((previous) => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{group.name}</Button>
-        <Badge variant="secondary">{group.rows.length}</Badge>
-      </div> : null}
-      {!collapsed.has(group.id) ? group.rows.map((row) => <article key={row.noteId} aria-label={row.title} className="flex min-w-0 flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
-      <div className="min-w-0 flex-1">
-        <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal break-words p-0 text-left font-medium" title={row.title} onClick={() => props.onOpen(row.noteId)}>{row.title}</Button>
-        <div className="truncate text-[10px] text-muted-foreground" title={row.path}>{row.path}</div>
+  const groups = useMemo(() => props.groupProperty ? groupDatabaseRows(props.rows, props.groupProperty) : [{ id: '__all__', name: '', rows: props.rows }], [props.groupProperty, props.rows]);
+  const items = useMemo(() => {
+    const result: Array<{ key: string; kind: 'group'; group: (typeof groups)[number] } | { key: string; kind: 'row'; row: UiDatabaseRow; rowIndex: number }> = [];
+    let position = 0;
+    for (const group of groups) {
+      if (props.groupProperty) result.push({ key: `group:${group.id}`, kind: 'group', group });
+      if (collapsed.has(group.id)) { position += group.rows.length; continue; }
+      for (const row of group.rows) result.push({ key: `row:${row.noteId}`, kind: 'row', row, rowIndex: position++ });
+    }
+    return result;
+  }, [collapsed, groups, props.groupProperty]);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: items.length,
+    getScrollElement: () => viewportRef.current,
+    estimateSize: (index) => items[index]?.kind === 'group' ? 40 : Math.min(240, 72 + Math.ceil(props.visibleProperties.length / 3) * 32),
+    getItemKey: (index) => items[index]?.key ?? index,
+    overscan: 6,
+    initialRect: { width: 1024, height: 640 },
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+  return <section aria-label="Database list view" className="my-4">
+    <div ref={viewportRef} role="region" aria-label="Database list records" tabIndex={0} className="max-h-[70vh] overflow-auto rounded-md border bg-card">
+      <div role="list" aria-label="Database records" className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualItems.map((virtualItem) => {
+          const item = items[virtualItem.index]!;
+          return <div key={item.key} role={item.kind === 'row' ? 'listitem' : 'presentation'} aria-posinset={item.kind === 'row' ? item.rowIndex + 1 : undefined} aria-setsize={item.kind === 'row' ? props.rows.length : undefined} data-index={virtualItem.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={{ transform: `translateY(${virtualItem.start}px)` }}>
+            {item.kind === 'group' ? <div role="heading" aria-level={3} className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+              <Button type="button" variant="ghost" size="sm" className="h-auto px-1 py-0 font-medium" aria-expanded={!collapsed.has(item.group.id)} onClick={() => setCollapsed((previous) => { const next = new Set(previous); if (next.has(item.group.id)) next.delete(item.group.id); else next.add(item.group.id); return next; })}>{item.group.name}</Button>
+              <Badge variant="secondary">{item.group.rows.length}</Badge>
+            </div> : <article aria-label={item.row.title} className="flex min-w-0 flex-col gap-2 border-b px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
+              <div className="min-w-0 flex-1">
+                <Button data-note-open={item.row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal break-words p-0 text-left font-medium" title={item.row.title} onClick={() => props.onOpen(item.row.noteId)}>{item.row.title}</Button>
+                <div className="truncate text-[10px] text-muted-foreground" title={item.row.path}>{item.row.path}</div>
+              </div>
+              {props.visibleProperties.length ? <dl className="grid min-w-0 flex-1 grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+                {props.visibleProperties.map((property) => {
+                  const value = props.renderValue ? props.renderValue(item.row, property) : props.formatValue(property, item.row.values[property.id]);
+                  return <div key={property.id} className="flex min-w-0 items-baseline gap-2 text-xs">
+                    <dt className="shrink-0 text-muted-foreground">{property.name}</dt>
+                    <dd className="min-w-0 truncate" title={typeof value === 'string' ? value : undefined}>{value}</dd>
+                    {!isDerivedProperty(property) ? <Button type="button" size="icon-xs" variant="ghost" className="shrink-0" disabled={props.disabled || hasBlockingRowIssues(item.row, property)} aria-label={`Edit ${property.name} for ${item.row.title}`} onClick={() => props.onEdit(item.row, property)}><Pencil /></Button> : null}
+                  </div>;
+                })}
+              </dl> : null}
+              {item.row.issues.length ? <Badge variant="destructive" className="shrink-0">Needs attention</Badge> : null}
+            </article>}
+          </div>;
+        })}
       </div>
-      {props.visibleProperties.length ? <dl className="grid min-w-0 flex-1 grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
-        {props.visibleProperties.map((property) => <div key={property.id} className="flex min-w-0 items-baseline gap-2 text-xs">
-          <dt className="shrink-0 text-muted-foreground">{property.name}</dt>
-          <dd className="min-w-0 truncate" title={props.formatValue(property, row.values[property.id])}>{props.renderValue ? props.renderValue(row, property) : props.formatValue(property, row.values[property.id])}</dd>
-          <Button type="button" size="icon-xs" variant="ghost" className="shrink-0" disabled={props.disabled || hasBlockingRowIssues(row, property)} aria-label={`Edit ${property.name} for ${row.title}`} onClick={() => props.onEdit(row, property)}><Pencil /></Button>
-        </div>)}
-      </dl> : null}
-      {row.issues.length ? <Badge variant="destructive" className="shrink-0">Needs attention</Badge> : null}
-      </article>) : null}
-    </section>)}
-    {props.rows.length === 0 ? <p className="px-3 py-4 text-sm text-muted-foreground">No records match this view.</p> : null}
+      {props.rows.length === 0 ? <p className="px-3 py-4 text-sm text-muted-foreground">No records match this view.</p> : null}
+    </div>
   </section>;
 }
 

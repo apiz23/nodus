@@ -328,7 +328,7 @@ export function Sidebar({
           disabled={creating || navigationLocked}
           aria-label={compact ? 'New page' : undefined}
         >
-          <Plus data-icon="inline-start" className="size-4" />
+          <Plus data-icon={compact ? undefined : 'inline-start'} className="size-4" />
           {compact ? null : creating ? 'Creating…' : 'New page'}
         </Button>
 
@@ -357,7 +357,7 @@ export function Sidebar({
                 }}
               >
                 <Icon
-                  data-icon="inline-start"
+                  data-icon={compact ? undefined : 'inline-start'}
                   className={cn('size-4', selected ? 'text-success' : 'text-muted-foreground')}
                 />
                 {compact ? null : item.label}
@@ -412,7 +412,7 @@ export function Sidebar({
             disabled={navigationLocked}
             onClick={() => { onView('settings'); onClose(); }}
           >
-            <Settings data-icon="inline-start" className={cn('size-4', view === 'settings' ? 'text-success' : 'text-muted-foreground')} />
+            <Settings data-icon={compact ? undefined : 'inline-start'} className={cn('size-4', view === 'settings' ? 'text-success' : 'text-muted-foreground')} />
             {compact ? null : 'Settings'}
           </Button>
           <Button

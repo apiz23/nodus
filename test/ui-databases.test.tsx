@@ -1,9 +1,10 @@
-import { RelationValue } from '../ui/src/RelationControl';
+import { RelationControl, RelationValue } from '../ui/src/RelationControl';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Property } from '../src/database/schema.js';
 import { DatabaseSelectorItem, formatPropertyValue, PropertyControl } from '../ui/src/DatabasesView.js';
+import { RelationSchemaFields } from '../ui/src/RelationSchemaFields.js';
 import type { UiDatabase } from '../src/ui-server/dto.js';
 
 const OPTION_A = '11111111-1111-4111-8111-111111111111';
@@ -83,4 +84,78 @@ it('escapes untrusted related-record labels and never renders missing targets as
   expect(html).toContain('&lt;img'); expect(html).toContain('&lt;script&gt;');
   expect(html).not.toContain('<img'); expect(html).not.toContain('<script>');
   expect(html.match(/<button/g)).toHaveLength(1);
+});
+
+it('shows unresolved relation states without exposing full UUIDs and distinguishes duplicate titles by path', () => {
+  const missing = '33333333-3333-4333-8333-333333333333';
+  const incompatible = '44444444-4444-4444-8444-444444444444';
+  const html = renderToStaticMarkup(createElement(RelationValue, { onOpen: () => {}, references: [
+    { id: OPTION_A, title: 'Shared title', path: 'projects/one.md', status: 'resolved' },
+    { id: OPTION_B, title: 'Shared title', path: 'projects/two.md', status: 'resolved' },
+    { id: missing, status: 'missing' },
+    { id: incompatible, title: 'Moved record', status: 'incompatible' },
+  ] }));
+
+  expect(html).toContain('Missing record');
+  expect(html).toContain('Incompatible record');
+  expect(html).toContain(missing.slice(-8));
+  expect(html).not.toContain(missing);
+  expect(html).not.toContain(incompatible);
+  expect(html).toContain('projects/one.md');
+  expect(html).toContain('projects/two.md');
+});
+
+it('keeps unresolved relation values removable and identifies the target database and cardinality', () => {
+  const missing = '55555555-5555-4555-8555-555555555555';
+  const property: Property = { id: 'relation', name: 'Related', type: 'relation', relation: { databaseId: IDS_DB_A, cardinality: 'many' } };
+  const html = renderToStaticMarkup(createElement(RelationControl, {
+    property,
+    value: [missing],
+    references: [{ id: missing, status: 'missing' }],
+    label: 'Related for Example',
+    targetDatabaseName: 'Tasks',
+    targetAvailable: true,
+    onChange: () => undefined,
+  }));
+
+  expect(html).toContain('Multiple records can be linked');
+  expect(html).toContain('Tasks');
+  expect(html).toContain('Missing record');
+  expect(html).toContain(`Remove missing relation ${missing.slice(-8)}`);
+  expect(html).not.toContain(missing);
+});
+
+it('bounds selected relation chips and exposes pagination for large selections', () => {
+  const ids = Array.from({ length: 40 }, (_, index) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`);
+  const property: Property = { id: 'relation', name: 'Related', type: 'relation', relation: { databaseId: IDS_DB_A, cardinality: 'many' } };
+  const html = renderToStaticMarkup(createElement(RelationControl, {
+    property,
+    value: ids,
+    references: ids.map((id) => ({ id, status: 'missing' as const })),
+    label: 'Related for Example',
+    onChange: () => undefined,
+  }));
+
+  expect(html.match(/aria-label="Remove missing relation/g)).toHaveLength(12);
+  expect(html).toContain('Next selected records');
+  expect(html).toContain('Showing 1');
+  expect(html).not.toContain(ids[12]!);
+});
+
+it('explains a deleted relation target in the schema editor without hiding its configuration', () => {
+  const source: DatabaseDefinition = {
+    id: IDS_DB_A,
+    name: 'Projects',
+    properties: [{ id: 'relation', name: 'Tasks', type: 'relation', relation: { databaseId: IDS_DB_B, cardinality: 'one' } }],
+  };
+  const markup = renderToStaticMarkup(createElement(RelationSchemaFields, {
+    property: source.properties[0]!,
+    database: source,
+    databases: [],
+    onChange: () => undefined,
+  }));
+
+  expect(markup).toContain('role="alert"');
+  expect(markup).toContain('The configured target database is unavailable');
+  expect(markup).toContain('Stored references remain intact');
 });

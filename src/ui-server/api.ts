@@ -1,4 +1,4 @@
-import { compatibleRelationTarget, projectRelations } from '../database/relations.js';
+import { compatibleRelationTarget, projectIncomingRelations, projectRelations } from '../database/relations.js';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -10,6 +10,7 @@ import {
   type DatabaseDefinition,
 } from '../database/schema.js';
 import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, parseDatabaseView, validateViewReferences } from '../database/database-view.js';
+import { inferFormulaPropertyTypes } from '../database/formula-engine.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { normalizeTagList, type TagOperation } from '../domain/tags.js';
@@ -52,6 +53,7 @@ import type {
   UiVaultPickResult,
   UiVaultStatus,
   UiBacklinksResponse,
+  UiRelationBacklinksResponse,
 } from './dto.js';
 import { pickFolder } from './folder-picker.js';
 import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
@@ -124,7 +126,25 @@ export function createLocalApiMiddleware(
     if (!index) { index = createSnapshotCache(() => loadKnowledgeSnapshot(vault), buildKnowledgeIndex); indexes.set(vault, index); }
     return index;
   };
-  const backlinkIndex = { markDirty() { for (const index of indexes.values()) index.markDirty(); } };
+  type RelationSnapshot = { notes: Note[]; schemas: Map<string, DatabaseDefinition> };
+  const loadRelationSnapshot = async (vault: FileSystemVault): Promise<RelationSnapshot> => {
+    const snapshot = await vault.databaseRowsSnapshot();
+    return { notes: snapshot.notes.map(({ note }) => note), schemas: new Map(snapshot.databases.map(({ database }) => [database.id, database])) };
+  };
+  const buildRelationIndex = (snapshot: RelationSnapshot) => ({
+    notes: snapshot.notes,
+    backlinks: projectIncomingRelations(snapshot.notes, snapshot.schemas),
+  });
+  const relationIndexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<RelationSnapshot, ReturnType<typeof buildRelationIndex>>>>();
+  const relationIndexFor = (vault: FileSystemVault) => {
+    let index = relationIndexes.get(vault);
+    if (!index) { index = createSnapshotCache(() => loadRelationSnapshot(vault), buildRelationIndex); relationIndexes.set(vault, index); }
+    return index;
+  };
+  const backlinkIndex = { markDirty() {
+    for (const index of indexes.values()) index.markDirty();
+    for (const index of relationIndexes.values()) index.markDirty();
+  } };
 
   const getVault = (): Promise<FileSystemVault> => {
     if (vaultPromise === undefined) {
@@ -444,6 +464,17 @@ export function createLocalApiMiddleware(
       return sendJson(res, 200, await backlinksForNote(id, snapshot.links));
     }
 
+    const relationBacklinksMatch = /^\/api\/notes\/([^/]+)\/relation-backlinks$/.exec(path);
+    if (method === 'GET' && relationBacklinksMatch !== null) {
+      const id = decodeURIComponent(relationBacklinksMatch[1] ?? '');
+      if (!isUuidV4(id)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+      const cache = relationIndexFor(await getVault());
+      const refresh = url.searchParams.get('refresh') === 'true';
+      let snapshot = await cache.get(refresh);
+      if (!refresh && !snapshot.notes.some((note) => note.id === id)) snapshot = await cache.get(true);
+      return sendJson(res, 200, await relationBacklinksForNote(id, snapshot.notes, snapshot.backlinks));
+    }
+
     if (method === 'GET' && path === '/api/search/metadata') {
       const snapshot = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
       const tags = [...new Set(snapshot.search.documents.flatMap((document) => document.tagsRaw))]
@@ -485,14 +516,18 @@ export function createLocalApiMiddleware(
 
     if (method === 'POST' && path === '/api/databases') {
       const body = await readJson(req);
-      return sendJson(res, 201, await createLocalDatabase(await getVault(), body));
+      const result = await createLocalDatabase(await getVault(), body);
+      backlinkIndex.markDirty();
+      return sendJson(res, 201, result);
     }
 
     const databaseMatch = /^\/api\/databases\/([^/]+)$/.exec(path);
     if (method === 'PUT' && databaseMatch !== null) {
       const id = decodeURIComponent(databaseMatch[1] ?? '');
       const body = await readJson(req);
-      return sendJson(res, 200, await replaceLocalDatabase(await getVault(), id, body));
+      const result = await replaceLocalDatabase(await getVault(), id, body);
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, result);
     }
 
     const databaseRowsMatch = /^\/api\/databases\/([^/]+)\/rows$/.exec(path);
@@ -716,12 +751,11 @@ async function listDatabaseRows(
     throw new ApiError(400, 'INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
   }
 
-  // One root-locked snapshot gives membership, property values, and hashes from
-  // the same vault revision without a client-side request per note.
-  const entries = await vault.snapshot();
-  const schemaEntry = entries.find((entry) => entry.kind === 'database' && entry.id === databaseId);
+  // One root-locked scan parses notes and schemas once without validating unrelated views or reading attachments.
+  const snapshot = await vault.databaseRowsSnapshot();
+  const schemaEntry = snapshot.databases.find((entry) => entry.database.id === databaseId);
   if (schemaEntry === undefined) throw new ApiError(404, 'NOT_FOUND', 'Database was not found.');
-  const schemaHash = sha256Hex(schemaEntry.rawBytes ?? Buffer.from(schemaEntry.text, 'utf8'));
+  const schemaHash = schemaEntry.hash;
   if (expectedSchemaHash !== undefined) {
     if (!/^[0-9a-f]{64}$/.test(expectedSchemaHash)) {
       throw new ApiError(400, 'INVALID_INPUT', 'Schema hash must be a lowercase SHA-256 value.');
@@ -731,14 +765,10 @@ async function listDatabaseRows(
     }
   }
 
-  const schemas = new Map<string, DatabaseDefinition>();
-  for (const entry of entries) {
-    if (entry.kind === 'database') schemas.set(entry.id, parseDatabase(entry.text));
-  }
-
-  const notes = entries.filter((entry) => entry.kind === 'note').map((entry) => parseNote(entry.text, entry.path));
+  const schemas = new Map(snapshot.databases.map(({ database }) => [database.id, database]));
+  const notes = snapshot.notes.map(({ note }) => note);
   const graph = projectRelations(notes, schemas);
-  const hashes = new Map(entries.filter((entry) => entry.kind === 'note').map((entry) => [entry.id, sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8'))]));
+  const hashes = new Map(snapshot.notes.map(({ note, hash }) => [note.id, hash]));
   const rows = notes.flatMap((note) => {
     const row = graph.rows.get(note.id)?.get(databaseId);
     return row ? [{ ...row, title: note.title, updatedAt: note.updatedAt, contentHash: hashes.get(note.id)! }] : [];
@@ -751,7 +781,7 @@ async function listDatabaseRows(
 
   const relationCandidates: NonNullable<UiDatabaseRowsResponse['relationCandidates']> = {};
   for (const property of schemas.get(databaseId)!.properties) if (property.type === 'relation') {
-    relationCandidates[property.relation!.databaseId] = notes.filter((note) => compatibleRelationTarget(graph.rows.get(note.id)?.get(property.relation!.databaseId))).map((note) => ({ id: note.id, title: note.title, path: note.path, status: 'resolved' }));
+    relationCandidates[property.relation!.databaseId] = notes.filter((note) => compatibleRelationTarget(graph.rows.get(note.id)?.get(property.relation!.databaseId))).map((note) => ({ id: note.id, title: note.title, path: note.path, status: 'resolved', aliases: note.aliases, tags: note.tags }));
   }
   return { databaseId, schemaHash, rows, diagnostics, relationCandidates };
 }
@@ -891,6 +921,16 @@ async function backlinksForNote(rawId: string, index: LinkIndex): Promise<UiBack
   if (!isUuidV4(rawId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
   if (!index.notes.some((note) => note.id === rawId)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
   return { backlinks: backlinksByTarget(index).get(rawId) ?? [] };
+}
+
+async function relationBacklinksForNote(
+  rawId: string,
+  notes: readonly { id: string }[],
+  byTarget: ReadonlyMap<string, import('../database/relations.js').IncomingRelationReference[]>,
+): Promise<UiRelationBacklinksResponse> {
+  if (!isUuidV4(rawId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+  if (!notes.some((note) => note.id === rawId)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
+  return { backlinks: byTarget.get(rawId) ?? [] };
 }
 
 async function listDatabases(vault: FileSystemVault): Promise<UiDatabase[]> {
@@ -1116,6 +1156,7 @@ function toDatabaseStaleApiError(error: unknown): unknown {
 }
 
 function toUiDatabase(database: DatabaseDefinition, hash: string): UiDatabase {
+  const formulaTypes=inferFormulaPropertyTypes(database.properties);
   return {
     id: database.id,
     name: database.name,
@@ -1127,6 +1168,7 @@ function toUiDatabase(database: DatabaseDefinition, hash: string): UiDatabase {
       type: property.type,
       ...(property.relation ? { relation: property.relation } : {}),
       ...(property.rollup ? { rollup: property.rollup } : {}),
+      ...(property.formula ? { formula: {expression:property.formula.expression,...(formulaTypes.has(property.id)?{resultType:formulaTypes.get(property.id)}:{})} } : {}),
       ...(property.options === undefined
         ? {}
         : { options: property.options.map((option) => ({ id: option.id, name: option.name })) }),

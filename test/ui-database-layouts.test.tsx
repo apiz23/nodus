@@ -28,4 +28,28 @@ describe('database list view', () => {
     }));
     expect(markup).toContain('No records match this view.');
   });
+
+  it('does not expose an edit action for derived formula properties', () => {
+    const formula: Property = { id: 'formula', name: 'Derived total', type: 'formula', formula: { expression: '1 + 1', resultType: 'number' } };
+    const markup = renderToStaticMarkup(createElement(ListView, {
+      rows: [{ ...row, values: { ...row.values, formula: 2 } }], visibleProperties: [formula], disabled: false,
+      onOpen: () => undefined, onEdit: () => undefined, formatValue: (_property, value) => String(value ?? 'â€”'),
+    }));
+    expect(markup).toContain('Derived total');
+    expect(markup).not.toContain('aria-label="Edit Derived total for A very long record title"');
+  });
+
+  it('renders a windowed slice of large lists while exposing each record position', () => {
+    const rows = Array.from({ length: 5000 }, (_, index) => ({ ...row, noteId: `note-${index + 1}`, title: `Record ${String(index + 1).padStart(5, '0')}` }));
+    const markup = renderToStaticMarkup(createElement(ListView, {
+      rows, visibleProperties: properties, disabled: false, onOpen: () => undefined,
+      onEdit: () => undefined, formatValue: (_property, value) => String(value ?? '—'),
+    }));
+    const renderedRecords = [...markup.matchAll(/role="listitem"/g)].length;
+    expect(markup).toContain('aria-setsize="5000"');
+    expect(markup).toContain('Record 00001');
+    expect(markup).not.toContain('Record 05000');
+    expect(renderedRecords).toBeGreaterThan(0);
+    expect(renderedRecords).toBeLessThan(5000);
+  });
 });

@@ -1,8 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./ui/src', import.meta.url)) },
+  },
   test: {
-    include: ['benchmark/database-rows.benchmark.ts'],
+    include: ['benchmark/database-rows.benchmark.ts', 'benchmark/database-query.benchmark.ts', 'benchmark/relation-backlinks.benchmark.ts', 'benchmark/formula-evaluation.benchmark.ts'],
     maxWorkers: 1,
     testTimeout: 15 * 60 * 1000,
   },

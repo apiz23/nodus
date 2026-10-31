@@ -1,10 +1,13 @@
 import { NodusError } from '../domain/errors.js';
 import { isUuidV4 } from '../domain/ids.js';
+import type { RelationPropertyConfiguration } from './relation-contract.js';
+import { parseFormula } from './formula-engine.js';
+import type { FormulaType } from './formula-contract.js';
 
 export const DATABASE_FORMAT = 'nodus-database';
-export const DATABASE_FORMAT_VERSION = 2;
+export const DATABASE_FORMAT_VERSION = 3;
 
-export const PROPERTY_TYPES = ['text', 'number', 'checkbox', 'date', 'select', 'multi-select', 'relation', 'rollup'] as const;
+export const PROPERTY_TYPES = ['text', 'number', 'checkbox', 'date', 'select', 'multi-select', 'relation', 'rollup', 'formula'] as const;
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
 export interface SelectOption {
@@ -17,13 +20,14 @@ export interface Property {
   name: string;
   type: PropertyType;
   options?: SelectOption[];
-  relation?: { databaseId: string; cardinality: 'one' | 'many'; reversePropertyId?: string };
+  relation?: RelationPropertyConfiguration;
   rollup?: { relationPropertyId: string; operation: RollupOperation; targetPropertyId?: string; condition?: { propertyId: string; value: string | number | boolean } };
+  formula?: { expression: string; resultType?: FormulaType };
 }
 export const ROLLUP_OPERATIONS = ['count', 'conditional-count', 'sum', 'completed-task-count', 'completion-percentage'] as const;
 export type RollupOperation = typeof ROLLUP_OPERATIONS[number];
-export function isDerivedProperty(property: Property): boolean { return property.type === 'rollup' || !!property.relation?.reversePropertyId; }
-export function databaseVersion(database: DatabaseDefinition): number { return database.properties.some((p) => p.type === 'relation' || p.type === 'rollup') ? 2 : 1; }
+export function isDerivedProperty(property: Property): boolean { return property.type === 'rollup' || property.type === 'formula' || !!property.relation?.reversePropertyId; }
+export function databaseVersion(database: DatabaseDefinition): number { return database.properties.some((p) => p.type === 'formula') ? 3 : database.properties.some((p) => p.type === 'relation' || p.type === 'rollup') ? 2 : 1; }
 
 export interface DatabaseDefinition {
   id: string;
@@ -32,7 +36,7 @@ export interface DatabaseDefinition {
 }
 
 const ENVELOPE_KEYS = ['format', 'version', 'id', 'name', 'properties'];
-const PROPERTY_KEYS = ['id', 'name', 'type', 'options', 'relation', 'rollup'];
+const PROPERTY_KEYS = ['id', 'name', 'type', 'options', 'relation', 'rollup', 'formula'];
 const OPTION_KEYS = ['id', 'name'];
 
 export function parseDatabase(json: string): DatabaseDefinition {
@@ -87,6 +91,7 @@ export function serializeDatabase(database: DatabaseDefinition): string {
       ...(property.options === undefined ? {} : { options: property.options }),
       ...(property.relation === undefined ? {} : { relation: property.relation }),
       ...(property.rollup === undefined ? {} : { rollup: property.rollup }),
+      ...(property.formula === undefined ? {} : { formula: { expression: property.formula.expression } }),
     })),
   };
   const json = `${JSON.stringify(envelope, null, 2)}\n`;
@@ -106,8 +111,18 @@ function parseProperty(value: unknown, index: number, version: number): Property
     throw invalidDatabase(`Unsupported property type "${String(type)}" on property "${name}"`);
   }
   if ((type === 'relation' || type === 'rollup') && version < 2) throw invalidDatabase('Relations and rollups require database version 2');
+  if (type === 'formula' && version < 3) throw invalidDatabase('Formula properties require database version 3');
   if (type !== 'relation' && value.relation !== undefined) throw invalidDatabase('relation configuration requires a relation property');
   if (type !== 'rollup' && value.rollup !== undefined) throw invalidDatabase('rollup configuration requires a rollup property');
+  if (type !== 'formula' && value.formula !== undefined) throw invalidDatabase('formula configuration requires a formula property');
+  if (type === 'formula') {
+    if (value.options !== undefined || value.relation !== undefined || value.rollup !== undefined || !isPlainObject(value.formula)) throw invalidDatabase('Formula property requires formula configuration only');
+    rejectUnknownKeys(value.formula, ['expression'], 'formula');
+    if (typeof value.formula.expression !== 'string' || !value.formula.expression.trim()) throw invalidDatabase('Formula expression must be a non-empty string');
+    const parsed = parseFormula(value.formula.expression);
+    if (!parsed.ok) throw invalidDatabase(`Invalid formula expression: ${parsed.diagnostics[0]?.message ?? 'syntax error'}`);
+    return { id, name, type, formula: { expression: value.formula.expression } };
+  }
   if (type === 'relation') {
     if (value.options !== undefined || !isPlainObject(value.relation)) throw invalidDatabase('Relation requires relation configuration and no options');
     const config = value.relation;

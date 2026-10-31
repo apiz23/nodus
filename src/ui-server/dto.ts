@@ -33,7 +33,7 @@ export type UiPropertyType =
   | 'checkbox'
   | 'date'
   | 'select'
-  | 'multi-select' | 'relation' | 'rollup';
+  | 'multi-select' | 'relation' | 'rollup' | 'formula';
 
 export interface UiSelectOption {
   id: string;
@@ -47,6 +47,7 @@ export interface UiProperty {
   options?: UiSelectOption[];
   relation?: import('../database/schema.js').Property['relation'];
   rollup?: import('../database/schema.js').Property['rollup'];
+  formula?: import('../database/schema.js').Property['formula'];
 }
 
 export interface UiNoteSummary {
@@ -89,8 +90,18 @@ export interface UiDatabaseRow extends NoteDatabaseRow {
   issues: StructuredDataIssue[];
 }
 
+/** Target records available to the relation picker. Search metadata is limited to note aliases and tags. */
+export interface UiRelationCandidate {
+  id: string;
+  title: string;
+  path: string;
+  status: 'resolved';
+  aliases: string[];
+  tags: string[];
+}
+
 export interface UiDatabaseRowsResponse {
-  relationCandidates?: Record<string, import('../database/relations.js').RelationReference[]>;
+  relationCandidates?: Record<string, UiRelationCandidate[]>;
   databaseId: string;
   /** Raw schema hash from the same root-locked snapshot as the projected rows. */
   schemaHash: string;
@@ -319,6 +330,24 @@ export interface UiBacklink {
 
 export interface UiBacklinksResponse {
   backlinks: UiBacklink[];
+}
+
+/** Incoming database relations are derived from forward note metadata. */
+export interface UiRelationBacklink {
+  sourceId: string;
+  sourceTitle: string;
+  sourcePath: string;
+  sourceDatabaseId: string;
+  sourceDatabaseName: string;
+  propertyId: string;
+  propertyName: string;
+  reciprocalPropertyId?: string;
+  reciprocalPropertyName?: string;
+  status: 'resolved' | 'incompatible';
+}
+
+export interface UiRelationBacklinksResponse {
+  backlinks: UiRelationBacklink[];
 }
 
 /** Discovery results share the core index's stable source IDs and body locations. */

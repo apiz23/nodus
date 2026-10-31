@@ -1,11 +1,13 @@
 import { isUuidV4 } from '../domain/ids.js';
 import type { Note } from '../domain/note.js';
+import type { FormulaErrorCode, FormulaSourceSpan } from './formula-contract.js';
+import { validateRelationValue, type RelationValue } from './relation-contract.js';
 import { isDerivedProperty, type DatabaseDefinition, type Property, type PropertyType } from './schema.js';
 
 export const NOTE_PROPERTIES_FORMAT = 'nodus-note-properties';
 export const NOTE_PROPERTIES_VERSION = 1;
 
-export type NotePropertyValue = string | number | boolean | string[] | null;
+export type NotePropertyValue = string | number | boolean | null | RelationValue;
 
 export type StructuredDataIssueCode =
   | 'INVALID_NAMESPACE'
@@ -14,8 +16,10 @@ export type StructuredDataIssueCode =
   | 'MISSING_PROPERTY'
   | 'TYPE_MISMATCH'
   | 'INVALID_VALUE'
-  | 'MISSING_OPTION'
+  | 'MISSING_OPTION' | 'FORMULA_ERROR'
   | 'MISSING_TARGET' | 'INCOMPATIBLE_TARGET' | 'INVALID_CONFIGURATION' | 'CIRCULAR_ROLLUP' | 'DERIVED_VALUE' | 'ROLLUP_ERROR';
+
+export type RelationDiagnosticCode = Extract<StructuredDataIssueCode, 'MISSING_TARGET' | 'INCOMPATIBLE_TARGET' | 'INVALID_CONFIGURATION'>;
 
 export interface StructuredDataIssue {
   noteId: string;
@@ -24,6 +28,13 @@ export interface StructuredDataIssue {
   propertyId?: string;
   code: StructuredDataIssueCode;
   message: string;
+  formulaErrorCode?: FormulaErrorCode;
+  formulaErrorSpan?: FormulaSourceSpan;
+}
+
+/** Relation integrity issues are diagnostics; they never rewrite stored frontmatter. */
+export interface RelationDiagnostic extends StructuredDataIssue {
+  code: RelationDiagnosticCode;
 }
 
 export interface NoteDatabaseRow {
@@ -320,11 +331,13 @@ function validatePropertyValue(
   | { issue: { code: 'TYPE_MISMATCH' | 'INVALID_VALUE' | 'MISSING_OPTION'; message: string }; value?: never } {
   switch (property.type satisfies PropertyType) {
     case 'rollup': return invalidValue(property, 'is derived and read-only');
+    case 'formula': return invalidValue(property, 'is derived and read-only');
     case 'relation': {
-      if (value === null) return { value: null };
-      const ids = property.relation?.cardinality === 'one' ? [value] : value;
-      if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !isUuidV4(id)) || new Set(ids).size !== ids.length) return invalidValue(property, 'must reference unique stable note UUIDs with the configured cardinality');
-      return { value: property.relation?.cardinality === 'one' ? ids[0] as string : [...ids] as string[] };
+      if (!property.relation) return invalidValue(property, 'has invalid relation configuration');
+      const result = validateRelationValue(property.relation, value);
+      return result.ok
+        ? { value: result.value }
+        : { issue: { code: result.code, message: `Property "${property.name}" ${result.message}` } };
     }
     case 'text':
       return typeof value === 'string'

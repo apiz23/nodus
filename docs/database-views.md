@@ -56,6 +56,40 @@ Calendar creation is two explicit API operations: create a note, then assign its
 
 `pnpm test:database-views` runs actual browser interaction tests against a dedicated strict loopback Vite process and temporary vault. It checks table persistence, board moves, value clearing, duplicate/rename/delete, dated creation, and stale-view draft handling. It requires Node 24+ and the installed Playwright Chromium browser. It has no screenshot or pixel assertions and cleans up its own process/browser/temporary vault.
 
+## Performance and rendering
+
+Measurements for the Phase 7B.4 polish were taken on Windows 10 build 26300, Node 24.19.0, x64 AMD Ryzen 7 5700U (16 logical CPUs). They are local development measurements, not service-level guarantees. The API benchmark performs one warmup and five timed requests per dataset in one process; the OS filesystem cache is uncontrolled. Fixtures contain 30% records in the selected database, 20% in another database, and 50% unstructured notes. The query benchmark uses in-memory records, checkbox and number filters, three sort priorities and Select grouping (two warmups, seven measured iterations). The browser benchmark uses Chromium 131 and a synthetic 5,000-row database response. Results vary with filesystem cache, browser startup, and machine load.
+
+### Database rows API
+
+| Vault notes | Selected database rows | Before median | After median | After p95 | Response bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 30 | 469 ms | 123 ms | 144 ms | 11,979 |
+| 500 | 150 | 2,153 ms | 424 ms | 456 ms | 59,559 |
+| 1,000 | 300 | 3,700 ms | 838 ms | 866 ms | 119,034 |
+| 5,000 | 1,500 | 16,437 ms | 4,486 ms | 4,726 ms | 598,434 |
+
+The route previously requested a full vault snapshot, which read attachment data and parsed note content before parsing notes again to project database rows. It now takes a database-specific snapshot under the vault lock, reads and validates notes in bounded batches, parses each note once, and does not read attachments or saved views. At 5,000 notes this reduced the measured median by about 73%. The route still scans and parses all vault notes to identify database members; it remains O(total vault notes), and the 5,000-note request still takes about 4.5 seconds on this machine. An index would require a separate consistency design and was not introduced based on this milestone's measurements.
+
+### Query and List rendering
+
+| Records | Query median before | Query median after | Filter / sort / group after | List SSR before | List SSR after |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 2.929 ms | 0.307 ms | 0.027 / 0.160 / 0.054 ms | 119 ms | 44 ms |
+| 500 | 20.493 ms | 0.851 ms | 0.107 / 0.638 / 0.105 ms | 950 ms | 51 ms |
+| 1,000 | 50.246 ms | 1.621 ms | 0.172 / 1.316 / 0.243 ms | 783 ms | 53 ms |
+| 5,000 | 373.552 ms | 10.425 ms | 0.693 / 10.082 / 1.160 ms | 2,027 ms | 52 ms |
+
+The prior multi-sort rebuilt property lookups and locale comparison state inside the comparator. The current path prepares typed accessors and sort keys once per query, then compares those keys while retaining stable note-ID tie-breaking and missing-last behavior. The 5,000-row query median fell by about 97%. Grouping and filtering remained small relative to sorting, so they did not receive a separate cache or alternate implementation.
+
+Table and List now use windowed rendering with overscan in a 70vh scroll region. In the browser run with 5,000 rows, Table rendered 22 rows at the initial viewport instead of all 5,000; List rendered 16 items. The initial Table load/render measurement fell from 12,303 ms to 2,439 ms in the recorded run. The List SSR benchmark emits about 87 KB for the initial window, compared with about 17.0 MB when all 5,000 items were rendered. Rows outside the current window remain in the shared filtered, sorted, grouped result; scrolling and keyboard interactions are covered by the browser performance smoke. Table keeps its horizontal scrolling behavior on a 390px viewport (348px client width, 832px scroll width in the measured run). Virtual rows use estimated heights and measurement for List items; a future layout change that substantially changes row height should be rechecked in the browser.
+
+### Bundle
+
+Before route/editor splitting, the main JavaScript entry was 1,352,542 bytes (414,318 gzip); CodeMirror and Lezer accounted for about 489 KB of the uncompressed entry. After lazy-loading the application route, editor and Markdown preview, the initial JavaScript payload is 306,726 bytes (100,317 gzip), about 77% smaller. Editor and app functionality remains available through async chunks. The largest reported async chunk is approximately 473 KB (164 KB gzip), containing shared Markdown/editor parsing code. The production build no longer reports a chunk above Vite's 500 KB warning threshold. Do not move editor functionality back into the initial route without remeasuring startup cost.
+
+The new reproducible commands are `pnpm bench:databases` for the rows API, `pnpm exec vitest run --config vitest.database-benchmark.config.ts benchmark/database-query.benchmark.ts` for query/List measurements, `pnpm bench:database-ui` for the Chromium 5,000-row interaction/rendering check, and `pnpm analyze:bundle` for bundle composition. These are investigation tools, not pass/fail latency targets.
+
 ## Relations and rollups
 
 Relation filters use stable note IDs: `is` for a single relation and `includes` for multiple/reverse relations. Relation sorting uses current record titles, then stable row IDs for ties. Missing references remain filterable by their stored IDs. Rollups support numeric `equals`, `greater`, and `less` filters and numeric sorting; null/unavailable values sort last in either direction and do not match numeric filters.
