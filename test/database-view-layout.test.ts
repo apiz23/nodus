@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarRows, isDateOnly, kanbanColumns, monthDays, shiftMonth, todayDate } from '../ui/src/database-view-layout.js';
+import { calendarRows, groupDatabaseRows, isDateOnly, kanbanColumns, monthDays, shiftMonth, todayDate } from '../ui/src/database-view-layout.js';
 import { selectDatabaseRows } from '../ui/src/database-table.js';
 import type { UiDatabaseRow } from '../src/ui-server/dto.js';
 import { defaultView } from '../ui/src/database-view-layout.js';
@@ -19,6 +19,26 @@ describe('database view layouts', () => {
     const filtered = selectDatabaseRows(rows, properties, [{ id: 'f', propertyId: 'status', operator: 'is', value: 'done' }], 'title', 'asc');
     expect(kanbanColumns(filtered, properties[0]!)[0]?.rows).toEqual([]);
     expect(rows[0]?.values.status).toBe('ready');
+  });
+
+  it('groups select options in schema order, keeps sorted members, and retains unknown and missing values', () => {
+    const rows = [makeRow('z', 'Z', { status: 'deleted-option' }), makeRow('b', 'B', { status: 'done' }), makeRow('a', 'A', { status: 'ready' }), makeRow('m', 'M', { status: null }), makeRow('e', 'E', { status: '' })];
+    const groups = groupDatabaseRows(rows, properties[0]!);
+    expect(groups.map((group) => [group.id, group.name, group.rows.map((row) => row.noteId)])).toEqual([
+      ['ready', 'Ready', ['a']], ['done', 'Done', ['b']], ['__unknown__', 'Unknown value', ['z']], ['__no-value__', 'No value', ['m', 'e']],
+    ]);
+  });
+
+  it('groups checkboxes false then true and puts absent values last', () => {
+    const checkbox = { id: 'done', name: 'Done', type: 'checkbox' as const };
+    const groups = groupDatabaseRows([makeRow('t', 'Yes', { done: true }), makeRow('m', 'Missing', {}), makeRow('f', 'No', { done: false })], checkbox);
+    expect(groups.map((group) => [group.name, group.rows.map((row) => row.noteId)])).toEqual([['No', ['f']], ['Yes', ['t']], ['No value', ['m']]]);
+  });
+
+  it('applies filters and multi-sort before grouping', () => {
+    const rows = [makeRow('b', 'Beta', { status: 'ready' }), makeRow('a', 'Alpha', { status: 'ready' }), makeRow('c', 'Charlie', { status: 'done' })];
+    const selected = selectDatabaseRows(rows, properties, [{ id: 'f', propertyId: 'status', operator: 'is', value: 'ready' }], [{ propertyId: 'title', direction: 'desc' }]);
+    expect(groupDatabaseRows(selected, properties[0]!)[0]?.rows.map((row) => row.noteId)).toEqual(['b', 'a']);
   });
 
   it('uses strict date-only semantics, leap days, month boundaries, and undated fallback', () => {

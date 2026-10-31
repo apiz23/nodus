@@ -59,6 +59,14 @@ describe('database view format', () => {
     expect(JSON.parse(serializeDatabaseView(list)).version).toBe(3);
     expect(parseDatabaseView(serializeDatabaseView(list))).toEqual(list);
     expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(serializeDatabaseView(list)), version: 2 }))).toThrow(/Unknown key/);
+    const grouped = { ...v3, type: 'table' as const, settings: { groupPropertyId: PROP } };
+    expect(parseDatabaseView(serializeDatabaseView(grouped))).toEqual(grouped);
+    const groupOnly = { ...view, type: 'table' as const, settings: { groupPropertyId: PROP } };
+    expect(JSON.parse(serializeDatabaseView(groupOnly)).version).toBe(3);
+    expect(parseDatabaseView(serializeDatabaseView(groupOnly)).settings).toEqual(groupOnly.settings);
+    expect(diagnoseDatabaseView(grouped, db)).toEqual([]);
+    expect(diagnoseDatabaseView({ ...grouped, settings: { groupPropertyId: VIEW2 } }, db)).toMatchObject([{ code: 'MISSING_PROPERTY' }]);
+    expect(diagnoseDatabaseView({ ...grouped, settings: { groupPropertyId: PROP } }, { ...db, properties: [{ id: PROP, name: 'Status', type: 'text' }] })).toMatchObject([{ code: 'INVALID_REFERENCE' }]);
   });
 
   it('diagnoses missing database, property, and option references without mutating view data', () => {

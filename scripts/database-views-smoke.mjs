@@ -106,6 +106,14 @@ try {
   await page.getByRole('combobox', { name: 'Filter 1 operator', exact: true }).click();
   await page.getByRole('option', { name: 'is', exact: true }).click();
   await page.keyboard.press('Escape');
+  await page.getByRole('combobox', { name: 'Group rows by', exact: true }).click();
+  await page.getByRole('option', { name: 'Status', exact: true }).click();
+  const readyTableGroup = page.getByRole('button', { name: 'Ready', exact: true });
+  await readyTableGroup.waitFor();
+  assert.equal(await readyTableGroup.getAttribute('aria-expanded'), 'true');
+  await readyTableGroup.press('Enter');
+  assert.equal(await readyTableGroup.getAttribute('aria-expanded'), 'false');
+  await readyTableGroup.press('Enter');
   await controls.getByRole('button', { name: 'Save view', exact: true }).click();
   await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
   await page.reload();
@@ -117,11 +125,22 @@ try {
   const tableFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${tableId}.json`), 'utf8'));
   assert.equal(tableFile.sort.direction, 'desc');
   assert.equal(tableFile.filters[0].value, READY);
+  assert.equal(tableFile.settings.groupPropertyId, STATUS);
+  assert.equal(await page.getByRole('button', { name: 'Ready', exact: true }).getAttribute('aria-expanded'), 'true');
 
   const listId = await createView('My list', 'list');
   const list = page.getByRole('region', { name: 'Database list view' });
   await list.getByRole('article', { name: alpha.title }).waitFor();
   await list.getByRole('button', { name: alpha.title, exact: true }).waitFor();
+  await page.getByRole('combobox', { name: 'Group rows by', exact: true }).click();
+  await page.getByRole('option', { name: 'Status', exact: true }).click();
+  const readyListGroup = list.getByRole('button', { name: 'Ready', exact: true });
+  await readyListGroup.waitFor();
+  assert.equal(await readyListGroup.getAttribute('aria-expanded'), 'true');
+  await readyListGroup.press('Enter');
+  await list.getByRole('article', { name: alpha.title }).waitFor({ state: 'detached' });
+  await readyListGroup.press('Enter');
+  await list.getByRole('article', { name: alpha.title }).waitFor();
   await page.getByRole('button', { name: /^Columns,/ }).click();
   await page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox', { name: /Estimate/ }).uncheck();
   await page.keyboard.press('Escape');
@@ -130,6 +149,7 @@ try {
   const listFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${listId}.json`), 'utf8'));
   assert.equal(listFile.version, 3);
   assert.equal(listFile.type, 'list');
+  assert.equal(listFile.settings.groupPropertyId, STATUS);
   assert.equal(listFile.visiblePropertyIds.includes(NUMBER), false);
   await page.getByRole('button', { name: alpha.title, exact: true }).click();
   await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
@@ -265,7 +285,7 @@ try {
   await page.unroute(viewRoute);
   assert.deepEqual(failures, expectedFailures);
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: saved table reload/filter/columns/sort, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views smoke passed: saved table reload/filter/columns/sort, table/list grouping and collapse, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});
