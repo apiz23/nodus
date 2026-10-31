@@ -5,13 +5,13 @@ import type { UiDatabase } from '../../src/ui-server/dto.js';
 
 export type DatabaseSortField = 'title' | string;
 export type DatabaseSortDirection = 'asc' | 'desc';
-export type DatabaseFilterOperator = 'contains' | 'equals' | 'greater' | 'less' | 'is' | 'before' | 'after' | 'includes';
+export type DatabaseFilterOperator = 'contains' | 'equals' | 'greater' | 'less' | 'is' | 'before' | 'after' | 'includes' | 'is-empty' | 'is-not-empty';
 
 export interface DatabaseFilter {
   id: string;
   propertyId: string;
   operator: DatabaseFilterOperator;
-  value: unknown;
+  value?: unknown;
 }
 
 export function databaseIdentityLabel(database: Pick<UiDatabase, 'id' | 'name' | 'path'>): string {
@@ -20,14 +20,14 @@ export function databaseIdentityLabel(database: Pick<UiDatabase, 'id' | 'name' |
 
 export function filterOperators(property: Property): DatabaseFilterOperator[] {
   switch (property.type) {
-    case 'text': return ['contains', 'equals'];
+    case 'text': return ['contains', 'equals', 'is-empty', 'is-not-empty'];
     case 'rollup':
-    case 'number': return ['equals', 'greater', 'less'];
+    case 'number': return ['equals', 'greater', 'less', 'is-empty', 'is-not-empty'];
     case 'relation': return property.relation?.cardinality === 'one' ? ['is'] : ['includes'];
-    case 'checkbox': return ['is'];
-    case 'date': return ['equals', 'before', 'after'];
-    case 'select': return ['is'];
-    case 'multi-select': return ['includes'];
+    case 'checkbox': return ['is', 'is-empty', 'is-not-empty'];
+    case 'date': return ['equals', 'before', 'after', 'is-empty', 'is-not-empty'];
+    case 'select': return ['is', 'is-empty', 'is-not-empty'];
+    case 'multi-select': return ['includes', 'is-empty', 'is-not-empty'];
   }
 }
 
@@ -46,6 +46,7 @@ export function initialFilterValue(property: Property): unknown {
 
 export function isValidFilter(property: Property, operator: string, value: unknown): boolean {
   if (!filterOperators(property).includes(operator as DatabaseFilterOperator)) return false;
+  if (operator === 'is-empty' || operator === 'is-not-empty') return value === undefined;
   switch (property.type) {
     case 'text':
       return typeof value === 'string' && (operator === 'equals' || value.length > 0);
@@ -75,6 +76,8 @@ export function filterDatabaseRows(
 
   return rows.filter((row) => active.every(({ filter, property }) => {
     const actual = row.values[property.id];
+    if (filter.operator === 'is-empty') return actual === undefined || actual === null || actual === '' || (Array.isArray(actual) && actual.length === 0);
+    if (filter.operator === 'is-not-empty') return actual !== undefined && actual !== null && actual !== '' && !(Array.isArray(actual) && actual.length === 0);
     if (actual === undefined || actual === null) return false;
     switch (filter.operator) {
       case 'contains':
@@ -124,14 +127,38 @@ export function sortDatabaseRows(
   });
 }
 
+export function sortDatabaseRowsBy(rows: readonly UiDatabaseRow[], properties: readonly Property[], sorts: readonly { propertyId: DatabaseSortField; direction: DatabaseSortDirection }[]): UiDatabaseRow[] {
+  const priorities = sorts.length ? sorts : [{ propertyId: 'title', direction: 'asc' as const }];
+  return [...rows].sort((left, right) => {
+    for (const sort of priorities) {
+      const property = sort.propertyId === 'title' ? undefined : properties.find((item) => item.id === sort.propertyId);
+      const a = sortableValue(left, property, sort.propertyId);
+      const b = sortableValue(right, property, sort.propertyId);
+      if (a === undefined || b === undefined) {
+        if (a !== undefined) return -1;
+        if (b !== undefined) return 1;
+        continue;
+      }
+      const compared = typeof a === 'number' && typeof b === 'number' ? a - b
+        : typeof a === 'boolean' && typeof b === 'boolean' ? Number(a) - Number(b)
+          : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+      if (compared !== 0) return compared * (sort.direction === 'asc' ? 1 : -1);
+    }
+    return left.noteId.localeCompare(right.noteId);
+  });
+}
+
 export function selectDatabaseRows(
   rows: readonly UiDatabaseRow[],
   properties: readonly Property[],
   filters: readonly DatabaseFilter[],
-  sortField: DatabaseSortField,
-  direction: DatabaseSortDirection,
+  sortField: DatabaseSortField | readonly { propertyId: DatabaseSortField; direction: DatabaseSortDirection }[],
+  direction?: DatabaseSortDirection,
 ): UiDatabaseRow[] {
-  return sortDatabaseRows(filterDatabaseRows(rows, properties, filters), properties, sortField, direction);
+  const filtered = filterDatabaseRows(rows, properties, filters);
+  return typeof sortField !== 'string'
+    ? sortDatabaseRowsBy(filtered, properties, sortField)
+    : sortDatabaseRows(filtered, properties, sortField, direction ?? 'asc');
 }
 
 function sortableValue(row: UiDatabaseRow, property: Property | undefined, field: DatabaseSortField): string | number | boolean | undefined {

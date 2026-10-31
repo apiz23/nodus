@@ -52,7 +52,7 @@ export function calendarRows(rows: readonly UiDatabaseRow[], propertyId: string)
   return { dated, undated };
 }
 
-export type ViewConfiguration = Pick<DatabaseView, 'sort' | 'filters' | 'visiblePropertyIds' | 'type' | 'settings'>;
+export type ViewConfiguration = Pick<DatabaseView, 'sort' | 'sorts' | 'filters' | 'visiblePropertyIds' | 'type' | 'settings'>;
 
 export function defaultView(database: UiDatabase, type: DatabaseViewType = 'table'): ViewConfiguration {
   return {

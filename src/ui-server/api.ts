@@ -743,7 +743,11 @@ async function listDatabaseRows(
     const row = graph.rows.get(note.id)?.get(databaseId);
     return row ? [{ ...row, title: note.title, updatedAt: note.updatedAt, contentHash: hashes.get(note.id)! }] : [];
   });
-  const diagnostics = graph.diagnostics;
+  // The relation projection is vault-wide so it can resolve cross-database
+  // links. Only expose diagnostics owned by this requested database; issues
+  // without a database ID describe malformed namespace data and cannot be
+  // attributed to this database's rows.
+  const diagnostics = graph.diagnostics.filter((issue) => issue.databaseId === databaseId);
 
   const relationCandidates: NonNullable<UiDatabaseRowsResponse['relationCandidates']> = {};
   for (const property of schemas.get(databaseId)!.properties) if (property.type === 'relation') {
@@ -1058,7 +1062,12 @@ function toPropertyCatalogStaleApiError(error: unknown): unknown {
 
 function requireDatabaseViewInput(value: unknown) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'view must be an object.');
-  try { return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version: ('type' in value || 'settings' in value) ? DATABASE_VIEW_VERSION : 1, ...value })); }
+  try {
+    const record = value as Record<string, unknown>;
+    const hasV3 = 'sorts' in record || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
+    const version = hasV3 ? DATABASE_VIEW_VERSION : ('type' in record || 'settings' in record) ? 2 : 1;
+    return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version, ...record }));
+  }
   catch (error) { throw new ApiError(400, 'INVALID_INPUT', error instanceof Error ? error.message : 'view is invalid.'); }
 }
 

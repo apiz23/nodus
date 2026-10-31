@@ -104,13 +104,12 @@ export function projectNoteProperties(
     return { rows, issues };
   }
   if (version > NOTE_PROPERTIES_VERSION) {
-    issues.push(
-      issue(
-        note,
-        'UNSUPPORTED_NAMESPACE_VERSION',
-        `nodus_data version ${version} is newer than supported version ${NOTE_PROPERTIES_VERSION}`,
-      ),
-    );
+    const databaseIds = isRecord(namespace.databases)
+      ? Object.keys(namespace.databases).filter(isUuidV4)
+      : [];
+    const message = `nodus_data version ${version} is newer than supported version ${NOTE_PROPERTIES_VERSION}`;
+    if (databaseIds.length) issues.push(...databaseIds.map((databaseId) => issue(note, 'UNSUPPORTED_NAMESPACE_VERSION', message, databaseId)));
+    else issues.push(issue(note, 'UNSUPPORTED_NAMESPACE_VERSION', message));
     return { rows, issues };
   }
 

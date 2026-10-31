@@ -3,19 +3,21 @@ import { isUuidV4 } from '../domain/ids.js';
 import type { DatabaseDefinition, Property } from './schema.js';
 
 export const DATABASE_VIEW_FORMAT = 'nodus-database-view';
-export const DATABASE_VIEW_VERSION = 2;
+export const DATABASE_VIEW_VERSION = 3;
 
 export type DatabaseViewType = 'table' | 'kanban' | 'calendar';
 export interface DatabaseViewSettings { groupPropertyId?: string; datePropertyId?: string }
 
 export type ViewSort = { propertyId: 'title' | string; direction: 'asc' | 'desc' };
-export type ViewFilterOperator = 'contains' | 'equals' | 'greater' | 'less' | 'is' | 'before' | 'after' | 'includes';
-export interface ViewFilter { id: string; propertyId: string; operator: ViewFilterOperator; value: string | number | boolean }
+export type ViewFilterOperator = 'contains' | 'equals' | 'greater' | 'less' | 'is' | 'before' | 'after' | 'includes' | 'is-empty' | 'is-not-empty';
+export interface ViewFilter { id: string; propertyId: string; operator: ViewFilterOperator; value?: string | number | boolean }
 export interface DatabaseView {
   id: string;
   databaseId: string;
   name: string;
   sort: ViewSort;
+  /** v3 ordered sort priorities; sort remains the v1/v2 primary-sort field. */
+  sorts?: ViewSort[];
   filters: ViewFilter[];
   visiblePropertyIds: string[];
   /** Absent only for legacy v1 table files. New views use the v2 envelope. */
@@ -31,9 +33,9 @@ export function parseDatabaseView(json: string): DatabaseView {
   if (raw.format !== DATABASE_VIEW_FORMAT) throw invalid(`format must be "${DATABASE_VIEW_FORMAT}"`);
   if (!Number.isInteger(raw.version) || typeof raw.version !== 'number' || raw.version < 1) throw invalid('View version must be a positive integer');
   if (raw.version > DATABASE_VIEW_VERSION) throw new NodusError('UNSUPPORTED_VERSION', `Database view version ${raw.version} is newer than supported version ${DATABASE_VIEW_VERSION}; upgrade Nodus to read it`);
-  exactKeys(raw, ['format', 'version', 'id', 'databaseId', 'name', 'sort', 'filters', 'visiblePropertyIds', ...(raw.version === 2 ? ['type', 'settings'] : [])], 'view');
+  exactKeys(raw, ['format', 'version', 'id', 'databaseId', 'name', 'sort', 'filters', 'visiblePropertyIds', ...(raw.version >= 2 ? ['type', 'settings'] : []), ...(raw.version >= 3 ? ['sorts'] : [])], 'view');
   let presentation: Pick<DatabaseView, 'type' | 'settings'> = {};
-  if (raw.version === 2) {
+  if (raw.version >= 2) {
     if (raw.type !== 'table' && raw.type !== 'kanban' && raw.type !== 'calendar') throw invalid('type must be table, kanban, or calendar');
     if (!record(raw.settings)) throw invalid('settings must be an object');
     const key = raw.type === 'kanban' ? 'groupPropertyId' : raw.type === 'calendar' ? 'datePropertyId' : undefined;
@@ -48,6 +50,7 @@ export function parseDatabaseView(json: string): DatabaseView {
   const propertyId = raw.sort.propertyId;
   if (propertyId !== 'title' && !isUuidV4(propertyId)) throw invalid('sort.propertyId must be "title" or a lowercase UUID v4');
   if (raw.sort.direction !== 'asc' && raw.sort.direction !== 'desc') throw invalid('sort.direction must be "asc" or "desc"');
+  const sorts = raw.version >= 3 ? parseSorts(raw.sorts) : undefined;
   if (!Array.isArray(raw.filters)) throw invalid('filters must be an array');
   const filters = raw.filters.map((item, index): ViewFilter => {
     const where = `filters[${index}]`;
@@ -56,6 +59,10 @@ export function parseDatabaseView(json: string): DatabaseView {
     const filterId = uuid(item.id, `${where}.id`);
     const filterPropertyId = uuid(item.propertyId, `${where}.propertyId`);
     if (!OPERATORS.has(item.operator as string)) throw invalid(`${where}.operator is not supported`);
+    if (item.operator === 'is-empty' || item.operator === 'is-not-empty') {
+      if ('value' in item) throw invalid(`${where}.value is not allowed for empty filters`);
+      return { id: filterId, propertyId: filterPropertyId, operator: item.operator as ViewFilterOperator };
+    }
     if (typeof item.value !== 'string' && typeof item.value !== 'number' && typeof item.value !== 'boolean') throw invalid(`${where}.value must be a string, finite number, or boolean`);
     if (typeof item.value === 'number' && !Number.isFinite(item.value)) throw invalid(`${where}.value must be finite`);
     return { id: filterId, propertyId: filterPropertyId, operator: item.operator as ViewFilterOperator, value: item.value };
@@ -64,11 +71,19 @@ export function parseDatabaseView(json: string): DatabaseView {
   if (!Array.isArray(raw.visiblePropertyIds)) throw invalid('visiblePropertyIds must be an array');
   const visiblePropertyIds = raw.visiblePropertyIds.map((value, index) => uuid(value, `visiblePropertyIds[${index}]`));
   unique(visiblePropertyIds, 'visible property ID');
-  return { id, databaseId, name, sort: { propertyId, direction: raw.sort.direction }, filters, visiblePropertyIds, ...presentation };
+  return { id, databaseId, name, sort: { propertyId, direction: raw.sort.direction }, ...(sorts === undefined ? {} : { sorts }), filters, visiblePropertyIds, ...presentation };
 }
 
 export function serializeDatabaseView(view: DatabaseView): string {
-  const json = `${JSON.stringify({ format: DATABASE_VIEW_FORMAT, version: view.type === undefined && view.settings === undefined ? 1 : DATABASE_VIEW_VERSION, ...view }, null, 2)}\n`;
+  const version = view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
+  const normalized = version >= 3 ? { ...view, type: view.type ?? 'table', settings: view.settings ?? {}, sorts: view.sorts ?? [view.sort] } : view;
+  const json = `${JSON.stringify({
+    format: DATABASE_VIEW_FORMAT, version, id: normalized.id, databaseId: normalized.databaseId, name: normalized.name,
+    ...(normalized.type === undefined ? {} : { type: normalized.type }),
+    ...(normalized.settings === undefined ? {} : { settings: normalized.settings }),
+    sort: normalized.sort, ...(normalized.sorts === undefined ? {} : { sorts: normalized.sorts }),
+    filters: normalized.filters, visiblePropertyIds: normalized.visiblePropertyIds,
+  }, null, 2)}\n`;
   parseDatabaseView(json);
   return json;
 }
@@ -84,11 +99,15 @@ export function diagnoseDatabaseView(view: DatabaseView, database?: DatabaseDefi
     if (property === undefined) issues.push({ code: 'MISSING_PROPERTY', propertyId: settingId, message: `View property "${settingId}" is missing; saved view was preserved.` });
     else if (property.type !== (view.type === 'kanban' ? 'select' : 'date')) issues.push({ code: 'INVALID_REFERENCE', propertyId: settingId, message: `${view.type} requires a ${view.type === 'kanban' ? 'Select' : 'Date'} property; saved view was preserved.` });
   }
-  const refs = new Set([...view.visiblePropertyIds, ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...view.filters.map((filter) => filter.propertyId)]);
+  const refs = new Set([...view.visiblePropertyIds, ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...(view.sorts ?? []).filter((sort) => sort.propertyId !== 'title').map((sort) => sort.propertyId), ...view.filters.map((filter) => filter.propertyId)]);
   for (const id of refs) if (!byId.has(id)) issues.push({ code: 'MISSING_PROPERTY', propertyId: id, message: `Property "${id}" is missing; saved view was preserved.` });
   for (const filter of view.filters) {
     const property = byId.get(filter.propertyId);
     if (!property) continue;
+    if (filter.operator === 'is-empty' || filter.operator === 'is-not-empty') {
+      if (!['text', 'number', 'date', 'checkbox', 'select', 'multi-select'].includes(property.type)) issues.push({ code: 'INVALID_REFERENCE', propertyId: property.id, message: `Empty filter is incompatible with property "${property.name}"; saved view was preserved.` });
+      continue;
+    }
     if (!filterFits(property, filter.operator, filter.value)) {
       issues.push({ code: 'INVALID_REFERENCE', propertyId: property.id, message: `Filter "${filter.id}" is incompatible with property "${property.name}"; saved view was preserved.` });
       continue;
@@ -115,6 +134,18 @@ function filterFits(property: Property, operator: ViewFilterOperator, value: unk
   if (matches(['is'], 'select') || matches(['includes'], 'multi-select')) return typeof value === 'string';
   return false;
 }
+function parseSorts(value: unknown): ViewSort[] {
+  if (!Array.isArray(value) || value.length === 0) throw invalid('sorts must be a non-empty array');
+  const sorts = value.map((item, index) => {
+    if (!record(item)) throw invalid(`sorts[${index}] must be an object`);
+    exactKeys(item, ['propertyId', 'direction'], `sorts[${index}]`);
+    if (item.propertyId !== 'title' && !isUuidV4(item.propertyId)) throw invalid(`sorts[${index}].propertyId must be "title" or a lowercase UUID v4`);
+    if (item.direction !== 'asc' && item.direction !== 'desc') throw invalid(`sorts[${index}].direction must be asc or desc`);
+    return { propertyId: item.propertyId as string, direction: item.direction as 'asc' | 'desc' };
+  });
+  unique(sorts.map((sort) => sort.propertyId), 'sort property ID');
+  return sorts;
+}
 function validDate(value: string): boolean { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const date = new Date(`${value}T00:00:00.000Z`); return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value; }
 function uuid(value: unknown, label: string): string { if (typeof value !== 'string' || !isUuidV4(value)) throw invalid(`${label} must be a lowercase UUID v4`); return value; }
 function requiredName(value: unknown): string { if (typeof value !== 'string' || !value.trim() || value.trim() !== value) throw invalid('name must be a non-empty string without surrounding whitespace'); return value; }
@@ -122,4 +153,4 @@ function exactKeys(value: Record<string, unknown>, allowed: string[], where: str
 function unique(values: string[], label: string): void { if (new Set(values).size !== values.length) throw invalid(`Duplicate ${label}`); }
 function record(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 function invalid(message: string): NodusError { return new NodusError('INVALID_DATABASE', message); }
-const OPERATORS = new Set<string>(['contains', 'equals', 'greater', 'less', 'is', 'before', 'after', 'includes']);
+const OPERATORS = new Set<string>(['contains', 'equals', 'greater', 'less', 'is', 'before', 'after', 'includes', 'is-empty', 'is-not-empty']);

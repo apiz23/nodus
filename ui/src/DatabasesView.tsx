@@ -406,6 +406,7 @@ export function DatabasesView({
   const [newPropertyIds, setNewPropertyIds] = useState<Set<string>>(() => new Set());
   const [sortField, setSortField] = useState<DatabaseSortField>('title');
   const [sortDirection, setSortDirection] = useState<DatabaseSortDirection>('asc');
+  const [sorts, setSorts] = useState<Array<{ propertyId: DatabaseSortField; direction: DatabaseSortDirection }>>([{ propertyId: 'title', direction: 'asc' }]);
   const [filters, setFilters] = useState<DatabaseFilter[]>([]);
   const [hiddenPropertyIds, setHiddenPropertyIds] = useState<Set<string>>(() => new Set());
   const [savedPresentation, setSavedPresentation] = useState<DatabaseView | null>(null);
@@ -452,6 +453,7 @@ export function DatabasesView({
     setSaving(false);
     setSortField('title');
     setSortDirection('asc');
+    setSorts([{ propertyId: 'title', direction: 'asc' }]);
     setFilters([]);
     setHiddenPropertyIds(new Set());
     setSavedPresentation(null);
@@ -494,7 +496,7 @@ export function DatabasesView({
     : null;
   const currentDiagnostics = currentRowData === null || selected === null
     ? []
-    : currentRowData.diagnostics.filter((issue) => issue.databaseId === undefined || issue.databaseId === selected.id);
+    : currentRowData.diagnostics.filter((issue) => issue.databaseId === selected.id);
   const memberIds = useMemo(() => new Set(currentRowData?.rows.map((row) => row.noteId) ?? []), [currentRowData]);
   const matchingCandidates = useMemo(() => {
     const query = addQuery.trim().toLocaleLowerCase();
@@ -507,8 +509,8 @@ export function DatabasesView({
   const candidateProperty = selected?.properties.find((property) => property.id === candidatePropertyId) ?? null;
   const displayRows = useMemo(() => selected === null || currentRowData === null
     ? []
-    : selectDatabaseRows(currentRowData.rows, selected.properties, filters, sortField, sortDirection),
-  [filters, currentRowData, selected, sortDirection, sortField]);
+    : selectDatabaseRows(currentRowData.rows, selected.properties, filters, sorts),
+  [filters, currentRowData, selected, sorts]);
   const visibleProperties = useMemo(
     () => selected === null ? [] : [
       ...(savedPresentation?.visiblePropertyIds ?? []).flatMap((id) => selected.properties.find((property) => property.id === id) ?? []),
@@ -525,7 +527,8 @@ export function DatabasesView({
   const hiddenPropertyCount = selected === null ? 0 : selected.properties.length - visibleProperties.length;
   const viewConfiguration: ViewConfiguration = {
     type: savedPresentation?.type ?? 'table', settings: savedPresentation?.settings ?? {},
-    sort: { propertyId: sortField, direction: sortDirection },
+    sort: sorts[0] ?? { propertyId: sortField, direction: sortDirection },
+    sorts,
     filters: filters as DatabaseView['filters'],
     visiblePropertyIds: [
       ...visibleProperties.map((property) => property.id),
@@ -542,6 +545,7 @@ export function DatabasesView({
     const configuration = view ?? defaultView(selected);
     setSavedPresentation(view);
     setSortField(configuration.sort.propertyId); setSortDirection(configuration.sort.direction);
+    setSorts(configuration.sorts ?? [configuration.sort]);
     setFilters(configuration.filters);
     setHiddenPropertyIds(new Set(selected.properties.filter((property) => !configuration.visiblePropertyIds.includes(property.id)).map((property) => property.id)));
     setEditing(null); setAddOpen(false); setCandidateId(null); setCandidatePropertyId(null); setConfirmedAdd(false);
@@ -562,7 +566,30 @@ export function DatabasesView({
   }
 
   function updateTableFilter(id: string, update: Partial<DatabaseFilter>): void {
-    setFilters((previous) => previous.map((filter) => filter.id === id ? { ...filter, ...update } : filter));
+    setFilters((previous) => previous.map((filter) => {
+      if (filter.id !== id) return filter;
+      const next = { ...filter, ...update };
+      if (next.operator === 'is-empty' || next.operator === 'is-not-empty') delete next.value;
+      else if (update.operator === 'is-empty' || update.operator === 'is-not-empty') {
+        const property = selected?.properties.find((item) => item.id === next.propertyId);
+        if (property) next.value = initialFilterValue(property);
+      }
+      return next;
+    }));
+  }
+
+  function updateSort(index: number, update: Partial<{ propertyId: DatabaseSortField; direction: DatabaseSortDirection }>): void {
+    setSorts((previous) => previous.map((sort, sortIndex) => sortIndex === index ? { ...sort, ...update } : sort));
+  }
+
+  function moveSort(index: number, delta: number): void {
+    setSorts((previous) => {
+      const target = index + delta;
+      if (target < 0 || target >= previous.length) return previous;
+      const next = [...previous];
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
   }
 
   function changeFilterProperty(id: string, propertyId: string): void {
@@ -1179,12 +1206,12 @@ export function DatabasesView({
                       <div className="flex items-center gap-1.5" role="group" aria-label="Sort rows">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button type="button" size="sm" variant="outline" aria-label={`Sort rows by ${sortField === 'title' ? 'note title' : selected.properties.find((property) => property.id === sortField)?.name ?? 'note title'}`}>
-                              Sort: {sortField === 'title' ? 'Note title' : selected.properties.find((property) => property.id === sortField)?.name ?? 'Note title'}
+                            <Button type="button" size="sm" variant="outline" aria-label={`Sort rows by ${(sorts[0]?.propertyId ?? 'title') === 'title' ? 'note title' : selected.properties.find((property) => property.id === sorts[0]?.propertyId)?.name ?? 'note title'}`}>
+                              Sort: {(sorts[0]?.propertyId ?? 'title') === 'title' ? 'Note title' : selected.properties.find((property) => property.id === sorts[0]?.propertyId)?.name ?? 'Note title'}
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" className="min-w-48">
-                            <DropdownMenuRadioGroup value={sortField} onValueChange={setSortField}>
+                            <DropdownMenuRadioGroup value={sorts[0]?.propertyId ?? 'title'} onValueChange={(value) => updateSort(0, { propertyId: value })}>
                               <DropdownMenuRadioItem value="title">Note title</DropdownMenuRadioItem>
                               {selected.properties.map((property) => (
                                 <DropdownMenuRadioItem key={property.id} value={property.id}>
@@ -1198,13 +1225,31 @@ export function DatabasesView({
                           type="button"
                           size="icon-sm"
                           variant="outline"
-                          aria-label={sortDirection === 'asc' ? 'Sort descending' : 'Sort ascending'}
-                          title={sortDirection === 'asc' ? 'Ascending' : 'Descending'}
-                          onClick={() => setSortDirection((value) => value === 'asc' ? 'desc' : 'asc')}
+                          aria-label={(sorts[0]?.direction ?? 'asc') === 'asc' ? 'Sort descending' : 'Sort ascending'}
+                          title={(sorts[0]?.direction ?? 'asc') === 'asc' ? 'Ascending' : 'Descending'}
+                          onClick={() => updateSort(0, { direction: (sorts[0]?.direction ?? 'asc') === 'asc' ? 'desc' : 'asc' })}
                         >
-                          {sortDirection === 'asc' ? <ArrowUpAZ /> : <ArrowDownAZ />}
+                          {(sorts[0]?.direction ?? 'asc') === 'asc' ? <ArrowUpAZ /> : <ArrowDownAZ />}
                         </Button>
                       </div>
+
+                      {sorts.slice(1).map((sort, offset) => {
+                        const index = offset + 1;
+                        return <div key={index} className="flex items-center gap-1" role="group" aria-label={`Sort priority ${index + 1}`}>
+                          <Select value={sort.propertyId} onValueChange={(propertyId) => updateSort(index, { propertyId })}>
+                            <SelectTrigger className="h-8 w-36" aria-label={`Sort ${index + 1} property`}><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="title">Note title</SelectItem>{selected.properties.map((property) => <SelectItem key={property.id} value={property.id}>{property.name}</SelectItem>)}</SelectContent>
+                          </Select>
+                          <Button type="button" size="icon-sm" variant="outline" aria-label={`Sort ${index + 1} ${(sort.direction === 'asc' ? 'ascending' : 'descending')}; toggle direction`} onClick={() => updateSort(index, { direction: sort.direction === 'asc' ? 'desc' : 'asc' })}>{sort.direction === 'asc' ? <ArrowUpAZ /> : <ArrowDownAZ />}</Button>
+                          <Button type="button" size="icon-sm" variant="ghost" aria-label={`Move sort ${index + 1} up`} disabled={index === 1} onClick={() => moveSort(index, -1)}>↑</Button>
+                          <Button type="button" size="icon-sm" variant="ghost" aria-label={`Move sort ${index + 1} down`} disabled={index === sorts.length - 1} onClick={() => moveSort(index, 1)}>↓</Button>
+                          <Button type="button" size="icon-sm" variant="ghost" aria-label={`Remove sort ${index + 1}`} onClick={() => setSorts((previous) => previous.filter((_, sortIndex) => sortIndex !== index))}><X /></Button>
+                        </div>;
+                      })}
+                      <Button type="button" size="sm" variant="ghost" disabled={sorts.length >= selected.properties.length + 1} onClick={() => {
+                        const available = ['title', ...selected.properties.map((property) => property.id)].find((id) => !sorts.some((sort) => sort.propertyId === id));
+                        if (available) setSorts((previous) => [...previous, { propertyId: available, direction: 'asc' }]);
+                      }}>Add sort</Button>
 
                       <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-border" />
 
@@ -1272,7 +1317,7 @@ export function DatabasesView({
                                         </SelectContent>
                                       </Select>
                                       <div className="flex min-w-0 flex-1 flex-col gap-1">
-                                        <FilterValueControl
+                                        {filter.operator !== 'is-empty' && filter.operator !== 'is-not-empty' ? <FilterValueControl
                                           relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']}
                                           property={property}
                                           value={filter.value}
@@ -1281,7 +1326,7 @@ export function DatabasesView({
                                           describedBy={invalid ? `filter-${filter.id}-hint` : undefined}
                                           className="w-full"
                                           onChange={(value) => updateTableFilter(filter.id, { value })}
-                                        />
+                                        /> : null}
                                         {invalid ? (
                                           <p id={`filter-${filter.id}-hint`} className="text-[11px] text-muted-foreground">
                                             Not applied until this value is valid.
@@ -1707,6 +1752,8 @@ function filterOperatorLabel(operator: DatabaseFilterOperator): string {
     before: 'before',
     after: 'after',
     includes: 'includes',
+    'is-empty': 'is empty',
+    'is-not-empty': 'is not empty',
   };
   return labels[operator];
 }
