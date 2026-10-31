@@ -5,6 +5,10 @@ Measured on 2026-10-28 against the current Milestone 3.1 working tree, based on
 No dependencies, production search/index/storage changes, or chunking changes
 were required.
 
+The original bundle measurements below are a historical Phase 7B baseline. The
+current Phase 7 build was rechecked on 2026-10-31; its updated chunk sizes and
+warning are recorded in [Current build recheck](#current-build-recheck).
+
 ## Database row endpoint
 
 ```sh
@@ -131,6 +135,48 @@ lazy-build delta. A user immediately opening a note would still need those bytes
 Any follow-up must measure its actual split output and preserve editor state,
 focus, autosave, and loading behavior. No lazy loading or manual chunking was
 implemented for this baseline.
+
+## Current build recheck
+
+Command: `pnpm analyze:bundle`, on Node 24.19.0 / Windows 10 build 26300.
+The report builds into a temporary directory outside the repository. Current
+production chunks are:
+
+| Chunk | Initial | Raw bytes | Gzip bytes |
+|---|---:|---:|---:|
+| `index-DQn1cPMn.js` | Yes | 268,789 | 85,075 |
+| `jsx-runtime-CWSwMzrK.js` | Yes | 37,937 | 15,242 |
+| `App-B9P-xsb2.js` | No | 778,103 | 222,948 |
+| `wikilink-DcbImKkE.js` | No | 219,992 | 82,990 |
+| `separator-DA5GYfoc.js` | No | 54,307 | 17,435 |
+| `LandingPage-CIytIlcX.js` | No | 42,313 | 9,317 |
+| `CodeMirrorEditor-xXPxw3yU.js` | No | 38,145 | 12,872 |
+| `MarkdownPreview-BUScSg1V.js` | No | 11,590 | 4,322 |
+
+The initial JavaScript is 306,726 raw bytes / 100,317 gzip bytes. Entering the
+workspace loads the 778,103-byte `App` chunk, which exceeds Vite's 500 kB
+minified chunk warning threshold (222,948 gzip bytes). The editor-specific
+CodeMirror chunk is separate and lazy-loaded. The Phase 8D recheck below
+supersedes these workspace measurements.
+
+## Phase 8D workspace-entry recheck
+
+Command: `pnpm analyze:bundle`, on Node 24.19.0 / Windows 10 build 26300.
+The measured workspace chunk was 483,884 raw bytes / 129,785 gzip bytes, down
+303,546 raw bytes (38.5%) and 95,522 gzip bytes (42.4%) from the prior
+787,430-byte / 225,307-byte measurements. This falls below Vite's 500 kB
+warning threshold. Initial JavaScript remained effectively unchanged at
+306,757 raw bytes / 100,336 gzip bytes. The small difference from the previous
+initial measurement (31 raw bytes) is build output variation.
+
+The formula editor is now a lazy boundary. Its editor chunk is 14,158 raw bytes
+/ 4,899 gzip bytes; CodeMirror-related shared dependencies remain deferred to
+the editor chunks that use them. This reduces workspace-entry transfer and
+parse work without changing formula behavior. In the 5,000-note browser
+measurement, table load/render remained 2,292.8 ms and switching to List took
+846.7 ms; 22 table rows and 16 list rows were rendered by the existing virtual
+layouts. The benchmark’s query-pipeline timings are recorded in the Phase 7
+baseline above; no query-engine optimization was justified by this work.
 
 ## Accessibility check
 

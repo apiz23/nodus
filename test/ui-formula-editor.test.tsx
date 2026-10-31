@@ -5,6 +5,7 @@ import type { Property } from '../src/database/schema.js';
 import type { UiDatabaseRow } from '../src/ui-server/dto.js';
 import { FormulaValueDisplay } from '../ui/src/DatabasesView.js';
 import { FormulaEditor } from '../ui/src/database/FormulaEditor.js';
+import { FormulaEditor as FormulaEditorContent } from '../ui/src/database/FormulaEditorImpl.js';
 
 const COUNT = '11111111-1111-4111-8111-111111111111';
 const RESULT = '22222222-2222-4222-8222-222222222222';
@@ -14,8 +15,18 @@ const properties: Property[] = [
 ];
 
 describe('formula editor and formula value presentation', () => {
-  it('renders a labeled formula editor with validation, preview guidance, help, and safe actions', () => {
+  it('keeps the editor chunk behind an accessible loading boundary', () => {
     const html = renderToStaticMarkup(createElement(FormulaEditor, {
+      property: properties[1]!, properties,
+      onApply: vi.fn(), onCancel: vi.fn(),
+    }));
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('Loading formula editor for Double');
+  });
+
+  it('renders a labeled formula editor with validation, preview guidance, help, and safe actions', () => {
+    const html = renderToStaticMarkup(createElement(FormulaEditorContent, {
       property: properties[1]!, properties,
       onApply: vi.fn(), onCancel: vi.fn(),
     }));
@@ -30,7 +41,7 @@ describe('formula editor and formula value presentation', () => {
   });
 
   it('explains invalid and empty formulas without treating them as a preview value', () => {
-    const html = renderToStaticMarkup(createElement(FormulaEditor, {
+    const html = renderToStaticMarkup(createElement(FormulaEditorContent, {
       property: { id: RESULT, name: 'Double', type: 'formula', formula: { expression: '' } },
       properties, onApply: vi.fn(), onCancel: vi.fn(),
     }));
