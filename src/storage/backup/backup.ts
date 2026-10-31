@@ -41,7 +41,7 @@ import {
 } from '../fs/layout.js';
 import { isInsideRoot, resolveInsideRoot } from '../fs/safe-path.js';
 import { FileSystemVault } from '../fs/vault.js';
-import { walkVault } from '../fs/scan.js';
+import { isManagedAttachmentDirectory, walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from '../fs/attachments.js';
 
 /**
@@ -194,17 +194,31 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
   }
   const attachmentDirectory = (await readdir(target)).find((name) => name.toLowerCase() === ATTACHMENTS_DIR);
   if (attachmentDirectory !== undefined) {
-    if (manifest.version < 3) throw corruptBackup('Legacy backup manifest cannot account for the attachments/ directory; no restore occurred');
+    const attachmentEntries = manifest.files.filter((file) => file.kind === 'attachment');
+    // An ordinary user folder named attachments/ (or Attachments/) is allowed
+    // by the vault contract on every backup version. Treat it as managed
+    // storage only when the manifest carries attachments or every visible
+    // child already uses an exact managed file name.
     const info = await lstat(join(target, attachmentDirectory));
-    if (attachmentDirectory !== ATTACHMENTS_DIR || !info.isDirectory() || info.isSymbolicLink()) throw corruptBackup('Attachment backup directory must be a regular attachments/ directory');
-    const children = await readdir(join(target, attachmentDirectory), { withFileTypes: true });
-    if (children.some((child) => child.isSymbolicLink() || !child.isFile() || attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) === undefined)) {
-      throw corruptBackup('Attachment backup directory contains an unrecognized or unsafe file');
-    }
-    const walk = await walkVault(target);
-    const listed = new Set(manifest.files.filter((file) => file.kind === 'attachment').map((file) => file.path));
-    if (walk.issues.some((issue) => issue.path.toLowerCase().startsWith(`${ATTACHMENTS_DIR}/`)) || walk.entries.some((entry) => entry.path.startsWith(`${ATTACHMENTS_DIR}/`) && (entry.kind !== 'attachment' || !listed.has(entry.path)))) {
-      throw corruptBackup('Attachment backup files are unsafe or missing from the manifest; no restore occurred');
+    const regularDirectory = info.isDirectory() && !info.isSymbolicLink();
+    const hasVisibleChild = regularDirectory &&
+      (await readdir(join(target, attachmentDirectory))).some((name) => !name.startsWith('.'));
+    const managed = attachmentEntries.length > 0 ||
+      (attachmentDirectory === ATTACHMENTS_DIR && hasVisibleChild && await isManagedAttachmentDirectory(join(target, attachmentDirectory)));
+    if (managed) {
+      if (attachmentDirectory !== ATTACHMENTS_DIR || !regularDirectory) {
+        throw corruptBackup('Attachment backup directory must be a regular attachments/ directory');
+      }
+      if (manifest.version < 3) throw corruptBackup('Legacy backup manifest cannot account for the attachments/ directory; no restore occurred');
+      const children = await readdir(join(target, attachmentDirectory), { withFileTypes: true });
+      if (children.some((child) => !child.name.startsWith('.') && (child.isSymbolicLink() || !child.isFile() || attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) === undefined))) {
+        throw corruptBackup('Attachment backup directory contains an unrecognized or unsafe file');
+      }
+      const walk = await walkVault(target);
+      const listed = new Set(attachmentEntries.map((file) => file.path));
+      if (walk.issues.some((issue) => issue.path.toLowerCase().startsWith(`${ATTACHMENTS_DIR}/`)) || walk.entries.some((entry) => entry.path.startsWith(`${ATTACHMENTS_DIR}/`) && (entry.kind !== 'attachment' || !listed.has(entry.path)))) {
+        throw corruptBackup('Attachment backup files are unsafe or missing from the manifest; no restore occurred');
+      }
     }
   }
   const issues: string[] = [];

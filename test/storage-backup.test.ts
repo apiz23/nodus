@@ -37,6 +37,7 @@ const futureNodusData = {
 };
 
 const MANIFEST = 'nodus-backup.json';
+const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 
 const pkg = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
@@ -141,6 +142,68 @@ describe('createBackup', () => {
         ],
         digest: canonicalDigest(manifest),
       });
+    });
+  });
+
+  it('backs up and validates a note in an ordinary user folder named attachments', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createNote(createNote({
+        id: N2,
+        title: 'User attachment folder note',
+        path: 'attachments/user-note.md',
+        body: 'Body\n',
+        now: NOW,
+      }));
+      const target = join(dir, 'backup');
+      expect(await createBackup(vault, target)).toMatchObject({ notes: 1 });
+      const validation = await validateBackup(target);
+      expect(validation.notes.map((note) => note.id)).toEqual([N2]);
+    });
+  });
+
+  it('accepts an ordinary note folder named Attachments with different capitalization', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createNote(createNote({
+        id: N2,
+        title: 'Case variant folder',
+        path: 'Attachments/note.md',
+        body: 'Body\n',
+        now: NOW,
+      }));
+      const target = join(dir, 'backup');
+      await createBackup(vault, target);
+      const validation = await validateBackup(target);
+      expect(validation.notes.map((note) => note.id)).toEqual([N2]);
+    });
+  });
+
+  it('accepts a legacy v1 backup whose attachments path is an ordinary note folder', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createNote(createNote({
+        id: N2,
+        title: 'Legacy user attachment folder',
+        path: 'attachments/legacy-note.md',
+        body: 'Legacy body\n',
+        now: NOW,
+      }));
+      const target = join(dir, 'backup');
+      await createBackup(vault, target);
+      const manifest = await readManifestJson(target);
+      await writeManifestJson(target, {
+        format: manifest.format,
+        version: 1,
+        createdAt: manifest.createdAt,
+        files: manifest.files.map(
+          ({ kind, id, path, sha256 }: { kind: string; id: string; path: string; sha256: string }) =>
+            ({ kind, id, path, sha256 }),
+        ),
+      });
+
+      const validation = await validateBackup(target);
+      expect(validation.notes.map((note) => note.id)).toEqual([N2]);
     });
   });
 
@@ -693,6 +756,40 @@ describe('manifest metadata', () => {
       expect((await validateBackup(target)).manifest.formats?.databaseView).toBe(1);
     });
   });
+
+  it('validates and restores a legacy v3 manifest with binary attachments', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createNote(createNote({
+        id: N1,
+        title: 'Legacy v3 attachment',
+        path: 'notes/v3.md',
+        body: 'Body\n',
+        now: NOW,
+      }));
+      const attachment = await vault.createAttachment('legacy-v3.png', PNG);
+      const target = join(dir, 'backup');
+      await createBackup(vault, target, { now: BACKUP_NOW });
+      const manifest = await readManifestJson(target);
+      manifest.version = 3;
+      manifest.formats.backup = 3;
+      delete manifest.formats.propertyCatalog;
+      delete manifest.counts.propertyCatalog;
+      delete manifest.propertyCatalog;
+      manifest.digest = canonicalDigest(manifest);
+      await writeManifestJson(target, manifest);
+
+      const validation = await validateBackup(target);
+      expect(validation.manifest.version).toBe(3);
+      expect(validation.entries.find((entry) => entry.kind === 'attachment')?.id).toBe(attachment.id);
+
+      const restored = join(dir, 'restored');
+      await restoreBackup(target, restored);
+      expect(await readFile(join(restored, attachment.path))).toEqual(PNG);
+      expect(await readFile(join(restored, 'notes/v3.md'), 'utf8')).toContain('Legacy v3 attachment');
+    });
+  });
+
   it('records actual UTF-8 byte lengths for non-ASCII content', async () => {
     await withTempDir(async (dir) => {
       const vault = await seedVault(join(dir, 'vault'));
