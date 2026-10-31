@@ -38,9 +38,16 @@ export function parseDatabaseView(json: string): DatabaseView {
   if (raw.version >= 2) {
     if (raw.type !== 'table' && raw.type !== 'kanban' && raw.type !== 'calendar' && !(raw.version >= 3 && raw.type === 'list')) throw invalid('type must be table, list, kanban, or calendar');
     if (!record(raw.settings)) throw invalid('settings must be an object');
-    const key = raw.type === 'kanban' ? 'groupPropertyId' : raw.type === 'calendar' ? 'datePropertyId' : undefined;
-    exactKeys(raw.settings, key === undefined ? [] : [key], 'settings');
-    presentation = { type: raw.type, settings: key === undefined ? {} : { [key]: uuid(raw.settings[key], `settings.${key}`) } };
+    const allowedSettings = raw.type === 'kanban' ? ['groupPropertyId'] : raw.type === 'calendar' ? ['datePropertyId'] : raw.version >= 3 ? ['groupPropertyId'] : [];
+    exactKeys(raw.settings, allowedSettings, 'settings');
+    const settings: DatabaseViewSettings = {};
+    if (raw.type === 'calendar' && raw.version >= 3 && 'groupPropertyId' in raw.settings) throw invalid('Calendar settings cannot include groupPropertyId');
+    if (raw.type === 'kanban' && raw.version >= 3 && 'datePropertyId' in raw.settings) throw invalid('Kanban settings cannot include datePropertyId');
+    if (raw.type === 'kanban' && !('groupPropertyId' in raw.settings)) throw invalid('Kanban settings require groupPropertyId');
+    if (raw.type === 'calendar' && !('datePropertyId' in raw.settings)) throw invalid('Calendar settings require datePropertyId');
+    if ('groupPropertyId' in raw.settings) settings.groupPropertyId = uuid(raw.settings.groupPropertyId, 'settings.groupPropertyId');
+    if ('datePropertyId' in raw.settings) settings.datePropertyId = uuid(raw.settings.datePropertyId, 'settings.datePropertyId');
+    presentation = { type: raw.type, settings };
   }
   const id = uuid(raw.id, 'view id');
   const databaseId = uuid(raw.databaseId, 'databaseId');
@@ -75,7 +82,8 @@ export function parseDatabaseView(json: string): DatabaseView {
 }
 
 export function serializeDatabaseView(view: DatabaseView): string {
-  const version = view.type === 'list' || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
+  const hasTableGrouping = (view.type === 'table' || view.type === 'list') && view.settings?.groupPropertyId !== undefined;
+  const version = view.type === 'list' || hasTableGrouping || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
   const normalized = version >= 3 ? { ...view, type: view.type ?? 'table', settings: view.settings ?? {}, sorts: view.sorts ?? [view.sort] } : view;
   const json = `${JSON.stringify({
     format: DATABASE_VIEW_FORMAT, version, id: normalized.id, databaseId: normalized.databaseId, name: normalized.name,
@@ -93,11 +101,18 @@ export function diagnoseDatabaseView(view: DatabaseView, database?: DatabaseDefi
   if (!database) return [{ code: 'MISSING_DATABASE', message: `Database "${view.databaseId}" is missing; saved view was preserved.` }];
   const issues: DatabaseViewDiagnostic[] = [];
   const byId = new Map(database.properties.map((property) => [property.id, property]));
-  const settingId = view.type === 'kanban' ? view.settings?.groupPropertyId : view.type === 'calendar' ? view.settings?.datePropertyId : undefined;
-  if (settingId !== undefined) {
-    const property = byId.get(settingId);
-    if (property === undefined) issues.push({ code: 'MISSING_PROPERTY', propertyId: settingId, message: `View property "${settingId}" is missing; saved view was preserved.` });
-    else if (property.type !== (view.type === 'kanban' ? 'select' : 'date')) issues.push({ code: 'INVALID_REFERENCE', propertyId: settingId, message: `${view.type} requires a ${view.type === 'kanban' ? 'Select' : 'Date'} property; saved view was preserved.` });
+  const settingIds = [view.settings?.groupPropertyId, view.settings?.datePropertyId].filter((id): id is string => id !== undefined);
+  for (const settingId of settingIds) if (!byId.has(settingId)) issues.push({ code: 'MISSING_PROPERTY', propertyId: settingId, message: `View property "${settingId}" is missing; saved view was preserved.` });
+  const layoutId = view.type === 'calendar' ? view.settings?.datePropertyId : view.type === 'kanban' ? view.settings?.groupPropertyId : undefined;
+  if (layoutId !== undefined) {
+    const property = byId.get(layoutId);
+    const expected = view.type === 'calendar' ? 'date' : 'select';
+    if (property && property.type !== expected) issues.push({ code: 'INVALID_REFERENCE', propertyId: layoutId, message: `${view.type} requires a ${expected === 'date' ? 'Date' : 'Select'} property; saved view was preserved.` });
+  }
+  const groupId = view.type === 'table' || view.type === 'list' ? view.settings?.groupPropertyId : undefined;
+  if (groupId !== undefined) {
+    const property = byId.get(groupId);
+    if (property && property.type !== 'select' && property.type !== 'checkbox') issues.push({ code: 'INVALID_REFERENCE', propertyId: groupId, message: `Grouping requires a Select or Checkbox property; saved view was preserved.` });
   }
   const refs = new Set([...view.visiblePropertyIds, ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...(view.sorts ?? []).filter((sort) => sort.propertyId !== 'title').map((sort) => sort.propertyId), ...view.filters.map((filter) => filter.propertyId)]);
   for (const id of refs) if (!byId.has(id)) issues.push({ code: 'MISSING_PROPERTY', propertyId: id, message: `Property "${id}" is missing; saved view was preserved.` });

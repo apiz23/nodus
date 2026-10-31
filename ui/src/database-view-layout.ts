@@ -52,6 +52,44 @@ export function calendarRows(rows: readonly UiDatabaseRow[], propertyId: string)
   return { dated, undated };
 }
 
+export interface DatabaseRowGroup { id: string; name: string; rows: UiDatabaseRow[] }
+
+/** Groups an already filtered and sorted row set without changing member order. */
+export function groupDatabaseRows(rows: readonly UiDatabaseRow[], property: Property): DatabaseRowGroup[] {
+  const buckets = new Map<string, UiDatabaseRow[]>();
+  const valueFor = (row: UiDatabaseRow) => row.values[property.id];
+  const noValue = (value: unknown) => value === undefined || value === null || value === '';
+  let unknown: UiDatabaseRow[] = [];
+  for (const row of rows) {
+    const value = valueFor(row);
+    if (noValue(value)) continue;
+    const key = property.type === 'select' && typeof value === 'string'
+      ? (property.options ?? []).some((option) => option.id === value) ? value : '__unknown__'
+      : property.type === 'checkbox' && typeof value === 'boolean' ? String(value) : '__unknown__';
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(row);
+    buckets.set(key, bucket);
+  }
+  const groups: DatabaseRowGroup[] = [];
+  if (property.type === 'select') {
+    for (const option of property.options ?? []) {
+      const members = buckets.get(option.id);
+      if (members?.length) groups.push({ id: option.id, name: option.name, rows: members });
+    }
+    unknown = buckets.get('__unknown__') ?? [];
+  } else if (property.type === 'checkbox') {
+    for (const [id, name] of [['false', 'No'], ['true', 'Yes']] as const) {
+      const members = buckets.get(id);
+      if (members?.length) groups.push({ id, name, rows: members });
+    }
+    unknown = buckets.get('__unknown__') ?? [];
+  }
+  if (unknown.length) groups.push({ id: '__unknown__', name: 'Unknown value', rows: unknown });
+  const unassigned = rows.filter((row) => noValue(valueFor(row)));
+  if (unassigned.length) groups.push({ id: '__no-value__', name: 'No value', rows: unassigned });
+  return groups;
+}
+
 export type ViewConfiguration = Pick<DatabaseView, 'sort' | 'sorts' | 'filters' | 'visiblePropertyIds' | 'type' | 'settings'>;
 
 export function defaultView(database: UiDatabase, type: DatabaseViewType = 'table'): ViewConfiguration {

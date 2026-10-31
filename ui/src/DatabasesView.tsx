@@ -3,7 +3,7 @@ import { RelationControl, RelationValue } from './RelationControl';
 import { RelationSchemaFields } from './RelationSchemaFields';
 import { isDerivedProperty } from '../../src/database/schema';
 import type { RelationReference } from '../../src/database/relations';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, ChevronRight, Columns3, Database, ListFilter, Pencil, Plus, RefreshCw, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -76,9 +76,10 @@ import { SidebarToggle } from './SidebarToggle';
 import { diagnoseDatabaseView, type DatabaseView } from '../../src/database/database-view';
 import { SavedViewControls } from './SavedViewControls';
 import { KanbanView, CalendarView, ListView } from './DatabaseLayouts';
-import { defaultView, isDateOnly, type ViewConfiguration } from './database-view-layout';
+import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } from './database-view-layout';
 
 const SEARCHABLE_OPTIONS_THRESHOLD = 8;
+const NO_GROUP_PROPERTY = '__no_group__';
 
 function propertyTypeLabel(type: PropertyType): string {
   switch (type) {
@@ -407,6 +408,8 @@ export function DatabasesView({
   const [sortField, setSortField] = useState<DatabaseSortField>('title');
   const [sortDirection, setSortDirection] = useState<DatabaseSortDirection>('asc');
   const [sorts, setSorts] = useState<Array<{ propertyId: DatabaseSortField; direction: DatabaseSortDirection }>>([{ propertyId: 'title', direction: 'asc' }]);
+  const [groupPropertyId, setGroupPropertyId] = useState<string | undefined>();
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const [filters, setFilters] = useState<DatabaseFilter[]>([]);
   const [hiddenPropertyIds, setHiddenPropertyIds] = useState<Set<string>>(() => new Set());
   const [savedPresentation, setSavedPresentation] = useState<DatabaseView | null>(null);
@@ -454,6 +457,7 @@ export function DatabasesView({
     setSortField('title');
     setSortDirection('asc');
     setSorts([{ propertyId: 'title', direction: 'asc' }]);
+    setGroupPropertyId(undefined);
     setFilters([]);
     setHiddenPropertyIds(new Set());
     setSavedPresentation(null);
@@ -525,8 +529,14 @@ export function DatabasesView({
         return property !== undefined && isValidFilter(property, filter.operator, filter.value);
       }).length;
   const hiddenPropertyCount = selected === null ? 0 : selected.properties.length - visibleProperties.length;
+  const activeViewType = savedPresentation?.type ?? 'table';
+  const viewSettings = activeViewType === 'calendar'
+    ? { datePropertyId: savedPresentation?.settings?.datePropertyId }
+    : activeViewType === 'kanban'
+      ? { groupPropertyId: groupPropertyId ?? savedPresentation?.settings?.groupPropertyId }
+      : groupPropertyId === undefined ? {} : { groupPropertyId };
   const viewConfiguration: ViewConfiguration = {
-    type: savedPresentation?.type ?? 'table', settings: savedPresentation?.settings ?? {},
+    type: activeViewType, settings: viewSettings,
     sort: sorts[0] ?? { propertyId: sortField, direction: sortDirection },
     sorts,
     filters: filters as DatabaseView['filters'],
@@ -538,12 +548,21 @@ export function DatabasesView({
   const viewIssues = selected === null || savedPresentation === null ? [] : diagnoseDatabaseView({ id: '', databaseId: selected.id, name: '', ...viewConfiguration }, selected);
   const layoutProperty = selected?.properties.find((property) => property.id === (viewConfiguration.type === 'kanban'
     ? viewConfiguration.settings?.groupPropertyId : viewConfiguration.type === 'calendar' ? viewConfiguration.settings?.datePropertyId : undefined));
+  const groupProperty = (viewConfiguration.type === 'table' || viewConfiguration.type === 'list')
+    ? selected?.properties.find((property) => property.id === viewConfiguration.settings?.groupPropertyId && (property.type === 'select' || property.type === 'checkbox'))
+    : undefined;
+  const tableGroups = groupProperty ? groupDatabaseRows(displayRows, groupProperty) : [];
+  const tableRows = groupProperty ? tableGroups.flatMap((group) => group.rows) : displayRows;
+  const groupByNoteId = new Map(tableGroups.flatMap((group) => group.rows.map((row) => [row.noteId, group] as const)));
+  const firstNoteIds = new Set(tableGroups.map((group) => group.rows[0]?.noteId).filter((id): id is string => id !== undefined));
+  useEffect(() => setCollapsedGroupIds(new Set()), [selected?.id, savedPresentation?.id, viewConfiguration.settings?.groupPropertyId]);
 
   function applySavedView(view: DatabaseView | null): void {
     if (selected === null) return;
     mutationGeneration.current += 1;
     const configuration = view ?? defaultView(selected);
     setSavedPresentation(view);
+    setGroupPropertyId(configuration.settings?.groupPropertyId);
     setSortField(configuration.sort.propertyId); setSortDirection(configuration.sort.direction);
     setSorts(configuration.sorts ?? [configuration.sort]);
     setFilters(configuration.filters);
@@ -1075,6 +1094,7 @@ export function DatabasesView({
                     value={layoutProperty?.id}
                     disabled={saving || editing !== null}
                     onValueChange={(id) => {
+                      setGroupPropertyId(id);
                       setSavedPresentation((previous) => previous === null ? previous : { ...previous, settings: viewConfiguration.type === 'kanban' ? { groupPropertyId: id } : { datePropertyId: id } });
                       setEditing(null);
                     }}
@@ -1086,6 +1106,16 @@ export function DatabasesView({
                       {selected.properties.filter((property) => property.type === (viewConfiguration.type === 'kanban' ? 'select' : 'date')).map((property) => (
                         <SelectItem key={property.id} value={property.id}>{property.name}</SelectItem>
                       ))}
+                    </SelectContent>
+                  </Select>
+                </div> : null}
+                {viewConfiguration.type === 'table' || viewConfiguration.type === 'list' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
+                  <label htmlFor="database-group-property">Group by</label>
+                  <Select value={groupPropertyId ?? NO_GROUP_PROPERTY} disabled={saving || viewsLoading} onValueChange={(value) => setGroupPropertyId(value === NO_GROUP_PROPERTY ? undefined : value)}>
+                    <SelectTrigger id="database-group-property" className="h-8 w-52" aria-label="Group rows by"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_GROUP_PROPERTY}>No grouping</SelectItem>
+                      {selected.properties.filter((property) => property.type === 'select' || property.type === 'checkbox').map((property) => <SelectItem key={property.id} value={property.id}>{property.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div> : null}
@@ -1436,7 +1466,7 @@ export function DatabasesView({
                 ) : currentRowData === null ? null : viewConfiguration.type === 'kanban' && layoutProperty?.type === 'select' ? (
                   <KanbanView rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
                 ) : viewConfiguration.type === 'list' ? (
-                  <ListView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
+                  <ListView key={`${savedPresentation?.id ?? 'draft'}:${groupProperty?.id ?? 'ungrouped'}`} rows={displayRows} groupProperty={groupProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
                 ) : viewConfiguration.type === 'calendar' && layoutProperty?.type === 'date' ? (
                   <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
                 ) : displayRows.length ? (
@@ -1454,7 +1484,12 @@ export function DatabasesView({
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {displayRows.map((row) => (
+                          {tableRows.map((row) => {
+                            const group = groupByNoteId.get(row.noteId);
+                            const isGroupStart = group !== undefined && firstNoteIds.has(row.noteId);
+                            const groupHeader = group && isGroupStart ? <TableRow key={`group-${group.id}`} className="bg-muted/30"><TableCell colSpan={visibleProperties.length + 1} className="py-1.5"><Button type="button" variant="ghost" size="sm" className="h-auto px-1 py-0 font-medium" aria-expanded={!collapsedGroupIds.has(group.id)} onClick={() => setCollapsedGroupIds((previous) => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{group.name}</Button><Badge variant="secondary" className="ml-2">{group.rows.length}</Badge></TableCell></TableRow> : null;
+                            if (group && collapsedGroupIds.has(group.id)) return isGroupStart ? <Fragment key={`collapsed-${group.id}`}>{groupHeader}</Fragment> : null;
+                            return <Fragment key={row.noteId}>{groupHeader}
                             <TableRow key={row.noteId}>
                               <TableHead scope="row" className="h-auto w-[24%] p-2 align-top font-normal whitespace-normal">
                                 <Button type="button" variant="link" size="sm" className="h-auto max-w-full justify-start truncate p-0 font-medium" title={row.title} onClick={() => openLayoutNote(row.noteId)}>{row.title}</Button>
@@ -1492,8 +1527,8 @@ export function DatabasesView({
                                   </TableCell>
                                 );
                               })}
-                            </TableRow>
-                          ))}
+                            </TableRow></Fragment>;
+                          })}
                         </TableBody>
                       </Table>
                     </div>

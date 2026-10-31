@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { Property } from '../../src/database/schema';
 import type { UiDatabaseRow } from '../../src/ui-server/dto';
-import { calendarRows, kanbanColumns, monthDays, shiftMonth, todayDate } from './database-view-layout';
+import { calendarRows, groupDatabaseRows, kanbanColumns, monthDays, shiftMonth, todayDate } from './database-view-layout';
 
 interface LayoutProps {
   rows: UiDatabaseRow[];
@@ -57,9 +57,16 @@ export function KanbanView(props: LayoutProps) {
   </section>;
 }
 
-export function ListView(props: Omit<LayoutProps, 'property'>) {
+export function ListView(props: Omit<LayoutProps, 'property'> & { groupProperty?: Property }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const groups = props.groupProperty ? groupDatabaseRows(props.rows, props.groupProperty) : [{ id: '__all__', name: '', rows: props.rows }];
   return <section aria-label="Database list view" className="my-4 divide-y rounded-md border bg-card">
-    {props.rows.map((row) => <article key={row.noteId} aria-label={row.title} className="flex min-w-0 flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
+    {groups.map((group) => <section key={group.id} aria-label={group.name ? `${group.name} group` : undefined}>
+      {props.groupProperty ? <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <Button type="button" variant="ghost" size="sm" className="h-auto px-1 py-0 font-medium" aria-expanded={!collapsed.has(group.id)} onClick={() => setCollapsed((previous) => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{group.name}</Button>
+        <Badge variant="secondary">{group.rows.length}</Badge>
+      </div> : null}
+      {!collapsed.has(group.id) ? group.rows.map((row) => <article key={row.noteId} aria-label={row.title} className="flex min-w-0 flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
       <div className="min-w-0 flex-1">
         <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal break-words p-0 text-left font-medium" title={row.title} onClick={() => props.onOpen(row.noteId)}>{row.title}</Button>
         <div className="truncate text-[10px] text-muted-foreground" title={row.path}>{row.path}</div>
@@ -72,7 +79,8 @@ export function ListView(props: Omit<LayoutProps, 'property'>) {
         </div>)}
       </dl> : null}
       {row.issues.length ? <Badge variant="destructive" className="shrink-0">Needs attention</Badge> : null}
-    </article>)}
+      </article>) : null}
+    </section>)}
     {props.rows.length === 0 ? <p className="px-3 py-4 text-sm text-muted-foreground">No records match this view.</p> : null}
   </section>;
 }
