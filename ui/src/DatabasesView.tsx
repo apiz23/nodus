@@ -75,7 +75,7 @@ import { ApiError, api } from './api';
 import { SidebarToggle } from './SidebarToggle';
 import { diagnoseDatabaseView, type DatabaseView } from '../../src/database/database-view';
 import { SavedViewControls } from './SavedViewControls';
-import { KanbanView, CalendarView } from './DatabaseLayouts';
+import { KanbanView, CalendarView, ListView } from './DatabaseLayouts';
 import { defaultView, isDateOnly, type ViewConfiguration } from './database-view-layout';
 
 const SEARCHABLE_OPTIONS_THRESHOLD = 8;
@@ -537,7 +537,7 @@ export function DatabasesView({
   };
   const viewIssues = selected === null || savedPresentation === null ? [] : diagnoseDatabaseView({ id: '', databaseId: selected.id, name: '', ...viewConfiguration }, selected);
   const layoutProperty = selected?.properties.find((property) => property.id === (viewConfiguration.type === 'kanban'
-    ? viewConfiguration.settings?.groupPropertyId : viewConfiguration.settings?.datePropertyId));
+    ? viewConfiguration.settings?.groupPropertyId : viewConfiguration.type === 'calendar' ? viewConfiguration.settings?.datePropertyId : undefined));
 
   function applySavedView(view: DatabaseView | null): void {
     if (selected === null) return;
@@ -1069,7 +1069,7 @@ export function DatabasesView({
                 </header>
 
                 <SavedViewControls key={`${vaultKey}:${selected.id}`} database={selected} vaultKey={vaultKey} configuration={viewConfiguration} onApply={applySavedView} onReady={() => setViewsLoading(false)} busy={saving || schemaSaving || newDatedEntry !== null} hasNoteDraft={editing !== null || candidateId !== null} />
-                {viewConfiguration.type !== 'table' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
+                {viewConfiguration.type === 'kanban' || viewConfiguration.type === 'calendar' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
                   <span>{viewConfiguration.type === 'kanban' ? 'Group by Select property' : 'Calendar Date property'}</span>
                   <Select
                     value={layoutProperty?.id}
@@ -1435,6 +1435,8 @@ export function DatabasesView({
                   <div className="my-4"><ErrorNotice message={rowsError} onRetry={() => setReloadVersion((value) => value + 1)} /></div>
                 ) : currentRowData === null ? null : viewConfiguration.type === 'kanban' && layoutProperty?.type === 'select' ? (
                   <KanbanView rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
+                ) : viewConfiguration.type === 'list' ? (
+                  <ListView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} />
                 ) : viewConfiguration.type === 'calendar' && layoutProperty?.type === 'date' ? (
                   <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : formatPropertyValue(property, row.values[property.id])} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
                 ) : displayRows.length ? (

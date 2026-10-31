@@ -1,7 +1,7 @@
 import { hasBlockingRowIssues } from './database-table';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { CalendarClock, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { CalendarClock, ChevronLeft, ChevronRight, Pencil, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -54,6 +54,26 @@ export function KanbanView(props: LayoutProps) {
       {column.rows.map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}
       {column.rows.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">No notes</p> : null}
     </section>)}
+  </section>;
+}
+
+export function ListView(props: Omit<LayoutProps, 'property'>) {
+  return <section aria-label="Database list view" className="my-4 divide-y rounded-md border bg-card">
+    {props.rows.map((row) => <article key={row.noteId} aria-label={row.title} className="flex min-w-0 flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
+      <div className="min-w-0 flex-1">
+        <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal break-words p-0 text-left font-medium" title={row.title} onClick={() => props.onOpen(row.noteId)}>{row.title}</Button>
+        <div className="truncate text-[10px] text-muted-foreground" title={row.path}>{row.path}</div>
+      </div>
+      {props.visibleProperties.length ? <dl className="grid min-w-0 flex-1 grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+        {props.visibleProperties.map((property) => <div key={property.id} className="flex min-w-0 items-baseline gap-2 text-xs">
+          <dt className="shrink-0 text-muted-foreground">{property.name}</dt>
+          <dd className="min-w-0 truncate" title={props.formatValue(property, row.values[property.id])}>{props.renderValue ? props.renderValue(row, property) : props.formatValue(property, row.values[property.id])}</dd>
+          <Button type="button" size="icon-xs" variant="ghost" className="shrink-0" disabled={props.disabled || hasBlockingRowIssues(row, property)} aria-label={`Edit ${property.name} for ${row.title}`} onClick={() => props.onEdit(row, property)}><Pencil /></Button>
+        </div>)}
+      </dl> : null}
+      {row.issues.length ? <Badge variant="destructive" className="shrink-0">Needs attention</Badge> : null}
+    </article>)}
+    {props.rows.length === 0 ? <p className="px-3 py-4 text-sm text-muted-foreground">No records match this view.</p> : null}
   </section>;
 }
 

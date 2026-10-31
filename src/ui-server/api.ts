@@ -1064,9 +1064,10 @@ function requireDatabaseViewInput(value: unknown) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ApiError(400, 'INVALID_INPUT', 'view must be an object.');
   try {
     const record = value as Record<string, unknown>;
-    const hasV3 = 'sorts' in record || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
+    const hasV3 = record.type === 'list' || 'sorts' in record || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
     const version = hasV3 ? DATABASE_VIEW_VERSION : ('type' in record || 'settings' in record) ? 2 : 1;
-    return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version, ...record }));
+    const normalized = version >= 3 && !('sorts' in record) ? { ...record, sorts: [record.sort] } : record;
+    return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version, ...normalized }));
   }
   catch (error) { throw new ApiError(400, 'INVALID_INPUT', error instanceof Error ? error.message : 'view is invalid.'); }
 }

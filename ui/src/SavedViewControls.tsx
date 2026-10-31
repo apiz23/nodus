@@ -44,7 +44,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
   const preferenceKey = JSON.stringify(['nodus.savedView', vaultKey, database.id]);
   const disabled = busy || saving || loading;
   const writeDisabled = disabled || hasNoteDraft;
-  const normalized = (view: ViewConfiguration) => JSON.stringify({ type: view.type ?? 'table', settings: view.settings ?? {}, sort: view.sort, filters: view.filters, visiblePropertyIds: view.visiblePropertyIds });
+  const normalized = (view: ViewConfiguration) => JSON.stringify({ type: view.type ?? 'table', settings: view.settings ?? {}, sort: view.sort, sorts: view.sorts, filters: view.filters, visiblePropertyIds: view.visiblePropertyIds });
   const dirty = normalized(active?.view ?? defaultView(database)) !== normalized(configuration);
 
   function apply(saved: UiDatabaseView | null) {
@@ -199,6 +199,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="table">Table</SelectItem>
+              <SelectItem value="list">List</SelectItem>
               <SelectItem value="kanban" disabled={!database.properties.some((property) => property.type === 'select')}>Kanban (Select property)</SelectItem>
               <SelectItem value="calendar" disabled={!database.properties.some((property) => property.type === 'date')}>Calendar (Date property)</SelectItem>
             </SelectContent>

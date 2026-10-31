@@ -5,7 +5,7 @@ import type { DatabaseDefinition, Property } from './schema.js';
 export const DATABASE_VIEW_FORMAT = 'nodus-database-view';
 export const DATABASE_VIEW_VERSION = 3;
 
-export type DatabaseViewType = 'table' | 'kanban' | 'calendar';
+export type DatabaseViewType = 'table' | 'list' | 'kanban' | 'calendar';
 export interface DatabaseViewSettings { groupPropertyId?: string; datePropertyId?: string }
 
 export type ViewSort = { propertyId: 'title' | string; direction: 'asc' | 'desc' };
@@ -36,7 +36,7 @@ export function parseDatabaseView(json: string): DatabaseView {
   exactKeys(raw, ['format', 'version', 'id', 'databaseId', 'name', 'sort', 'filters', 'visiblePropertyIds', ...(raw.version >= 2 ? ['type', 'settings'] : []), ...(raw.version >= 3 ? ['sorts'] : [])], 'view');
   let presentation: Pick<DatabaseView, 'type' | 'settings'> = {};
   if (raw.version >= 2) {
-    if (raw.type !== 'table' && raw.type !== 'kanban' && raw.type !== 'calendar') throw invalid('type must be table, kanban, or calendar');
+    if (raw.type !== 'table' && raw.type !== 'kanban' && raw.type !== 'calendar' && !(raw.version >= 3 && raw.type === 'list')) throw invalid('type must be table, list, kanban, or calendar');
     if (!record(raw.settings)) throw invalid('settings must be an object');
     const key = raw.type === 'kanban' ? 'groupPropertyId' : raw.type === 'calendar' ? 'datePropertyId' : undefined;
     exactKeys(raw.settings, key === undefined ? [] : [key], 'settings');
@@ -75,7 +75,7 @@ export function parseDatabaseView(json: string): DatabaseView {
 }
 
 export function serializeDatabaseView(view: DatabaseView): string {
-  const version = view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
+  const version = view.type === 'list' || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
   const normalized = version >= 3 ? { ...view, type: view.type ?? 'table', settings: view.settings ?? {}, sorts: view.sorts ?? [view.sort] } : view;
   const json = `${JSON.stringify({
     format: DATABASE_VIEW_FORMAT, version, id: normalized.id, databaseId: normalized.databaseId, name: normalized.name,
