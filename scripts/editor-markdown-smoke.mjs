@@ -79,6 +79,8 @@ try {
   }));
   await page.goto(`${base}/app`);
   const mod = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform) ? 'Meta' : 'Control');
+  // CodeMirror's history keymap uses Mod-y on Windows/Linux and Mod-Shift-z on macOS.
+  const redoShortcut = mod === 'Meta' ? 'Meta+Shift+z' : 'Control+y';
   await page.getByRole('treeitem', { name: 'Markdown commands (markdown-commands.md)', exact: true }).click();
   const body = page.getByRole('textbox', { name: 'Markdown body', exact: true });
   await body.waitFor();
@@ -263,7 +265,7 @@ try {
   assert(await body.evaluate((element) => document.activeElement === element), 'Formatting must return focus to the editor');
   await page.keyboard.press(`${mod}+z`);
   assert.equal((await editor()).text, original);
-  await page.keyboard.press(`${mod}+Shift+z`);
+  await page.keyboard.press(redoShortcut);
   assert.equal((await editor()).text, '**hello**' + original.slice(5));
   await editor({ anchor: 2, head: 7 });
   await page.keyboard.press(`${mod}+b`);

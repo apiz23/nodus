@@ -58,7 +58,7 @@ homepage: https://example.com
 
 An absent key means **unset**. `null` is not a valid property value. No values are coerced between YAML types. Invalid values stay in note frontmatter and produce a validation diagnostic; validation never removes or rewrites them. An unregistered custom key remains unknown frontmatter and is reported separately from invalid registered properties.
 
-Select values are stored as readable option labels rather than UUIDs. Each option still has a stable ID in the catalog. When a label changes, the previous label is retained in that option's `aliases`, so existing YAML values remain valid and unchanged. A future UI may show the current label while preserving an older stored label until the user explicitly edits that note. Labels and aliases must remain unique within each property's option list.
+Select values are stored as readable option labels rather than UUIDs. Each option still has a stable ID in the catalog. When a label changes, the previous label is retained in that option's `aliases`, so existing YAML values remain valid and unchanged. The note editor shows the current label while preserving an older stored label until the user explicitly edits that note. Search and filters resolve a retained alias to the same option as the current label. Labels and aliases must remain unique within each property's option list.
 
 ## Compatibility
 

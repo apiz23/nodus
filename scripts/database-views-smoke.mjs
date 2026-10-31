@@ -36,7 +36,11 @@ try {
   await new Promise((ready, reject) => {
     const timer = setTimeout(() => reject(new Error(`Dedicated Vite startup timed out: ${logs}`)), 30_000);
     const finish = (error) => { clearTimeout(timer); if (error) reject(error); else ready(); };
-    child.stdout.on('data', (data) => { logs = `${logs}${data}`.slice(-6000); if (logs.includes(`${base}/`)) finish(); });
+    child.stdout.on('data', (data) => {
+      logs = `${logs}${data}`.slice(-6000);
+      // Vite colorizes its ready URL even when stdout is piped.
+      if (logs.replace(/\x1b\[[0-9;]*m/g, '').includes(`${base}/`)) finish();
+    });
     child.stderr.on('data', (data) => { logs = `${logs}${data}`.slice(-6000); });
     child.once('error', finish);
     child.once('exit', (code) => finish(new Error(`Dedicated Vite exited: ${code}. ${logs}`)));

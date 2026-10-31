@@ -8,6 +8,8 @@ describe('Vite development file policy', () => {
   it('denies vault/backup data even inside allowed source directories, while allowing application assets', async () => {
     await withTempDir(async (cacheDir) => {
       const config = await resolveConfig({ ...viteConfig, configFile: false, plugins: [], envDir: false, cacheDir }, 'serve');
+      // Vite's file-loading policy expects slash-normalized absolute paths.
+      const filePath = (path: string) => resolve(path).replaceAll('\\', '/');
       for (const path of [
         'vault/notes/a.md', 'backup/databases/example.json', '.impeccable/review/example.png',
         'ui/private/a.md', 'ui/private/A.MD', 'src/private/a.md',
@@ -16,10 +18,10 @@ describe('Vite development file policy', () => {
         'ui/recovery/nodus-backup.json', 'src/private/.nodus-tmp-example',
         'ui/.env', 'ui/.env.local', 'ui/private.key', 'ui/.git/config',
       ]) {
-        expect(isFileLoadingAllowed(config, resolve(path)), path).toBe(false);
+        expect(isFileLoadingAllowed(config, filePath(path)), path).toBe(false);
       }
       for (const path of ['ui/index.html', 'ui/src/App.tsx', 'src/links/wikilink.ts', 'node_modules/@fontsource-variable/geist/index.css']) {
-        expect(isFileLoadingAllowed(config, resolve(path)), path).toBe(true);
+        expect(isFileLoadingAllowed(config, filePath(path)), path).toBe(true);
       }
     });
   });

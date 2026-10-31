@@ -2006,7 +2006,7 @@ describe('backup and restore API routes', () => {
         const unsupportedRaw = JSON.parse(
           await readFile(join(unsupportedTarget, MANIFEST_FILE), 'utf8'),
         ) as { version: number };
-        unsupportedRaw.version = 4;
+        unsupportedRaw.version = 5;
         await writeFile(
           join(unsupportedTarget, MANIFEST_FILE),
           JSON.stringify(unsupportedRaw),

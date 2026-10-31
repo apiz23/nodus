@@ -71,7 +71,10 @@ async function waitForVite(started, port, timeoutMs = 20_000) {
   const ready = new Promise((resolveReady, rejectReady) => {
     const onData = (chunk) => {
       output = `${output}${chunk}`.slice(-12_000);
-      if (output.includes(`http://127.0.0.1:${port}/`)) finish(resolveReady);
+      // Vite colorizes its ready URL even when stdout is piped, so match the
+      // plain text rather than requiring an uncolored literal.
+      const plain = output.replace(/\x1b\[[0-9;]*m/g, '');
+      if (plain.includes(`http://127.0.0.1:${port}/`)) finish(resolveReady);
     };
     const onExit = (code, signal) => finish(rejectReady, new Error(
       `Dedicated Vite process exited before listening (${code ?? signal ?? 'unknown'}). ${logs()}`,
@@ -291,6 +294,14 @@ async function main() {
       firstNote.body,
       'Reload did not restore the saved Markdown body',
     );
+
+    const sidebarSearch = page.getByRole('searchbox', { name: 'Search notes', exact: true });
+    await sidebarSearch.fill(firstNote.title);
+    const searchResults = page.locator('[data-search-result="true"]');
+    await searchResults.filter({ hasText: firstNote.title }).waitFor({ state: 'visible' });
+    assert.equal(await searchResults.count(), 1, 'Global search did not return exactly the matching note');
+    await sidebarSearch.press('Escape');
+    await page.getByRole('tree', { name: 'Pages', exact: true }).waitFor({ state: 'visible' });
 
     const databaseId = '33333333-3333-4333-8333-333333333333';
     const propertyIds = {
@@ -890,7 +901,7 @@ async function main() {
     const expectedApiFailures = new Set([expectedStaleResponse, expectedInjectedFailure, expectedRowsFailure, expectedSchemaMismatch]);
     assert.deepEqual(apiFailures.filter((failure) => !expectedApiFailures.has(failure)), [], 'Unexpected local API request failed');
     assert.deepEqual(browserErrors, [], 'Browser reported uncaught or console errors');
-    console.log('Browser smoke passed: startup, note navigation/save/reload, structured properties, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
+    console.log('Browser smoke passed: startup, note navigation/save/reload, global search, structured properties, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
   } catch (error) {
     console.error(`Browser errors: ${JSON.stringify(browserErrors)}`);
     console.error(`API failures: ${JSON.stringify(apiFailures)}`);
