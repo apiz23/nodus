@@ -237,7 +237,7 @@ Behavior and limits:
   "version": 4,
   "createdAt": "2026-10-27T08:00:00.000Z",
   "app": { "name": "nodus", "version": "0.1.0" },
-  "formats": { "note": 1, "database": 1, "databaseView": 2, "backup": 4, "propertyCatalog": 1 },
+  "formats": { "note": 1, "database": 1, "databaseView": 3, "backup": 4, "propertyCatalog": 1 },
   "counts": { "notes": 12, "databases": 3, "databaseViews": 4, "attachments": 1, "propertyCatalog": 1 },
   "propertyCatalog": { "path": "properties/catalog.json", "format": "nodus-property-catalog", "version": 1, "properties": 7, "sha256": "...", "bytes": 982 },
   "files": [
