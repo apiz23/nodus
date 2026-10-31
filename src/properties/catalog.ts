@@ -163,6 +163,40 @@ export function validateNotePropertyValue(
   }
 }
 
+/**
+ * Resolve a validated select or multi-select value to the option's current
+ * label, so filters treat current labels and retained aliases as one option.
+ */
+export function canonicalizePropertyValue(
+  property: NotePropertyDefinition,
+  value: NotePropertyValue,
+): NotePropertyValue {
+  if (property.type === 'select' && typeof value === 'string') {
+    return optionForValue(property, value)?.label ?? value;
+  }
+  if (property.type === 'multi-select' && Array.isArray(value)) {
+    return value.map((item) => optionForValue(property, item)?.label ?? item);
+  }
+  return value;
+}
+
+/** Every current and retained label for the options a stored value resolves to. */
+export function propertyOptionLabels(
+  property: NotePropertyDefinition,
+  value: NotePropertyValue,
+): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  const labels = new Set<string>();
+  for (const item of values) {
+    if (typeof item !== 'string') continue;
+    const option = optionForValue(property, item);
+    if (option === undefined) continue;
+    labels.add(option.label);
+    for (const alias of option.aliases ?? []) labels.add(alias);
+  }
+  return [...labels];
+}
+
 /** Read-only projection; invalid and unregistered frontmatter is reported, never rewritten. */
 export function projectPropertyValues(
   catalog: PropertyCatalog,
@@ -198,7 +232,12 @@ export function renamePropertyOptionLabel(
   const previousLabel = option.label;
   if (previousLabel !== normalizedLabel) {
     option.label = normalizedLabel;
-    option.aliases = [...new Set([...(option.aliases ?? []), previousLabel])];
+    // Renaming back to a retained label must remove that label from the alias
+    // list instead of producing a self-referential alias that fails validation.
+    const aliases = [...new Set([...(option.aliases ?? []), previousLabel])]
+      .filter((alias) => fold(alias) !== fold(normalizedLabel));
+    if (aliases.length === 0) delete option.aliases;
+    else option.aliases = aliases;
   }
   return parsePropertyCatalog(JSON.stringify({ format: PROPERTY_CATALOG_FORMAT, version: PROPERTY_CATALOG_VERSION, properties: next.properties }));
 }

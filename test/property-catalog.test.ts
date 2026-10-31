@@ -113,6 +113,13 @@ describe('versioned property catalog', () => {
     expect(validateNotePropertyValue(renamed.properties.find((property) => property.id === SELECT_ID)!, 'In progress')).toMatchObject({ ok: true, value: 'In progress' });
     expect(validateNotePropertyValue(renamed.properties.find((property) => property.id === SELECT_ID)!, 'Doing')).toMatchObject({ ok: true, value: 'Doing' });
   });
+
+  it('renames an option back to a retained label without aliasing itself', () => {
+    const renamed = renamePropertyOptionLabel(catalog(), SELECT_ID, OPTION_A, 'Doing');
+    const restored = renamePropertyOptionLabel(renamed, SELECT_ID, OPTION_A, 'In progress');
+    const option = restored.properties.find((property) => property.id === SELECT_ID)?.options?.[0];
+    expect(option).toEqual({ id: OPTION_A, label: 'In progress', aliases: ['Doing'] });
+  });
 });
 
 describe('general note property YAML values', () => {
