@@ -86,7 +86,7 @@ try {
     const dialog = page.getByRole('dialog', { name: 'Create saved view' });
     await dialog.getByLabel('View name', { exact: true }).fill(name);
     await dialog.getByRole('combobox', { name: 'View type', exact: true }).click();
-    await page.getByRole('option', { name: type === 'table' ? 'Table' : type === 'kanban' ? 'Kanban (Select property)' : 'Calendar (Date property)', exact: true }).click();
+    await page.getByRole('option', { name: type === 'table' ? 'Table' : type === 'list' ? 'List' : type === 'kanban' ? 'Kanban (Select property)' : 'Calendar (Date property)', exact: true }).click();
     const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/databases/${DB}/views` && response.request().method() === 'POST');
     await dialog.getByRole('button', { name: 'Create view', exact: true }).click();
     const response = await saved;
@@ -117,6 +117,26 @@ try {
   const tableFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${tableId}.json`), 'utf8'));
   assert.equal(tableFile.sort.direction, 'desc');
   assert.equal(tableFile.filters[0].value, READY);
+
+  const listId = await createView('My list', 'list');
+  const list = page.getByRole('region', { name: 'Database list view' });
+  await list.getByRole('article', { name: alpha.title }).waitFor();
+  await list.getByRole('button', { name: alpha.title, exact: true }).waitFor();
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  await page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox', { name: /Estimate/ }).uncheck();
+  await page.keyboard.press('Escape');
+  await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+  await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
+  const listFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${listId}.json`), 'utf8'));
+  assert.equal(listFile.version, 3);
+  assert.equal(listFile.type, 'list');
+  assert.equal(listFile.visiblePropertyIds.includes(NUMBER), false);
+  await page.getByRole('button', { name: alpha.title, exact: true }).click();
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+  await page.getByRole('button', { name: /View tests/ }).click();
+  await controls.getByRole('combobox', { name: 'View', exact: true }).waitFor();
 
   const boardId = await createView('My board', 'kanban');
   const board = page.getByRole('region', { name: 'Kanban grouped by Status' });

@@ -55,6 +55,10 @@ describe('database view format', () => {
     expect(parseDatabaseView(encoded)).toEqual(v3);
     expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(encoded), sorts: [] }))).toThrow(/non-empty array/);
     expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(encoded), filters: [{ ...v3.filters[0], value: '' }] }))).toThrow(/not allowed/);
+    const list = { ...view, type: 'list' as const, settings: {}, sorts: [view.sort] };
+    expect(JSON.parse(serializeDatabaseView(list)).version).toBe(3);
+    expect(parseDatabaseView(serializeDatabaseView(list))).toEqual(list);
+    expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(serializeDatabaseView(list)), version: 2 }))).toThrow(/Unknown key/);
   });
 
   it('diagnoses missing database, property, and option references without mutating view data', () => {
