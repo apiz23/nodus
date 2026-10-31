@@ -7,6 +7,7 @@ import {
   isValidFilter,
   selectDatabaseRows,
   sortDatabaseRows,
+  sortDatabaseRowsBy,
   type DatabaseFilter,
 } from '../ui/src/database-table.js';
 
@@ -115,6 +116,30 @@ describe('database table session controls', () => {
     expect(filterDatabaseRows(withEmpty, properties, [equality]).map((item) => item.noteId)).toEqual(['empty-note']);
     expect(isValidFilter(textProperty, 'contains', '')).toBe(false);
     expect(filterDatabaseRows(withEmpty, properties, [contains])).toEqual(withEmpty);
+  });
+
+  it('sorts by ordered typed conditions and applies stable ID ties', () => {
+    const multi = [
+      row('b', 'Beta', { [IDS.beta]: 1, [IDS.alpha]: 'same' }),
+      row('a', 'Alpha', { [IDS.beta]: 1, [IDS.alpha]: 'same' }),
+      row('c', 'Charlie', { [IDS.beta]: 0, [IDS.alpha]: 'same' }),
+    ];
+    expect(sortDatabaseRowsBy(multi, properties, [{ propertyId: IDS.beta, direction: 'desc' }, { propertyId: 'title', direction: 'asc' }]).map((item) => item.noteId)).toEqual(['a', 'b', 'c']);
+    expect(sortDatabaseRowsBy(multi, properties, [{ propertyId: IDS.beta, direction: 'asc' }]).map((item) => item.noteId)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('distinguishes empty values from false and zero', () => {
+    const records = [
+      row('missing', 'Missing', {}), row('null', 'Null', { [IDS.alpha]: null }),
+      row('empty', 'Empty', { [IDS.alpha]: '', [IDS.blue]: [] }),
+      row('false', 'False', { [IDS.status]: false, [IDS.alpha]: 'present' }), row('zero', 'Zero', { [IDS.beta]: 0, [IDS.alpha]: 'also present' }),
+    ];
+    const emptyText: DatabaseFilter = { id: 'e', propertyId: IDS.alpha, operator: 'is-empty' };
+    expect(filterDatabaseRows(records, properties, [emptyText]).map((item) => item.noteId)).toEqual(['missing', 'null', 'empty']);
+    expect(filterDatabaseRows(records, properties, [{ ...emptyText, operator: 'is-not-empty' }]).map((item) => item.noteId)).toEqual(['false', 'zero']);
+    expect(filterDatabaseRows(records, properties, [{ id: 'a', propertyId: IDS.status, operator: 'is-empty' }]).map((item) => item.noteId)).toEqual(['missing', 'null', 'empty', 'zero']);
+    expect(filterDatabaseRows(records, properties, [{ id: 'b', propertyId: IDS.beta, operator: 'is-empty' }]).map((item) => item.noteId)).toEqual(['missing', 'null', 'empty', 'false']);
+    expect(filterDatabaseRows(records, properties, [{ id: 'c', propertyId: IDS.blue, operator: 'is-empty' }]).map((item) => item.noteId)).toContain('empty');
   });
 
   it('does not mutate rows or schemas while sorting/filtering', () => {

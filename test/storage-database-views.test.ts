@@ -25,7 +25,7 @@ describe('database view format', () => {
     expect(parseDatabaseView(serializeDatabaseView(view))).toEqual(view);
     const raw = JSON.parse(serializeDatabaseView(view)) as Record<string, unknown>;
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, future: true }))).toThrow(/Unknown key/);
-    expect(() => parseDatabaseView(JSON.stringify({ ...raw, version: 3 }))).toThrow(/newer than supported/);
+    expect(() => parseDatabaseView(JSON.stringify({ ...raw, version: 4 }))).toThrow(/newer than supported/);
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, sort: { propertyId: 'title', direction: 'asc', label: 'Title' } }))).toThrow(/Unknown key/);
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, filters: [{ ...view.filters[0], value: {} }] }))).toThrow(/value must be/);
   });
@@ -43,6 +43,18 @@ describe('database view format', () => {
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, type: 'timeline' }))).toThrow();
     expect(diagnoseDatabaseView({ ...board, type: 'calendar', settings: { datePropertyId: PROP } }, db)).toMatchObject([{ code: 'INVALID_REFERENCE' }]);
     expect(diagnoseDatabaseView({ ...board, settings: { groupPropertyId: VIEW2 } }, db)).toMatchObject([{ code: 'MISSING_PROPERTY' }]);
+  });
+
+  it('reads v2 and round-trips deterministic v3 sorts and valueless empty filters', () => {
+    const board = { ...view, type: 'kanban' as const, settings: { groupPropertyId: PROP } };
+    expect(parseDatabaseView(serializeDatabaseView(board))).toEqual(board);
+    const v3: DatabaseView = { ...view, type: 'table', settings: {}, sorts: [{ propertyId: PROP, direction: 'desc' }, { propertyId: 'title', direction: 'asc' }], filters: [{ id: 'f12000f2-065d-4ccb-8b5a-37a22b724dc8', propertyId: PROP, operator: 'is-empty' }] };
+    const encoded = serializeDatabaseView(v3);
+    expect(JSON.parse(encoded).version).toBe(3);
+    expect(serializeDatabaseView(parseDatabaseView(encoded))).toBe(encoded);
+    expect(parseDatabaseView(encoded)).toEqual(v3);
+    expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(encoded), sorts: [] }))).toThrow(/non-empty array/);
+    expect(() => parseDatabaseView(JSON.stringify({ ...JSON.parse(encoded), filters: [{ ...v3.filters[0], value: '' }] }))).toThrow(/not allowed/);
   });
 
   it('diagnoses missing database, property, and option references without mutating view data', () => {
@@ -199,7 +211,7 @@ describe('saved-view storage and portability', () => {
       for (const vault of [imported, restored]) for (const entry of expected) {
         expect(await readFile(join(vault.root, entry.path))).toEqual(entry.rawBytes);
       }
-      expect((await validateBackup(join(dir, 'backup'))).manifest.formats?.databaseView).toBe(2);
+      expect((await validateBackup(join(dir, 'backup'))).manifest.formats?.databaseView).toBe(3);
     });
   });
 });

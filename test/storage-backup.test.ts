@@ -122,7 +122,7 @@ describe('createBackup', () => {
         version: 4,
         createdAt: BACKUP_NOW,
         app: { name: pkg.name, version: pkg.version },
-        formats: { note: 1, database: 1, databaseView: 2, backup: 4, propertyCatalog: 1 },
+        formats: { note: 1, database: 1, databaseView: 3, backup: 4, propertyCatalog: 1 },
         counts: { notes: 1, databases: 1, databaseViews: 0, attachments: 0, propertyCatalog: 0 },
         files: [
           {

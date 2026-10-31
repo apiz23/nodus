@@ -565,6 +565,7 @@ describe('local UI API', () => {
         );
         expect(empty.status).toBe(200);
         expect(empty.body.rows).toEqual([]);
+        expect(empty.body.diagnostics).toEqual([]);
 
         // The schema selector may have been loaded before this change. The
         // rows route must reject that revision rather than project rows under
