@@ -24,6 +24,7 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
   }
 
   const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
+  const databaseViewOrders = await vault.listDatabaseViewOrderFiles();
 
   try {
     await mkdir(target, { recursive: true });
@@ -57,9 +58,12 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
     if (propertyCatalog !== null) {
       await writeFileAtomic(resolveInsideRoot(target, PROPERTY_CATALOG_PATH), propertyCatalog.rawBytes);
     }
+    for (const order of databaseViewOrders) {
+      await writeFileAtomic(resolveInsideRoot(target, order.path), order.rawBytes);
+    }
   } catch (error) {
     throw storageFailure(error, 'Write export', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders.length === 0 ? {} : { databaseViewOrders: databaseViewOrders.length }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
 }

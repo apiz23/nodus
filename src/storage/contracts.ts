@@ -151,6 +151,42 @@ export interface DatabaseViewWriteOptions extends ConditionalWriteOptions {
   expectedDatabaseHash?: string;
 }
 
+/** Persistent saved-view ordering for one database. */
+export interface DatabaseViewOrder {
+  databaseId: string;
+  /** Existing view IDs in display order; deleted/unknown IDs are omitted. */
+  viewIds: string[];
+  /** Manifest revision; 0 while no manifest exists. */
+  revision: number;
+  /** Workspace-relative manifest path. */
+  path: string;
+  /** SHA-256 of raw manifest bytes, or null when the manifest does not exist. */
+  hash: string | null;
+}
+
+export interface DatabaseViewOrderStore {
+  readDatabaseViewOrder(databaseId: string): Promise<DatabaseViewOrder>;
+  /**
+   * Replaces the order for every current view of the database.
+   * `expectedHash: null` means the manifest must not exist yet.
+   */
+  writeDatabaseViewOrder(databaseId: string, viewIds: string[], options: { expectedHash: string | null }): Promise<DatabaseViewOrder>;
+  /** Raw manifests for portable export and backups, including orphaned databases. */
+  listDatabaseViewOrderFiles(): Promise<DatabaseViewOrderFileSnapshot[]>;
+  readDatabaseViewOrderFile(databaseId: string): Promise<DatabaseViewOrderFileSnapshot | null>;
+}
+
+/** Exact ordering-manifest bytes and parsed contents for portability. */
+export interface DatabaseViewOrderFileSnapshot {
+  databaseId: string;
+  path: string;
+  text: string;
+  rawBytes: Buffer;
+  hash: string;
+  revision: number;
+  viewIds: string[];
+}
+
 export interface ImportOptions {
   /** Required to replace existing notes or databases. Defaults to false. */
   overwrite?: boolean;
@@ -161,6 +197,8 @@ export interface ImportReport {
   databases: number;
   databaseViews: number;
   attachments?: number;
+  /** Present and equal to the number of restored ordering manifests. */
+  databaseViewOrders?: number;
   /** Present and equal to 1 when the plan carried a property catalog. */
   propertyCatalog?: number;
 }
@@ -180,6 +218,8 @@ export interface ImportPlan {
   notes: Note[];
   databases: DatabaseDefinition[];
   databaseViews?: DatabaseView[];
+  /** Optional saved-view ordering manifests, restored after their views. */
+  databaseViewOrders?: DatabaseViewOrderFileSnapshot[];
   /** Validated catalog to import. Absent means a legacy source without one. */
   propertyCatalog?: PropertyCatalogFile;
 }
@@ -190,11 +230,12 @@ export interface ExportReport {
   databases: number;
   databaseViews: number;
   attachments?: number;
+  databaseViewOrders?: number;
   propertyCatalog?: number;
 }
 
 export interface BackupManifestFile {
-  kind: 'note' | 'database' | 'database-view' | 'attachment';
+  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'database-view-order';
   id: string;
   path: string;
   sha256: string;
@@ -214,6 +255,7 @@ export interface BackupManifestFormats {
   database: number;
   backup: number;
   databaseView?: number;
+  databaseViewOrder?: number;
   propertyCatalog?: number;
 }
 
@@ -222,6 +264,7 @@ export interface BackupManifestCounts {
   notes: number;
   databases: number;
   databaseViews?: number;
+  databaseViewOrders?: number;
   attachments?: number;
   /** Number of property catalog files; 0 or 1. */
   propertyCatalog?: number;
@@ -240,7 +283,7 @@ export interface BackupManifestPropertyCatalog {
 
 export interface BackupManifest {
   format: 'nodus-backup';
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   createdAt: string;
   app?: BackupManifestApp;
   formats?: BackupManifestFormats;
@@ -259,7 +302,7 @@ export interface BackupManifest {
 /** Read-only result of comparing a validated backup against a live vault. */
 export interface RestorePreview {
   manifest: BackupManifest;
-  counts: { notes: number; databases: number; databaseViews: number; attachments?: number; propertyCatalog?: number };
+  counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number };
   /** Catalog presence and target hash conflict; absent for legacy backups. */
   propertyCatalog?: { path: string; version: number; properties: number; hash: string; conflict: boolean };
   /** ID and path conflicts a restore would hit without `overwrite: true`. */
@@ -271,6 +314,7 @@ export interface BackupReport {
   notes: number;
   databases: number;
   databaseViews: number;
+  databaseViewOrders?: number;
   attachments?: number;
   propertyCatalog?: number;
 }
@@ -281,6 +325,7 @@ export interface BackupValidation {
   notes: Note[];
   databases: DatabaseDefinition[];
   databaseViews: DatabaseView[];
+  databaseViewOrders?: DatabaseViewOrderFileSnapshot[];
   propertyCatalog?: PropertyCatalogFile;
 }
 
@@ -294,7 +339,7 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, FolderStore, AttachmentStore, PropertyStore, TagStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, DatabaseViewStore, DatabaseViewOrderStore, FolderStore, AttachmentStore, PropertyStore, TagStore {
   readonly root: string;
   /** All valid managed entries. Markdown/schema documents carry text; attachments carry raw bytes. */
   snapshot(): Promise<VaultEntry[]>;

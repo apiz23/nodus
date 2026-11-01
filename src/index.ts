@@ -17,6 +17,7 @@ export {
   type SelectOption,
 } from './database/schema.js';
 export { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, parseDatabaseView, serializeDatabaseView, diagnoseDatabaseView, validateViewReferences, type DatabaseView, type DatabaseViewType, type DatabaseViewSettings, type ViewFilter, type ViewFilterOperator, type ViewSort, type DatabaseViewDiagnostic } from './database/database-view.js';
+export { DATABASE_VIEW_ORDER_FORMAT, DATABASE_VIEW_ORDER_VERSION, parseDatabaseViewOrder, serializeDatabaseViewOrder, resolveDatabaseViewOrder, type DatabaseViewOrderFile } from './database/database-view-order.js';
 export {
   NOTE_PROPERTIES_FORMAT,
   NOTE_PROPERTIES_VERSION,
@@ -53,6 +54,9 @@ export {
   type DatabaseSummary,
   type DatabaseViewStore,
   type DatabaseViewSummary,
+  type DatabaseViewOrder,
+  type DatabaseViewOrderFileSnapshot,
+  type DatabaseViewOrderStore,
   type DatabaseViewWriteOptions,
   type ExportReport,
   type ImportOptions,

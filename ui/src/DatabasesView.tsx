@@ -76,7 +76,7 @@ import { ApiError, api } from './api';
 import { SidebarToggle } from './SidebarToggle';
 import { diagnoseDatabaseView, type DatabaseView } from '../../src/database/database-view';
 import { SavedViewControls } from './SavedViewControls';
-import { KanbanView, CalendarView, ListView } from './DatabaseLayouts';
+import { KanbanView, CalendarView, ListView, GalleryView } from './DatabaseLayouts';
 import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } from './database-view-layout';
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
@@ -1568,6 +1568,8 @@ export function DatabasesView({
                   <ListView key={`${savedPresentation?.id ?? 'draft'}:${groupProperty?.id ?? 'ungrouped'}`} rows={displayRows} groupProperty={groupProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
                 ) : viewConfiguration.type === 'calendar' && layoutProperty?.type === 'date' ? (
                   <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
+                ) : viewConfiguration.type === 'gallery' ? (
+                  <GalleryView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
                 ) : displayRows.length ? (
                   <>
                     <p className="mx-1 mt-4 text-[11px] text-muted-foreground xl:hidden">Scroll sideways to see every property column.</p>

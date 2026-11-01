@@ -147,7 +147,7 @@ describe('Phase 7A cross-milestone workflows', { timeout: 20_000 }, () => {
       });
       const backup = join(dir, 'backup');
       await createBackup(source, backup, { now: NOW });
-      expect((await validateBackup(backup)).manifest.version).toBe(4);
+      expect((await validateBackup(backup)).manifest.version).toBe(5);
 
       const restored = await FileSystemVault.open(join(dir, 'restored'));
       expect(await restoreBackup(backup, restored.root)).toMatchObject({ notes: 1, propertyCatalog: 1 });

@@ -170,7 +170,7 @@ try {
     const dialog = page.getByRole('dialog', { name: 'Create saved view' });
     await dialog.getByLabel('View name', { exact: true }).fill(name);
     await dialog.getByRole('combobox', { name: 'View type', exact: true }).click();
-    await page.getByRole('option', { name: type === 'table' ? 'Table' : type === 'list' ? 'List' : type === 'kanban' ? 'Kanban (Select property)' : 'Calendar (Date property)', exact: true }).click();
+    await page.getByRole('option', { name: type === 'table' ? 'Table' : type === 'list' ? 'List' : type === 'gallery' ? 'Gallery' : type === 'kanban' ? 'Kanban (Select property)' : 'Calendar (Date property)', exact: true }).click();
     const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/databases/${DB}/views` && response.request().method() === 'POST');
     await dialog.getByRole('button', { name: 'Create view', exact: true }).click();
     const response = await saved;
@@ -241,6 +241,54 @@ try {
   await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
   await page.getByRole('button', { name: /View tests/ }).click();
   await controls.getByRole('combobox', { name: 'View', exact: true }).waitFor();
+
+  // Gallery cards use the same filtered/sorted rows and property renderers.
+  const galleryId = await createView('My gallery', 'gallery');
+  const gallery = page.getByRole('region', { name: 'Database gallery view' });
+  await gallery.getByRole('listitem', { name: alpha.title }).waitFor();
+  await gallery.getByRole('listitem', { name: beta.title }).waitFor();
+  assert.match(await gallery.getByRole('listitem', { name: alpha.title }).innerText(), /Ready/);
+  const galleryFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${galleryId}.json`), 'utf8'));
+  assert.equal(galleryFile.version, 3);
+  assert.equal(galleryFile.type, 'gallery');
+  await gallery.getByRole('button', { name: alpha.title, exact: true }).click();
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+  await page.getByRole('button', { name: /View tests/ }).click();
+
+  // Keyboard reordering persists stable view IDs in the hidden manifest.
+  const reorder = controls.getByRole('group', { name: 'Reorder saved views' });
+  await reorder.waitFor();
+  const orderNames = () => reorder.getByRole('listitem').locator('span').allInnerTexts();
+  async function moveView(name, direction) {
+    const saved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/databases/${DB}/views/order`);
+    await reorder.getByRole('button', { name: `Move ${name} ${direction}`, exact: true }).press('Enter');
+    assert.equal((await saved).status(), 200);
+    await controls.getByText('View order saved.', { exact: true }).waitFor();
+  }
+  const initialOrder = await orderNames();
+  const expectedOrder = ['My gallery', ...initialOrder.filter((name) => name !== 'My gallery')];
+  const galleryIndex = initialOrder.indexOf('My gallery');
+  for (let step = 0; step < galleryIndex; step += 1) await moveView('My gallery', 'up');
+  if (galleryIndex === 0) {
+    await moveView('My gallery', 'down');
+    await moveView('My gallery', 'up');
+  }
+  assert.deepEqual(await orderNames(), expectedOrder);
+  const idsByName = { 'My table': tableId, 'My list': listId, 'My gallery': galleryId };
+  const orderFile = JSON.parse(await readFile(join(vault, '.nodus-orders', 'database-views', `${DB}.json`), 'utf8'));
+  assert.deepEqual(orderFile.viewIds, expectedOrder.map((name) => idsByName[name]));
+  const storedOrder = (await request(`/api/databases/${DB}/views/order`)).order;
+  assert.equal(orderFile.revision, storedOrder.revision);
+  assert.ok(storedOrder.revision >= 1);
+  await page.reload();
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+  await page.getByRole('button', { name: /View tests/ }).click();
+  await reorder.waitFor();
+  assert.deepEqual(await orderNames(), expectedOrder);
+  assert.match(await selector.innerText(), /My gallery/);
 
   const boardId = await createView('My board', 'kanban');
   const board = page.getByRole('region', { name: 'Kanban grouped by Status' });
@@ -369,7 +417,7 @@ try {
   await page.unroute(viewRoute);
   assert.deepEqual(failures, expectedFailures);
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});

@@ -107,12 +107,13 @@ export function previewHasConflicts(preview: RestorePreview): boolean {
   return preview.conflicts.ids.length > 0 || preview.conflicts.paths.length > 0;
 }
 
-export function formatCounts(counts: { notes: number; databases: number; attachments?: number; propertyCatalog?: number }): string {
+export function formatCounts(counts: { notes: number; databases: number; attachments?: number; databaseViewOrders?: number; propertyCatalog?: number }): string {
   const notes = `${counts.notes} ${counts.notes === 1 ? 'note' : 'notes'}`;
   const databases = `${counts.databases} ${counts.databases === 1 ? 'definition' : 'definitions'}`;
   const attachments = counts.attachments === undefined ? [] : [`${counts.attachments} ${counts.attachments === 1 ? 'attachment' : 'attachments'}`];
+  const databaseViewOrders = counts.databaseViewOrders === undefined ? [] : [`${counts.databaseViewOrders} ${counts.databaseViewOrders === 1 ? 'saved-view order' : 'saved-view orders'}`];
   const propertyCatalog = counts.propertyCatalog === undefined ? [] : [`${counts.propertyCatalog} ${counts.propertyCatalog === 1 ? 'property catalog' : 'property catalogs'}`];
-  return [notes, databases, ...attachments, ...propertyCatalog].join(', ');
+  return [notes, databases, ...attachments, ...databaseViewOrders, ...propertyCatalog].join(', ');
 }
 
 export function restoreFlowReducer(

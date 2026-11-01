@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
 import { lstat, stat } from 'node:fs/promises';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase } from '../../database/schema.js';
 import { parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
+import { parseDatabaseViewOrder } from '../../database/database-view-order.js';
 import type { Note } from '../../domain/note.js';
+import { isUuidV4 } from '../../domain/ids.js';
 import { parseNote } from '../../format/note-format.js';
-import type { ImportOptions, ImportPlan, ImportReport, PropertyCatalogFile, VaultEntry, VaultStorage } from '../contracts.js';
+import type { DatabaseViewOrderFileSnapshot, ImportOptions, ImportPlan, ImportReport, PropertyCatalogFile, VaultEntry, VaultStorage } from '../contracts.js';
 import { StorageError, storageFailure, wrapContentError } from '../errors.js';
-import { databasePath, databaseViewPath } from '../fs/layout.js';
+import { DATABASE_VIEW_ORDER_DIR, databasePath, databaseViewOrderPath, databaseViewPath } from '../fs/layout.js';
 import { PROPERTY_CATALOG_PATH, parsePropertyCatalog } from '../../properties/catalog.js';
 import { walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES } from '../fs/attachments.js';
@@ -156,7 +158,76 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     entries.push({ kind: 'attachment', id: valid.id, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
   }
 
-  return { entries, notes, databases, databaseViews, ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+  return { entries, notes, databases, databaseViews, databaseViewOrders: await readImportDatabaseViewOrders(source), ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+}
+
+/**
+ * Reads hidden ordering manifests from a portable export. A missing directory
+ * is a legacy export and restores with deterministic default ordering.
+ */
+async function readImportDatabaseViewOrders(source: string): Promise<DatabaseViewOrderFileSnapshot[]> {
+  const rootDirectory = join(source, DATABASE_VIEW_ORDER_DIR);
+  let rootInfo;
+  try {
+    rootInfo = await lstat(rootDirectory);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw storageFailure(error, 'Read import saved-view order directory', DATABASE_VIEW_ORDER_DIR);
+  }
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new StorageError('INVALID_CONTENT', 'Import saved-view order storage must be a regular directory', { path: DATABASE_VIEW_ORDER_DIR });
+  }
+  const directory = join(rootDirectory, 'database-views');
+  let directoryInfo;
+  try {
+    directoryInfo = await lstat(directory);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw storageFailure(error, 'Read import saved-view order directory', `${DATABASE_VIEW_ORDER_DIR}/database-views`);
+  }
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) {
+    throw new StorageError('INVALID_CONTENT', 'Import saved-view order storage must be a regular directory', { path: `${DATABASE_VIEW_ORDER_DIR}/database-views` });
+  }
+
+  let dirents;
+  try { dirents = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { throw storageFailure(error, 'Read import saved-view order directory', `${DATABASE_VIEW_ORDER_DIR}/database-views`); }
+  dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  const orders: DatabaseViewOrderFileSnapshot[] = [];
+  for (const dirent of dirents) {
+    if (dirent.name.startsWith('.')) continue;
+    const match = /^([0-9a-f-]{36})\.json$/.exec(dirent.name);
+    if (match === null || !isUuidV4(match[1]!)) {
+      throw new StorageError('INVALID_CONTENT', `Import saved-view order storage contains an unexpected file: "${dirent.name}"`, { path: `${DATABASE_VIEW_ORDER_DIR}/database-views/${dirent.name}` });
+    }
+    if (dirent.isSymbolicLink() || !dirent.isFile()) {
+      throw new StorageError('INVALID_CONTENT', `Import ordering manifest "${dirent.name}" must be a regular file`, { path: `${DATABASE_VIEW_ORDER_DIR}/database-views/${dirent.name}` });
+    }
+    const databaseId = match[1]!;
+    const path = databaseViewOrderPath(databaseId);
+    let bytes: Buffer;
+    try { bytes = await readFile(join(directory, dirent.name)); }
+    catch (error) { throw storageFailure(error, 'Read import ordering manifest', path); }
+    let text: string;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new StorageError('INVALID_CONTENT', `File "${path}" is not valid UTF-8 text`, { path }); }
+    let parsed;
+    try { parsed = parseDatabaseViewOrder(text); }
+    catch (error) { throw wrapContentError(error, path); }
+    if (parsed.databaseId !== databaseId) {
+      throw new StorageError('INVALID_CONTENT', `Import ordering manifest "${path}" contains database ID "${parsed.databaseId}"`, { path });
+    }
+    orders.push({
+      databaseId,
+      path,
+      text,
+      rawBytes: Buffer.from(bytes),
+      hash: createHash('sha256').update(bytes).digest('hex'),
+      revision: parsed.revision,
+      viewIds: parsed.viewIds,
+    });
+  }
+  return orders;
 }
 
 async function readImportPropertyCatalog(source: string): Promise<PropertyCatalogFile | undefined> {

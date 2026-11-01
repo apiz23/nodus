@@ -336,6 +336,10 @@ export const api = {
     return request(`/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}`);
   },
 
+  reorderDatabaseViews(databaseId: string, viewIds: string[], baseHash: string | null): Promise<{ order: import('../../src/ui-server/dto.js').UiDatabaseViewOrder }> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views/order`, { method: 'PUT', body: jsonBody({ viewIds, baseHash }) });
+  },
+
   createDatabaseView(view: DatabaseView): Promise<{ view: UiDatabaseView }> {
     return request(`/api/databases/${encodeURIComponent(view.databaseId)}/views`, { method: 'POST', body: jsonBody({ view }) });
   },

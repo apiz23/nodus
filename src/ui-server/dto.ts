@@ -120,7 +120,17 @@ export interface UiDatabaseView {
 export interface UiDatabaseViewsResponse {
   databaseId: string;
   schemaHash?: string;
+  /** Existing views in persistent display order. */
   views: UiDatabaseView[];
+  order: UiDatabaseViewOrder;
+}
+
+/** Persistent saved-view ordering; `contentHash` is null for legacy databases. */
+export interface UiDatabaseViewOrder {
+  databaseId: string;
+  viewIds: string[];
+  revision: number;
+  contentHash: string | null;
 }
 
 export interface UiSearchResult extends UiNoteSummary {
@@ -280,6 +290,7 @@ export interface UiBackupValidationResult {
     notes: number;
     databases: number;
     databaseViews: number;
+    databaseViewOrders?: number;
     attachments?: number;
     propertyCatalog?: number;
   };

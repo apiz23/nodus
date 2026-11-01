@@ -2,9 +2,11 @@
 
 export const DATABASES_DIR = 'databases';
 export const DATABASE_VIEWS_DIR = 'database-views';
+/** Hidden Nodus-owned directory; the vault scanner skips hidden root entries. */
+export const DATABASE_VIEW_ORDER_DIR = '.nodus-orders';
 export const BACKUP_MANIFEST = 'nodus-backup.json';
 export const BACKUP_FORMAT = 'nodus-backup';
-export const BACKUP_VERSION = 4;
+export const BACKUP_VERSION = 5;
 export const TEMP_PREFIX = '.nodus-tmp-';
 
 /** Workspace-relative path of a database definition, always POSIX-separated. */
@@ -14,6 +16,11 @@ export function databasePath(id: string): string {
 
 export function databaseViewPath(databaseId: string, viewId: string): string {
   return `${DATABASE_VIEWS_DIR}/${databaseId}/${viewId}.json`;
+}
+
+/** Hidden per-database saved-view ordering manifest. */
+export function databaseViewOrderPath(databaseId: string): string {
+  return `${DATABASE_VIEW_ORDER_DIR}/database-views/${databaseId}.json`;
 }
 
 export function isReservedNotePath(path: string): boolean {

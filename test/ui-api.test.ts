@@ -1689,6 +1689,81 @@ describe('local UI API', () => {
     });
   });
 
+  it('persists saved-view order with revision and stale-conflict protection through the API', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createDatabase(propertyDatabase);
+      const base = { databaseId: DB1, sort: { propertyId: 'title' as const, direction: 'asc' as const }, filters: [], visiblePropertyIds: [PROP2] };
+      await vault.createDatabaseView({ ...base, id: VIEW1, name: 'First', type: 'table', settings: {} });
+      await vault.createDatabaseView({ ...base, id: FILTER1, name: 'Second', type: 'gallery', settings: {} });
+      const started = await startApi(vault.root);
+      try {
+        type Listed = { views: Array<{ view: { id: string } }>; order: { databaseId: string; viewIds: string[]; revision: number; contentHash: string | null } };
+        const listed = await json<Listed>(started.base, `/api/databases/${DB1}/views`);
+        expect(listed.body.order).toEqual({ databaseId: DB1, viewIds: [VIEW1, FILTER1], revision: 0, contentHash: null });
+        expect(listed.body.views.map((item) => item.view.id)).toEqual([VIEW1, FILTER1]);
+
+        const reordered = await json<{ order: Listed['order'] }>(started.base, `/api/databases/${DB1}/views/order`, {
+          method: 'PUT', body: { viewIds: [FILTER1, VIEW1], baseHash: null },
+        });
+        expect(reordered.status, JSON.stringify(reordered.body)).toBe(200);
+        expect(reordered.body.order).toMatchObject({ databaseId: DB1, viewIds: [FILTER1, VIEW1], revision: 1 });
+        expect(reordered.body.order.contentHash).toMatch(/^[0-9a-f]{64}$/);
+
+        const reloaded = await json<Listed>(started.base, `/api/databases/${DB1}/views`);
+        expect(reloaded.body.views.map((item) => item.view.id)).toEqual([FILTER1, VIEW1]);
+        expect(reloaded.body.order.revision).toBe(1);
+        expect((await json<{ order: Listed['order'] }>(started.base, `/api/databases/${DB1}/views/order`)).body.order).toEqual(reordered.body.order);
+
+        const stale = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}/views/order`, {
+          method: 'PUT', body: { viewIds: [VIEW1, FILTER1], baseHash: null },
+        });
+        expect(stale.status).toBe(409);
+        expect(stale.body.error.code).toBe('STALE_WRITE');
+
+        const currentHash = reordered.body.order.contentHash;
+        for (const viewIds of [[FILTER1, FILTER1], [FILTER1, '99999999-9999-4999-8999-999999999999'], [FILTER1]]) {
+          const rejected = await json<{ error: { code: string } }>(started.base, `/api/databases/${DB1}/views/order`, {
+            method: 'PUT', body: { viewIds, baseHash: currentHash },
+          });
+          expect(rejected.status).toBe(400);
+          expect(rejected.body.error.code).toBe('INVALID_INPUT');
+        }
+        expect((await json<Listed>(started.base, `/api/databases/${DB1}/views`)).body.order.viewIds).toEqual([FILTER1, VIEW1]);
+
+        await vault.deleteDatabaseView(DB1, VIEW1);
+        const afterDelete = await json<Listed>(started.base, `/api/databases/${DB1}/views`);
+        expect(afterDelete.body.views.map((item) => item.view.id)).toEqual([FILTER1]);
+        expect(afterDelete.body.order).toMatchObject({ viewIds: [FILTER1], revision: 1 });
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('creates gallery saved views through the API as v3', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(join(dir, 'vault'));
+      await vault.createDatabase(propertyDatabase);
+      const started = await startApi(vault.root);
+      try {
+        const gallery = {
+          id: FILTER1, databaseId: DB1, name: 'Gallery', type: 'gallery', settings: {},
+          sort: { propertyId: 'title', direction: 'asc' }, filters: [], visiblePropertyIds: [PROP2],
+        };
+        const created = await json<{ view: { view: typeof gallery; contentHash: string } }>(started.base, `/api/databases/${DB1}/views`, { method: 'POST', body: { view: gallery } });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        expect(created.body.view.view).toEqual({ ...gallery, sorts: [gallery.sort] });
+        const stored = JSON.parse(await readFile(join(vault.root, 'database-views', DB1, `${FILTER1}.json`), 'utf8'));
+        expect(stored).toMatchObject({ version: 3, type: 'gallery' });
+        const listed = await json<{ views: Array<{ view: typeof gallery }> }>(started.base, `/api/databases/${DB1}/views`);
+        expect(listed.body.views[0]?.view.type).toBe('gallery');
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
   it('reads and duplicates typed saved views, enforces revisions, and clears one property without removing membership', async () => {
     await withTempDir(async (dir) => {
       const vault = await FileSystemVault.open(join(dir, 'vault'));
@@ -2203,7 +2278,7 @@ describe('backup and restore API routes', () => {
         const unsupportedRaw = JSON.parse(
           await readFile(join(unsupportedTarget, MANIFEST_FILE), 'utf8'),
         ) as { version: number };
-        unsupportedRaw.version = 5;
+        unsupportedRaw.version = 6;
         await writeFile(
           join(unsupportedTarget, MANIFEST_FILE),
           JSON.stringify(unsupportedRaw),

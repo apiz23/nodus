@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { DATABASE_FORMAT_VERSION, parseDatabase } from '../../database/schema.js';
 import { DATABASE_VIEW_VERSION, parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
+import { DATABASE_VIEW_ORDER_VERSION, parseDatabaseViewOrder } from '../../database/database-view-order.js';
 import type { Note } from '../../domain/note.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { isUuidV4 } from '../../domain/ids.js';
@@ -25,17 +26,20 @@ import type {
   ImportReport,
   RestorePreview,
   PropertyCatalogFile,
+  DatabaseViewOrderFileSnapshot,
   VaultEntry,
   VaultStorage,
 } from '../contracts.js';
-import { StorageError, storageFailure } from '../errors.js';
+import { StorageError, storageFailure, wrapContentError } from '../errors.js';
 import { writeFileAtomic } from '../fs/atomic.js';
 import {
   BACKUP_FORMAT,
   BACKUP_MANIFEST,
   BACKUP_VERSION,
   databasePath,
+  databaseViewOrderPath,
   databaseViewPath,
+  DATABASE_VIEW_ORDER_DIR,
   DATABASE_VIEWS_DIR,
   isReservedNotePath,
 } from '../fs/layout.js';
@@ -64,6 +68,21 @@ export async function createBackup(
   }
 
   const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
+  const databaseViewOrders = await vault.listDatabaseViewOrderFiles();
+  for (const order of databaseViewOrders) {
+    if (order.path !== databaseViewOrderPath(order.databaseId)) {
+      throw new StorageError('INVALID_CONTENT', `Saved-view ordering manifest "${order.path}" does not match database "${order.databaseId}"`, { path: order.path });
+    }
+    if (sha256(order.rawBytes) !== order.hash) {
+      throw new StorageError('INVALID_CONTENT', 'Saved-view ordering snapshot failed its integrity check', { path: order.path });
+    }
+    let parsed;
+    try { parsed = parseDatabaseViewOrder(order.text); }
+    catch (error) { throw wrapContentError(error, order.path); }
+    if (parsed.databaseId !== order.databaseId || parsed.revision !== order.revision) {
+      throw new StorageError('INVALID_CONTENT', 'Saved-view ordering snapshot does not match its parsed contents', { path: order.path });
+    }
+  }
   for (const entry of entries) {
     const issue = restorePathIssue(entry.kind, entry.id, entry.path);
     if (issue !== undefined) {
@@ -106,6 +125,7 @@ export async function createBackup(
   let notes = 0;
   let databases = 0;
   let databaseViews = 0;
+  let databaseViewOrderCount = 0;
   let attachments = 0;
 
   try {
@@ -141,14 +161,26 @@ export async function createBackup(
       };
     }
 
+    for (const order of databaseViewOrders) {
+      await writeFileAtomic(resolveInsideRoot(target, order.path), order.rawBytes);
+      files.push({
+        kind: 'database-view-order',
+        id: order.databaseId,
+        path: order.path,
+        sha256: sha256(order.rawBytes),
+        bytes: order.rawBytes.byteLength,
+      });
+      databaseViewOrderCount += 1;
+    }
+
     const app = await readAppInfo();
     const manifest: BackupManifest = {
       format: BACKUP_FORMAT,
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION },
-      counts: { notes, databases, databaseViews, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1 },
+      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION },
+      counts: { notes, databases, databaseViews, databaseViewOrders: databaseViewOrderCount, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1 },
       ...(catalogMetadata === undefined ? {} : { propertyCatalog: catalogMetadata }),
       files,
     };
@@ -158,7 +190,7 @@ export async function createBackup(
     throw storageFailure(error, 'Write backup', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(databaseViewOrderCount === 0 ? {} : { databaseViewOrders: databaseViewOrderCount }), ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }) };
 }
 
 /**
@@ -221,11 +253,51 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
       }
     }
   }
+  const orderDirectory = (await readdir(target)).find((name) => name === DATABASE_VIEW_ORDER_DIR);
+  const manifestOrderFiles = manifest.files.filter((file) => file.kind === 'database-view-order');
+  if (orderDirectory !== undefined) {
+    if (manifest.version < 5) throw corruptBackup('Legacy backup manifest cannot account for saved-view ordering; no restore occurred');
+    const orderRoot = join(target, orderDirectory);
+    const rootInfo = await lstat(orderRoot);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) throw corruptBackup('Saved-view ordering backup path must be a regular .nodus-orders/ directory');
+    const viewsDirectory = join(orderRoot, 'database-views');
+    let viewsInfo;
+    try {
+      viewsInfo = await lstat(viewsDirectory);
+    } catch (error) {
+      if (isMissing(error)) {
+        if (manifestOrderFiles.length > 0) throw corruptBackup('Saved-view ordering backup directory is missing; no restore occurred');
+      } else {
+        throw storageFailure(error, 'Read saved-view ordering backup directory', DATABASE_VIEW_ORDER_DIR);
+      }
+    }
+    if (viewsInfo !== undefined) {
+      if (viewsInfo.isSymbolicLink() || !viewsInfo.isDirectory()) throw corruptBackup('Saved-view ordering backup path must be a regular database-views/ directory');
+      const listed = new Set(manifestOrderFiles.map((file) => file.path));
+      for (const file of manifestOrderFiles) {
+        if (!file.path.startsWith(`${DATABASE_VIEW_ORDER_DIR}/database-views/`)) {
+          throw corruptBackup('Saved-view ordering manifest path is outside .nodus-orders/database-views/');
+        }
+      }
+      const children = await readdir(viewsDirectory, { withFileTypes: true });
+      for (const child of children) {
+        if (child.name.startsWith('.')) continue;
+        const childPath = `${DATABASE_VIEW_ORDER_DIR}/database-views/${child.name}`;
+        if (child.isSymbolicLink() || !child.isFile() || !listed.has(childPath)) {
+          throw corruptBackup('Saved-view ordering backup files are unsafe or missing from the manifest; no restore occurred');
+        }
+      }
+    }
+  } else if (manifestOrderFiles.length > 0) {
+    throw corruptBackup('Saved-view ordering manifest files are missing from the backup; no restore occurred');
+  }
+
   const issues: string[] = [];
   const entries: VaultEntry[] = [];
   const notes: Note[] = [];
   const databases: DatabaseDefinition[] = [];
   const databaseViews: DatabaseView[] = [];
+  const databaseViewOrders: DatabaseViewOrderFileSnapshot[] = [];
   let propertyCatalog: PropertyCatalogFile | undefined;
 
   const ids = new Set<string>();
@@ -310,6 +382,43 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
       continue;
     }
 
+    if (file.kind === 'database-view-order') {
+      if (file.path !== databaseViewOrderPath(file.id)) {
+        issues.push(`Saved-view ordering manifest "${file.path}" must be stored at "${databaseViewOrderPath(file.id)}"`);
+        continue;
+      }
+      let text: string;
+      try {
+        text = decodeUtf8(bytes, file.path);
+      } catch (error) {
+        issues.push(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = parseDatabaseViewOrder(text);
+      } catch (error) {
+        const unsupported = unsupportedError(error, file.path);
+        if (unsupported !== undefined) throw unsupported;
+        issues.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      if (parsed.databaseId !== file.id) {
+        issues.push(`Saved-view ordering manifest "${file.path}" has database ID "${parsed.databaseId}", expected "${file.id}"`);
+        continue;
+      }
+      databaseViewOrders.push({
+        databaseId: file.id,
+        path: file.path,
+        text,
+        rawBytes: Buffer.from(bytes),
+        hash: file.sha256,
+        revision: parsed.revision,
+        viewIds: parsed.viewIds,
+      });
+      continue;
+    }
+
     if (file.kind === 'attachment') {
       try {
         const attachment = validateAttachmentBytes(file.path, bytes);
@@ -391,7 +500,7 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     );
   }
 
-  return { manifest, entries, notes, databases, databaseViews, ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+  return { manifest, entries, notes, databases, databaseViews, ...(databaseViewOrders.length === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
 }
 
 /**
@@ -430,6 +539,7 @@ export async function restoreBackup(
       notes: validation.notes,
       databases: validation.databases,
       databaseViews: validation.databaseViews,
+      ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders }),
       ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: validation.propertyCatalog }),
     },
     { overwrite: options.overwrite },
@@ -452,6 +562,7 @@ export async function previewRestore(
   const validation = await validateBackup(backupDir);
   const existing = await vault.snapshot();
   const targetCatalog = await vault.readPropertyCatalogWithHash();
+  const existingOrders = await vault.listDatabaseViewOrderFiles();
   const catalogConflict = validation.propertyCatalog === undefined
     ? false
     : targetCatalog.hash === null
@@ -499,10 +610,15 @@ export async function previewRestore(
     if (attachmentPaths.has(foldPath(entry.path))) paths.add(entry.path);
   }
   if (catalogConflict) paths.add(PROPERTY_CATALOG_PATH);
+  for (const order of validation.databaseViewOrders ?? []) {
+    const existingOrder = existingOrders.find((candidate) => candidate.path === order.path);
+    if (existingOrder !== undefined && existingOrder.hash !== order.hash) paths.add(order.path);
+  }
 
   return {
     manifest: validation.manifest,
     counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
+      ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders.length }),
       ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
       ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }) },
     ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: {
@@ -704,7 +820,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
       issues.push(`files[${index}] is not an object`);
       return;
     }
-    if (item.kind !== 'note' && item.kind !== 'database' && !(version >= 2 && item.kind === 'database-view') && !(version >= 3 && item.kind === 'attachment')) {
+    if (item.kind !== 'note' && item.kind !== 'database' && !(version >= 2 && item.kind === 'database-view') && !(version >= 3 && item.kind === 'attachment') && !(version >= 5 && item.kind === 'database-view-order')) {
       issues.push(`files[${index}].kind is not supported by backup version ${version}`);
       return;
     }
@@ -753,11 +869,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
         !isIntegerAtLeast(data.formats.database, 1) ||
         !isIntegerAtLeast(data.formats.backup, 1) ||
         (version >= 2 && !isIntegerAtLeast(data.formats.databaseView, 1)) ||
-        (version >= 4 && !isIntegerAtLeast(data.formats.propertyCatalog, 1))) {
-      issues.push('formats must contain positive integers note, database, backup, databaseView for v2+, and propertyCatalog for v4+');
+        (version >= 4 && !isIntegerAtLeast(data.formats.propertyCatalog, 1)) ||
+        (version >= 5 && !isIntegerAtLeast(data.formats.databaseViewOrder, 1))) {
+      issues.push('formats must contain positive integers note, database, backup, databaseView for v2+, propertyCatalog for v4+, and databaseViewOrder for v5+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', ...(version >= 4 ? ['propertyCatalog'] : []), 'backup'], 'formats', issues);
-      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}), ...(version >= 4 ? { propertyCatalog: data.formats.propertyCatalog as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrder'] : []), 'backup'], 'formats', issues);
+      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}), ...(version >= 4 ? { propertyCatalog: data.formats.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrder: data.formats.databaseViewOrder as number } : {}) };
     }
   }
 
@@ -768,16 +885,18 @@ async function readManifest(target: string): Promise<BackupManifest> {
         !isIntegerAtLeast(data.counts.databases, 0) ||
         (version >= 2 && !isIntegerAtLeast(data.counts.databaseViews, 0)) ||
         (version >= 3 && !isIntegerAtLeast(data.counts.attachments, 0)) ||
-        (version >= 4 && !isIntegerAtLeast(data.counts.propertyCatalog, 0))) {
-      issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, attachments for v3+, and propertyCatalog for v4+');
+        (version >= 4 && !isIntegerAtLeast(data.counts.propertyCatalog, 0)) ||
+        (version >= 5 && !isIntegerAtLeast(data.counts.databaseViewOrders, 0))) {
+      issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, attachments for v3+, propertyCatalog for v4+, and databaseViewOrders for v5+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : []), ...(version >= 4 ? ['propertyCatalog'] : [])], 'counts', issues);
-      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}), ...(version >= 4 ? { propertyCatalog: data.counts.propertyCatalog as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : []), ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrders'] : [])], 'counts', issues);
+      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}), ...(version >= 4 ? { propertyCatalog: data.counts.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrders: data.counts.databaseViewOrders as number } : {}) };
       const noteFiles = files.filter((file) => file.kind === 'note').length;
       const databaseFiles = files.filter((file) => file.kind === 'database').length;
       const viewFiles = files.filter((file) => file.kind === 'database-view').length;
+      const orderFiles = files.filter((file) => file.kind === 'database-view-order').length;
       const attachmentFiles = files.filter((file) => file.kind === 'attachment').length;
-      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version >= 2 && counts.databaseViews !== viewFiles) || (version >= 3 && counts.attachments !== attachmentFiles)) {
+      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version >= 2 && counts.databaseViews !== viewFiles) || (version >= 3 && counts.attachments !== attachmentFiles) || (version >= 5 && counts.databaseViewOrders !== orderFiles)) {
         issues.push('counts does not match the number of file entries');
       }
     }
@@ -827,6 +946,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (version >= 2 && (formats === undefined || counts === undefined)) issues.push('v2+ manifests require formats and counts');
   if (version >= 3 && counts?.attachments === undefined) issues.push('v3 manifests require attachment counts');
   if (version >= 4 && counts?.propertyCatalog === undefined) issues.push('v4 manifests require property catalog counts');
+  if (version >= 5 && counts?.databaseViewOrders === undefined) issues.push('v5 manifests require saved-view ordering counts');
   if (version >= 2 && files.some((file) => file.bytes === undefined)) issues.push('v2+ manifest file entries require byte lengths');
   if (version >= 2 && digest === undefined) issues.push('v2+ manifests require a digest');
   if (version >= 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
@@ -834,6 +954,9 @@ async function readManifest(target: string): Promise<BackupManifest> {
   }
   if (formats?.propertyCatalog !== undefined && formats.propertyCatalog > PROPERTY_CATALOG_VERSION) {
     throw new StorageError('UNSUPPORTED_VERSION', `Property catalog format version ${formats.propertyCatalog} is newer than supported version ${PROPERTY_CATALOG_VERSION}`, { path: BACKUP_MANIFEST });
+  }
+  if (formats?.databaseViewOrder !== undefined && formats.databaseViewOrder > DATABASE_VIEW_ORDER_VERSION) {
+    throw new StorageError('UNSUPPORTED_VERSION', `Saved-view ordering format version ${formats.databaseViewOrder} is newer than supported version ${DATABASE_VIEW_ORDER_VERSION}`, { path: BACKUP_MANIFEST });
   }
   if (formats && formats.database > DATABASE_FORMAT_VERSION) throw new StorageError('UNSUPPORTED_VERSION', 'Backup requires a newer database format', { path: BACKUP_MANIFEST });
   if (version >= 2 && formats?.backup !== version) issues.push(`formats.backup must match manifest version ${version}`);
@@ -844,7 +967,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
     } else {
       const candidate: BackupManifest = {
         format: BACKUP_FORMAT,
-        version: version as 1 | 2 | 3 | 4,
+        version: version as 1 | 2 | 3 | 4 | 5,
         createdAt: data.createdAt,
         ...(app === undefined ? {} : { app }),
         ...(formats === undefined ? {} : { formats }),
@@ -867,7 +990,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
 
   return {
     format: BACKUP_FORMAT,
-    version: version as 1 | 2 | 3 | 4,
+    version: version as 1 | 2 | 3 | 4 | 5,
     createdAt: data.createdAt,
     ...(app === undefined ? {} : { app }),
     ...(formats === undefined ? {} : { formats }),
@@ -909,8 +1032,13 @@ function corruptBackup(message: string): StorageError {
   return new StorageError('CORRUPT_BACKUP', message, { path: BACKUP_MANIFEST });
 }
 
-function restorePathIssue(kind: 'note' | 'database' | 'database-view' | 'attachment', id: string, path: string): string | undefined {
+function restorePathIssue(kind: 'note' | 'database' | 'database-view' | 'database-view-order' | 'attachment', id: string, path: string): string | undefined {
   if (kind === 'attachment') return attachmentPathId(path) === id ? undefined : `Attachment path "${path}" must be managed under attachments/ and match its ID`;
+  if (kind === 'database-view-order') {
+    return path === databaseViewOrderPath(id)
+      ? undefined
+      : `Saved-view ordering path "${path}" must be .nodus-orders/database-views/<database-id>.json and match its ID`;
+  }
   if (kind === 'database-view') {
     const ids = viewPathFromManifest(path);
     return ids !== undefined && ids.path === path && ids.viewId === id
@@ -1026,6 +1154,7 @@ function canonicalDigestInput(
       note: manifest.formats.note,
       database: manifest.formats.database,
       ...(manifest.formats.databaseView === undefined ? {} : { databaseView: manifest.formats.databaseView }),
+      ...(manifest.formats.databaseViewOrder === undefined ? {} : { databaseViewOrder: manifest.formats.databaseViewOrder }),
       ...(manifest.formats.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.formats.propertyCatalog }),
       backup: manifest.formats.backup,
     };
@@ -1035,6 +1164,7 @@ function canonicalDigestInput(
       notes: manifest.counts.notes,
       databases: manifest.counts.databases,
       ...(manifest.counts.databaseViews === undefined ? {} : { databaseViews: manifest.counts.databaseViews }),
+      ...(manifest.counts.databaseViewOrders === undefined ? {} : { databaseViewOrders: manifest.counts.databaseViewOrders }),
       ...(manifest.counts.attachments === undefined ? {} : { attachments: manifest.counts.attachments }),
       ...(manifest.counts.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.counts.propertyCatalog }),
     };

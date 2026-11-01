@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ListView } from '../ui/src/DatabaseLayouts.js';
+import { GalleryView, ListView } from '../ui/src/DatabaseLayouts.js';
 import type { Property } from '../src/database/schema.js';
 import type { UiDatabaseRow } from '../src/ui-server/dto.js';
 
@@ -51,5 +51,43 @@ describe('database list view', () => {
     expect(markup).not.toContain('Record 05000');
     expect(renderedRecords).toBeGreaterThan(0);
     expect(renderedRecords).toBeLessThan(5000);
+  });
+});
+
+describe('database gallery view', () => {
+  const second = { ...row, noteId: 'note-2', title: 'Second record', values: { summary: 'Another value' } } as UiDatabaseRow;
+  const gallery = (rows: UiDatabaseRow[], visibleProperties = properties) => renderToStaticMarkup(createElement(GalleryView, {
+    rows, visibleProperties, disabled: false, onOpen: () => undefined,
+    onEdit: () => undefined, formatValue: (_property, value) => String(value ?? '—'),
+  }));
+
+  it('renders accessible cards with configured properties and open actions', () => {
+    const markup = gallery([row, second]);
+    expect(markup).toContain('aria-label="Database gallery view"');
+    expect(markup).toContain('role="list"');
+    expect(markup.match(/role="listitem"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="A very long record title"');
+    expect(markup).toContain('Summary');
+    expect(markup).toContain('Readable value');
+    expect(markup).toContain('data-note-open="note-1"');
+    expect(markup).toContain('data-note-open="note-2"');
+  });
+
+  it('preserves the filtered and sorted row order supplied by the parent', () => {
+    const markup = gallery([second, row]);
+    expect(markup.indexOf('Second record')).toBeLessThan(markup.indexOf('A very long record title'));
+  });
+
+  it('renders only configured properties', () => {
+    const markup = gallery([row], []);
+    expect(markup).toContain('A very long record title');
+    expect(markup).not.toContain('Summary');
+    expect(markup).not.toContain('Readable value');
+  });
+
+  it('shows a useful empty state when no records match', () => {
+    const markup = gallery([]);
+    expect(markup).toContain('No records match this view.');
+    expect(markup).not.toContain('role="listitem"');
   });
 });

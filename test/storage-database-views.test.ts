@@ -69,6 +69,21 @@ describe('database view format', () => {
     expect(diagnoseDatabaseView({ ...grouped, settings: { groupPropertyId: PROP } }, { ...db, properties: [{ id: PROP, name: 'Status', type: 'text' }] })).toMatchObject([{ code: 'INVALID_REFERENCE' }]);
   });
 
+  it('round-trips gallery views as v3 and rejects a gallery in a v2 envelope', () => {
+    const gallery: DatabaseView = { ...view, type: 'gallery', settings: {}, sorts: [view.sort] };
+    const encoded = serializeDatabaseView(gallery);
+    expect(JSON.parse(encoded).version).toBe(3);
+    expect(parseDatabaseView(encoded)).toEqual(gallery);
+    expect(serializeDatabaseView(parseDatabaseView(encoded))).toBe(encoded);
+    const grouped: DatabaseView = { ...gallery, settings: { groupPropertyId: PROP } };
+    expect(parseDatabaseView(serializeDatabaseView(grouped))).toEqual(grouped);
+    expect(diagnoseDatabaseView(gallery, db)).toEqual([]);
+    expect(diagnoseDatabaseView({ ...grouped, settings: { groupPropertyId: VIEW2 } }, db)).toMatchObject([{ code: 'MISSING_PROPERTY' }]);
+    const v2 = { ...JSON.parse(encoded), version: 2 };
+    delete v2.sorts;
+    expect(() => parseDatabaseView(JSON.stringify(v2))).toThrow(/type must be/);
+  });
+
   it('diagnoses missing database, property, and option references without mutating view data', () => {
     expect(diagnoseDatabaseView(view)).toMatchObject([{ code: 'MISSING_DATABASE' }]);
     const missingProperty = { ...view, visiblePropertyIds: [VIEW2] };
@@ -128,7 +143,7 @@ describe('saved-view storage and portability', () => {
       const backupDir = join(dir, 'backup');
       expect(await createBackup(source, backupDir)).toMatchObject({ databaseViews: 1 });
       const validated = await validateBackup(backupDir);
-      expect(validated.manifest.version).toBe(4);
+      expect(validated.manifest.version).toBe(5);
       expect(validated.databaseViews).toEqual([view]);
       const restored = await FileSystemVault.open(join(dir, 'restored'));
       expect(await restoreBackup(backupDir, restored.root)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });

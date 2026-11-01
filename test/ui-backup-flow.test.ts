@@ -211,5 +211,6 @@ describe('count formatting', () => {
   it('pluralizes notes and definitions', () => {
     expect(formatCounts({ notes: 1, databases: 0 })).toBe('1 note, 0 definitions');
     expect(formatCounts({ notes: 2, databases: 1 })).toBe('2 notes, 1 definition');
+    expect(formatCounts({ notes: 1, databases: 1, databaseViewOrders: 1 })).toBe('1 note, 1 definition, 1 saved-view order');
   });
 });

@@ -5,12 +5,34 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { diagnoseDatabaseView, serializeDatabaseView, type DatabaseView, type DatabaseViewType } from '../../src/database/database-view';
-import type { UiDatabase, UiDatabaseView } from '../../src/ui-server/dto';
+import type { UiDatabase, UiDatabaseView, UiDatabaseViewOrder } from '../../src/ui-server/dto';
 import { ApiError, api } from './api';
+import { moveSavedViewId } from './saved-view-order';
 
 import { defaultView, type ViewConfiguration } from './database-view-layout';
 const NO_VIEW = '__unsaved__';
 
+/**
+ * Keyboard-accessible reordering: each view has real up/down buttons with
+ * explicit accessible names, so no pointer drag is required.
+ */
+export function SavedViewOrderControls({ views, disabled, onMove }: {
+  views: UiDatabaseView[];
+  disabled: boolean;
+  onMove: (viewId: string, delta: -1 | 1) => void;
+}) {
+  if (views.length < 2) return null;
+  return <div role="group" aria-label="Reorder saved views" className="flex flex-col gap-1 rounded-md border p-2">
+    <p className="text-xs font-medium">View order</p>
+    <ul className="flex flex-col gap-1 text-xs">
+      {views.map((item, index) => <li key={item.view.id} className="flex min-w-0 items-center gap-1">
+        <span className="min-w-0 flex-1 truncate" title={item.view.name}>{item.view.name}</span>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={`Move ${item.view.name} up`} disabled={disabled || index === 0} onClick={() => onMove(item.view.id, -1)}>↑</Button>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={`Move ${item.view.name} down`} disabled={disabled || index === views.length - 1} onClick={() => onMove(item.view.id, 1)}>↓</Button>
+      </li>)}
+    </ul>
+  </div>;
+}
 
 export function SavedViewControls({ database, vaultKey, configuration, onApply, onReady, busy, hasNoteDraft }: {
   database: UiDatabase;
@@ -22,6 +44,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
   hasNoteDraft: boolean;
 }) {
   const [views, setViews] = useState<UiDatabaseView[]>([]);
+  const [order, setOrder] = useState<UiDatabaseViewOrder | null>(null);
   const [active, setActive] = useState<UiDatabaseView | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -61,6 +84,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
       const result = await api.databaseViews(database.id);
       if (!current()) return;
       setViews(result.views);
+      setOrder(result.order);
       let preferred: string | null = null;
       try { preferred = localStorage.getItem(preferenceKey); } catch { /* Optional preference. */ }
       apply(preferred === '' ? null : result.views.find((item) => item.view.id === preferred) ?? result.views[0] ?? null);
@@ -77,6 +101,36 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
   function switchTo(id: string) {
     const saved = views.find((item) => item.view.id === id) ?? null;
     apply(saved);
+  }
+
+  async function refreshOrder() {
+    try {
+      const result = await api.databaseViews(database.id);
+      if (!alive.current) return;
+      setViews(result.views);
+      setOrder(result.order);
+    } catch {
+      // The next load or reorder retries; a failed refresh must not hide the
+      // write that already succeeded.
+    }
+  }
+
+  async function moveView(viewId: string, delta: -1 | 1) {
+    if (writeDisabled || stale || order === null) return;
+    const viewIds = moveSavedViewId(views.map((item) => item.view.id), viewId, delta);
+    if (viewIds === null) return;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      const result = await api.reorderDatabaseViews(database.id, viewIds, order.contentHash);
+      if (!alive.current) return;
+      setOrder(result.order);
+      setViews((previous) => result.order.viewIds.flatMap((id) => previous.find((item) => item.view.id === id) ?? []));
+      setNotice('View order saved.');
+    } catch (cause) {
+      if (!alive.current) return;
+      setError(message(cause));
+      if (cause instanceof ApiError && cause.code === 'STALE_WRITE') setStale(true);
+    } finally { if (alive.current) setSaving(false); }
   }
 
   async function write(mode: 'save' | 'create' | 'rename' | 'duplicate') {
@@ -102,6 +156,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
       if (!alive.current) return;
       setViews((previous) => [...previous.filter((item) => item.view.id !== result.view.view.id), result.view]);
       apply(result.view); setDialog(null); setNotice('View saved to this vault.');
+      await refreshOrder();
     } catch (cause) {
       if (!alive.current) return;
       setError(message(cause));
@@ -128,7 +183,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
         }
       } else if (action === 'delete') {
         await api.deleteDatabaseView(database.id, active.view.id, active.contentHash);
-        if (alive.current) { setViews((previous) => previous.filter((item) => item.view.id !== active.view.id)); apply(null); setNotice('View deleted. Notes were kept.'); }
+        if (alive.current) { setViews((previous) => previous.filter((item) => item.view.id !== active.view.id)); apply(null); setNotice('View deleted. Notes were kept.'); await refreshOrder(); }
       }
     } catch (cause) { if (alive.current) { setError(message(cause)); if (cause instanceof ApiError && cause.code === 'STALE_WRITE') setStale(true); } }
     finally { if (alive.current) setSaving(false); }
@@ -182,6 +237,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
       <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reload')}>Reload saved view</Button>
       <Button size="sm" variant="ghost" disabled={writeDisabled} onClick={() => askConfirmation('reset')}>Reset view settings</Button>
     </div> : null}
+    <SavedViewOrderControls views={views} disabled={writeDisabled || stale} onMove={(id, delta) => void moveView(id, delta)} />
     {loading ? <p role="status" className="text-xs text-muted-foreground">Loading saved views…</p> : null}
     {dirty ? <p role="status" className="text-xs text-muted-foreground">View settings have unsaved changes.</p> : null}
     {notice ? <p role="status" className="text-xs text-muted-foreground">{notice}</p> : null}
@@ -200,6 +256,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
             <SelectContent>
               <SelectItem value="table">Table</SelectItem>
               <SelectItem value="list">List</SelectItem>
+              <SelectItem value="gallery">Gallery</SelectItem>
               <SelectItem value="kanban" disabled={!database.properties.some((property) => property.type === 'select')}>Kanban (Select property)</SelectItem>
               <SelectItem value="calendar" disabled={!database.properties.some((property) => property.type === 'date')}>Calendar (Date property)</SelectItem>
             </SelectContent>

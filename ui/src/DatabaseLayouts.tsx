@@ -160,3 +160,22 @@ export function CalendarView(props: LayoutProps & { onCreate: (date: string) => 
     </section>
   </section>;
 }
+
+export function GalleryView(props: Omit<LayoutProps, 'property'>) {
+  return <section aria-label="Database gallery view" className="my-4 min-w-0">
+    {props.rows.length === 0 ? <p className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">No records match this view.</p> :
+      <div role="list" aria-label="Database gallery records" className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {props.rows.map((row) => <article key={row.noteId} role="listitem" aria-label={row.title} className="min-w-0 overflow-hidden rounded-md border bg-card">
+          <div aria-hidden="true" className="flex h-28 items-center justify-center border-b bg-muted/30 text-xs text-muted-foreground">No preview</div>
+          <div className="min-w-0 p-3">
+            <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal p-0 text-left font-medium" onClick={() => props.onOpen(row.noteId)}>{row.title}</Button>
+            {props.visibleProperties.length ? <dl className="mt-2 flex min-w-0 flex-col gap-1 text-xs">{props.visibleProperties.map((property) => {
+              const value = props.renderValue ? props.renderValue(row, property) : props.formatValue(property, row.values[property.id]);
+              return <div key={property.id} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2"><dt className="truncate text-muted-foreground">{property.name}</dt><dd className="min-w-0 break-words">{value}</dd></div>;
+            })}</dl> : null}
+            {row.issues.length ? <Badge variant="destructive" className="mt-2">Needs attention</Badge> : null}
+          </div>
+        </article>)}
+      </div>}
+  </section>;
+}

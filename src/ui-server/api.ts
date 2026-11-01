@@ -41,6 +41,7 @@ import type {
   UiDatabase,
   UiDatabaseRowsResponse,
   UiDatabaseView,
+  UiDatabaseViewOrder,
   UiDatabaseViewsResponse,
   UiDeleteNoteInput,
   UiHealthIssue,
@@ -715,6 +716,19 @@ export function createLocalApiMiddleware(
       }
     }
 
+    const databaseViewOrderMatch = /^\/api\/databases\/([^/]+)\/views\/order$/.exec(path);
+    if (databaseViewOrderMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(databaseViewOrderMatch[1] ?? ''), 'database ID');
+      if (method === 'GET') {
+        const order = await (await getVault()).readDatabaseViewOrder(databaseId);
+        return sendJson(res, 200, { order: toUiDatabaseViewOrder(order) });
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        return sendJson(res, 200, await reorderLocalDatabaseViews(await getVault(), databaseId, body));
+      }
+    }
+
     const duplicateViewMatch = /^\/api\/databases\/([^/]+)\/views\/([^/]+)\/duplicate$/.exec(path);
     if (method === 'POST' && duplicateViewMatch !== null) {
       const databaseId = requireUuid(decodeURIComponent(duplicateViewMatch[1] ?? ''), 'database ID');
@@ -1149,11 +1163,35 @@ async function listDatabaseViews(vault: FileSystemVault, databaseId: string): Pr
     const view = parseDatabaseView(entry.text);
     return view.databaseId === databaseId ? [{ view, path: entry.path, hash: sha256Hex(entry.rawBytes ?? Buffer.from(entry.text, 'utf8')) }] : [];
   });
+  const order = await vault.readDatabaseViewOrder(databaseId);
+  const byId = new Map(views.map((item) => [item.view.id, item] as const));
+  const ordered = order.viewIds.flatMap((id) => byId.get(id) ?? []);
+  const orderedIds = new Set(ordered.map((item) => item.view.id));
+  const remaining = views.filter((item) => !orderedIds.has(item.view.id));
   return {
     databaseId,
     ...(schemaHash === undefined ? {} : { schemaHash }),
-    views: views.map(({ view, path, hash }) => ({ view, path, contentHash: hash, diagnostics: diagnoseDatabaseView(view, database) })),
+    views: [...ordered, ...remaining].map(({ view, path, hash }) => ({ view, path, contentHash: hash, diagnostics: diagnoseDatabaseView(view, database) })),
+    order: toUiDatabaseViewOrder(order),
   };
+}
+
+function toUiDatabaseViewOrder(order: { databaseId: string; viewIds: string[]; revision: number; hash: string | null }): UiDatabaseViewOrder {
+  return { databaseId: order.databaseId, viewIds: order.viewIds, revision: order.revision, contentHash: order.hash };
+}
+
+async function reorderLocalDatabaseViews(vault: FileSystemVault, databaseId: string, body: Record<string, unknown>): Promise<{ order: UiDatabaseViewOrder }> {
+  requireAllowedKeys(body, ['viewIds', 'baseHash'], 'request');
+  if (!Array.isArray(body.viewIds)) throw new ApiError(400, 'INVALID_INPUT', 'viewIds must be an array.');
+  const viewIds = body.viewIds.map((value, index) => requireUuid(value, `viewIds[${index}]`));
+  const expectedHash = body.baseHash === null ? null : requireHash(body.baseHash);
+  try {
+    return { order: toUiDatabaseViewOrder(await vault.writeDatabaseViewOrder(databaseId, viewIds, { expectedHash })) };
+  } catch (error) {
+    if (isStorageError(error) && error.code === 'STALE_WRITE') throw toViewStaleApiError(error);
+    if (isStorageError(error) && error.code === 'INVALID_INPUT') throw new ApiError(400, 'INVALID_INPUT', error.message);
+    throw error;
+  }
 }
 
 async function createLocalDatabaseView(vault: FileSystemVault, databaseId: string, body: Record<string, unknown>): Promise<{ view: UiDatabaseView }> {
@@ -1272,7 +1310,7 @@ function requireDatabaseViewInput(value: unknown) {
   try {
     const record = value as Record<string, unknown>;
     const settings = typeof record.settings === 'object' && record.settings !== null ? record.settings as Record<string, unknown> : {};
-    const hasV3 = record.type === 'list' || 'sorts' in record || ((record.type === 'table' || record.type === 'list') && 'groupPropertyId' in settings) || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
+    const hasV3 = record.type === 'list' || record.type === 'gallery' || 'sorts' in record || ((record.type === 'table' || record.type === 'list') && 'groupPropertyId' in settings) || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
     const version = hasV3 ? DATABASE_VIEW_VERSION : ('type' in record || 'settings' in record) ? 2 : 1;
     const normalized = version >= 3 && !('sorts' in record) ? { ...record, sorts: [record.sort] } : record;
     return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version, ...normalized }));
@@ -1391,12 +1429,13 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; attachments?: number; propertyCatalog?: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
     manifest: validation.manifest,
     counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
+      ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders.length }),
       ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
       ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }) },
   };

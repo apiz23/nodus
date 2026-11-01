@@ -121,8 +121,8 @@ describe('metadata backup and restore', { timeout: 20_000 }, () => {
 
       expect(await createBackup(vault, backup, { now: NOW })).toMatchObject({ notes: 2, databases: 1, databaseViews: 1, attachments: 1, propertyCatalog: 1 });
       const manifest = JSON.parse(await readFile(join(backup, 'nodus-backup.json'), 'utf8'));
-      expect(manifest.version).toBe(4);
-      expect(manifest.formats).toMatchObject({ backup: 4, propertyCatalog: 1 });
+      expect(manifest.version).toBe(5);
+      expect(manifest.formats).toMatchObject({ backup: 5, propertyCatalog: 1 });
       expect(manifest.counts.propertyCatalog).toBe(1);
       expect(manifest.propertyCatalog).toMatchObject({
         path: PROPERTY_CATALOG_PATH,

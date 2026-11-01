@@ -4,6 +4,8 @@ import { extname, join, resolve } from 'node:path';
 import type {
   DatabaseStore,
   DatabaseSummary,
+  DatabaseViewOrder,
+  DatabaseViewOrderFileSnapshot,
   DatabaseViewWriteOptions,
   FolderImpact,
   ImportOptions,
@@ -23,6 +25,7 @@ import type {
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase, serializeDatabase } from '../../database/schema.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
+import { parseDatabaseViewOrder, resolveDatabaseViewOrder, serializeDatabaseViewOrder } from '../../database/database-view-order.js';
 import { resolveLink } from '../../links/wikilink.js';
 import { addNoteDatabaseMembership, setNotePropertyValue, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
 import { relationWriteIssue } from '../../database/relations.js';
@@ -44,7 +47,7 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, databaseViewPath, isReservedNotePath } from './layout.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
@@ -792,6 +795,127 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
+  /** Reads persistent saved-view ordering, ignoring deleted or unknown IDs. */
+  async readDatabaseViewOrder(databaseId: string): Promise<DatabaseViewOrder> {
+    if (!isUuidV4(databaseId)) throw new StorageError('INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
+    return withVaultRootLock(this.root, async () => {
+      const stored = await this.readDatabaseViewOrderUnlocked(databaseId);
+      const existingIds = (await this.parseDatabaseViewsStrict())
+        .filter(({ view }) => view.databaseId === databaseId)
+        .map(({ view }) => view.id);
+      return { ...stored, viewIds: resolveDatabaseViewOrder(existingIds, stored.viewIds) };
+    });
+  }
+
+  /**
+   * Atomically replaces one database's ordering manifest under the vault-root
+   * lock. The order must name every current view exactly once; duplicate,
+   * unknown, deleted, or omitted IDs are rejected before any write.
+   */
+  async writeDatabaseViewOrder(databaseId: string, viewIds: string[], options: { expectedHash: string | null }): Promise<DatabaseViewOrder> {
+    return withVaultRootLock(this.root, async () => {
+      if (!isUuidV4(databaseId)) throw new StorageError('INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
+      if (!Array.isArray(viewIds)) throw new StorageError('INVALID_INPUT', 'View order must be an array of saved-view IDs');
+      for (const id of viewIds) {
+        if (typeof id !== 'string' || !isUuidV4(id)) throw new StorageError('INVALID_INPUT', 'View order IDs must be lowercase UUID v4 values');
+      }
+      const unique = new Set(viewIds);
+      if (unique.size !== viewIds.length) {
+        throw new StorageError('INVALID_INPUT', 'View order contains duplicate saved-view IDs', { details: { ids: viewIds.filter((id, index) => viewIds.indexOf(id) !== index) } });
+      }
+      const existingIds = (await this.parseDatabaseViewsStrict())
+        .filter(({ view }) => view.databaseId === databaseId)
+        .map(({ view }) => view.id);
+      const unknown = viewIds.filter((id) => !existingIds.includes(id));
+      if (unknown.length > 0) {
+        throw new StorageError('INVALID_INPUT', 'View order references saved views that do not belong to this database', { details: { ids: unknown } });
+      }
+      const omitted = existingIds.filter((id) => !unique.has(id));
+      if (omitted.length > 0) {
+        throw new StorageError('INVALID_INPUT', 'View order must include every saved view of this database', { details: { ids: omitted } });
+      }
+
+      const current = await this.readDatabaseViewOrderUnlocked(databaseId);
+      if (options.expectedHash === null) {
+        if (current.hash !== null) throw staleWrite(current.path, current.hash);
+      } else if (current.hash !== options.expectedHash) {
+        throw staleWrite(current.path, current.hash ?? undefined);
+      }
+
+      const next = { databaseId, revision: current.revision + 1, viewIds: [...viewIds] };
+      const text = serializeDatabaseViewOrder(next);
+      const path = databaseViewOrderPath(databaseId);
+      const absolute = await this.validateInternalPath(path);
+      try { await writeFileAtomic(absolute, text); } catch (error) { throw storageFailure(error, 'Write saved-view order', path); }
+      return { ...next, path, hash: sha256Hex(text) };
+    });
+  }
+
+  /** Caller must hold the vault root lock. */
+  private async readDatabaseViewOrderUnlocked(databaseId: string): Promise<DatabaseViewOrder> {
+    const file = await this.readDatabaseViewOrderFileUnlocked(databaseId);
+    if (file === null) return { databaseId, viewIds: [], revision: 0, path: databaseViewOrderPath(databaseId), hash: null };
+    return { databaseId, viewIds: file.viewIds, revision: file.revision, path: file.path, hash: file.hash };
+  }
+
+  /** Raw ordering manifests for portable export and backups. */
+  async listDatabaseViewOrderFiles(): Promise<DatabaseViewOrderFileSnapshot[]> {
+    return withVaultRootLock(this.root, () => this.listDatabaseViewOrderFilesUnlocked());
+  }
+
+  async readDatabaseViewOrderFile(databaseId: string): Promise<DatabaseViewOrderFileSnapshot | null> {
+    if (!isUuidV4(databaseId)) throw new StorageError('INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
+    return withVaultRootLock(this.root, () => this.readDatabaseViewOrderFileUnlocked(databaseId));
+  }
+
+  /** Caller must hold the vault root lock. */
+  private async listDatabaseViewOrderFilesUnlocked(): Promise<DatabaseViewOrderFileSnapshot[]> {
+    const directory = resolveInsideRoot(this.root, `${DATABASE_VIEW_ORDER_DIR}/database-views`);
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch (error) {
+      if (isMissing(error)) return [];
+      if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') {
+        throw new StorageError('INVALID_CONTENT', 'Saved-view order storage must be a directory', { path: `${DATABASE_VIEW_ORDER_DIR}/database-views` });
+      }
+      throw storageFailure(error, 'Read saved-view order directory', `${DATABASE_VIEW_ORDER_DIR}/database-views`);
+    }
+    names.sort();
+    const files: DatabaseViewOrderFileSnapshot[] = [];
+    for (const name of names) {
+      if (name.startsWith('.')) continue;
+      const match = /^([0-9a-f-]{36})\.json$/.exec(name);
+      if (match === null || !isUuidV4(match[1]!)) {
+        throw new StorageError('INVALID_CONTENT', `Unexpected file in saved-view order storage: "${name}"`, { path: `${DATABASE_VIEW_ORDER_DIR}/database-views/${name}` });
+      }
+      const file = await this.readDatabaseViewOrderFileUnlocked(match[1]!);
+      if (file !== null) files.push(file);
+    }
+    return files;
+  }
+
+  /** Caller must hold the vault root lock. */
+  private async readDatabaseViewOrderFileUnlocked(databaseId: string): Promise<DatabaseViewOrderFileSnapshot | null> {
+    const path = databaseViewOrderPath(databaseId);
+    const absolute = await this.validateInternalPath(path);
+    let bytes: Buffer;
+    try {
+      bytes = await this.readBytesAt(absolute, path);
+    } catch (error) {
+      if (error instanceof StorageError && error.code === 'NOT_FOUND') return null;
+      throw error;
+    }
+    let text: string;
+    let parsed;
+    try { text = decodeVaultText(bytes, path); parsed = parseDatabaseViewOrder(text); }
+    catch (error) { throw wrapContentError(error, path); }
+    if (parsed.databaseId !== databaseId) {
+      throw new StorageError('INVALID_CONTENT', `View order at "${path}" belongs to database "${parsed.databaseId}"`, { path, details: { ids: [parsed.databaseId, databaseId] } });
+    }
+    return { databaseId, path, text, rawBytes: Buffer.from(bytes), hash: sha256Hex(bytes), revision: parsed.revision, viewIds: parsed.viewIds };
+  }
+
   async snapshot(): Promise<VaultEntry[]> {
     return withVaultRootLock(this.root, () => this.snapshotUnlocked());
   }
@@ -1119,6 +1243,27 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateAttachmentPath(entry.path);
     }
 
+    const incomingOrders = plan.databaseViewOrders ?? [];
+    const plannedOrderPaths = new Set<string>();
+    for (const order of incomingOrders) {
+      if (!isUuidV4(order.databaseId)) throw new StorageError('INVALID_CONTENT', 'Import ordering manifests require lowercase UUID v4 database IDs');
+      const expectedPath = databaseViewOrderPath(order.databaseId);
+      if (order.path !== expectedPath) throw new StorageError('INVALID_CONTENT', `Import ordering manifest must be stored at "${expectedPath}"`, { path: order.path });
+      const bytes = order.rawBytes ?? Buffer.from(order.text, 'utf8');
+      let text: string;
+      let parsed;
+      try { text = decodeVaultText(bytes, expectedPath); parsed = parseDatabaseViewOrder(text); }
+      catch (error) { throw wrapContentError(error, expectedPath); }
+      if (text !== order.text || sha256Hex(bytes) !== order.hash || parsed.databaseId !== order.databaseId ||
+          parsed.revision !== order.revision || parsed.viewIds.length !== order.viewIds.length ||
+          parsed.viewIds.some((id, index) => id !== order.viewIds[index])) {
+        throw new StorageError('INVALID_CONTENT', `Import ordering manifest "${expectedPath}" does not match its validated contents`, { path: expectedPath });
+      }
+      await this.validateInternalPath(expectedPath);
+      if (plannedOrderPaths.has(expectedPath)) throw new StorageError('CONFLICT', `Import contains duplicate ordering manifest path "${expectedPath}"`, { path: expectedPath });
+      plannedOrderPaths.add(expectedPath);
+    }
+
     const incomingCatalog = plan.propertyCatalog;
     if (incomingCatalog !== undefined) {
       if (incomingCatalog.path !== PROPERTY_CATALOG_PATH) {
@@ -1160,6 +1305,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const existingNotes = await this.parseNotesStrict();
     const existingDatabases = await this.parseDatabasesStrict();
     const existingViews = await this.parseDatabaseViewsStrict();
+    const existingOrderFiles = await this.listDatabaseViewOrderFilesUnlocked();
 
     const existingNoteIds = new Map(existingNotes.map(({ note }) => [note.id, note.path] as const));
     const existingNotePaths = new Map(existingNotes.map(({ note }) => [foldPath(note.path), note.path] as const));
@@ -1177,6 +1323,8 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       expectedHashes.set(item.path, sha256Hex(stored));
     }
     if (existingCatalog !== null) expectedHashes.set(PROPERTY_CATALOG_PATH, existingCatalog.hash);
+    const existingOrderHashes = new Map(existingOrderFiles.map((file) => [file.path, file.hash] as const));
+    for (const file of existingOrderFiles) expectedHashes.set(file.path, file.hash);
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -1257,6 +1405,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     if (incomingCatalog !== undefined && existingCatalog !== null && existingCatalog.hash !== incomingCatalog.hash) {
       pathConflicts.add(PROPERTY_CATALOG_PATH);
     }
+    for (const order of incomingOrders) {
+      const existingHash = existingOrderHashes.get(order.path);
+      if (existingHash !== undefined && existingHash !== order.hash) pathConflicts.add(order.path);
+    }
 
     if (options.overwrite !== true && (idConflicts.size > 0 || pathConflicts.size > 0)) {
       throw new StorageError('CONFLICT', 'Import would overwrite existing data; pass { overwrite: true }', {
@@ -1311,6 +1463,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let databaseViews = 0;
     let attachments = 0;
     let propertyCatalog = 0;
+    let databaseViewOrders = 0;
 
     try {
       if (incomingCatalog !== undefined) {
@@ -1367,6 +1520,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         written.push(path);
       }
 
+      // Ordering manifests reference saved views, so they are written only
+      // after every view file exists.
+      for (const order of incomingOrders) {
+        if (existingOrderHashes.get(order.path) === order.hash) continue;
+        failedPath = order.path;
+        await this.writeDocument(order.path, order.rawBytes, true, () =>
+          this.assertImportTargetUnchanged(order.path, expectedHashes.get(order.path)),
+        );
+        databaseViewOrders += 1;
+        written.push(order.path);
+      }
+
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
@@ -1387,7 +1552,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }) };
+    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }) };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
