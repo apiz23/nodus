@@ -62,6 +62,15 @@ it('measures filtering, multi-sort, and grouping for database row sets', () => {
     }
     expect(result.selected.length).toBe(rows.filter((row) => row.values.active === true && Number(row.values.score) > 100).length);
     expect(result.groups.reduce((sum, group) => sum + group.rows.length, 0)).toBe(result.selected.length);
+    const expectedFiltered = rows.filter((row) => row.values.active === true && Number(row.values.score) > 100);
+    expect(filtered.map((row) => row.noteId).sort()).toEqual(expectedFiltered.map((row) => row.noteId).sort());
+    expect(filtered.some((row) => row.values.active !== true || Number(row.values.score) <= 100)).toBe(false);
+    const scoreOrder = (direction: 1 | -1) => [...rows].sort((a, b) => (Number(a.values.score) - Number(b.values.score)) * direction || a.noteId.localeCompare(b.noteId)).map((row) => row.noteId);
+    expect(sortDatabaseRowsBy(rows, properties, [{ propertyId: 'score', direction: 'asc' }]).map((row) => row.noteId)).toEqual(scoreOrder(1));
+    expect(sortDatabaseRowsBy(rows, properties, [{ propertyId: 'score', direction: 'desc' }]).map((row) => row.noteId)).toEqual(scoreOrder(-1));
+    const expectedGroups = new Map<string, string[]>();
+    for (const row of ordered) { const id = String(row.values.status); expectedGroups.set(id, [...(expectedGroups.get(id) ?? []), row.noteId]); }
+    expect(result.groups.map((group) => [group.id, group.rows.map((row) => row.noteId)])).toEqual([...expectedGroups].map(([id, ids]) => [id, ids]));
     return {
       records: count, matchingRecords: result.selected.length, groups: result.groups.length, iterations, warmups,
       queryMedianMs: percentile(querySamples, 0.5), queryP95Ms: percentile(querySamples, 0.95),

@@ -45,6 +45,43 @@ Typed paths continue to use `NODUS_VAULT_ROOTS`: when unset, its root is the par
 - Leftover `.nodus-tmp-*` files are reported by `checkHealth` as `INCOMPLETE_WRITE`. They are never read as notes.
 - Scans are on demand and read every note. There is no index or cache in Phase 2.
 
+### Hosted database snapshot cache
+
+The local UI host owns one `FileSystemVault` instance per active vault and
+disposes it when the Vite dev or preview HTTP server closes. Database-row and
+relation projections use a lifecycle-owned snapshot reconciler. The first
+request performs a complete byte-based snapshot; valid warm requests reuse the
+published parsed snapshot. Note bytes are hashed and parsed during a rebuild,
+and schema bytes are hashed and parsed from the same captured snapshot. File
+metadata is used only to detect changes during capture, never as content
+identity.
+
+The reconciler watches the vault recursively and invalidates for Markdown files
+and direct JSON files in `databases/`. Rename events are treated conservatively
+so extensionless directory moves also invalidate; hidden/internal paths are
+ignored. A missing filename is ambiguous and invalidates the whole snapshot.
+Events are coalesced. Watcher errors or closure make the cache untrusted, trigger
+reconciliation, and schedule watcher recreation. The hosted UI also performs a
+full reconciliation every five seconds as a best-effort missed-event check.
+Five seconds is not a freshness guarantee: operating-system event delivery,
+large scans, unavailable filesystems, and process scheduling can delay external
+edit visibility. A trusted snapshot remains available while a periodic scan is
+checking it; the replacement is published only after a complete successful
+scan. Invalidation or watcher loss makes the cache untrusted, and requests then
+wait for the shared successful rebuild or receive an error. Failed or
+superseded scans are not published. Watcher invalidation also invalidates
+vault-scoped search, link, and relation projections. Internal UI writes
+explicitly invalidate those projections and the database snapshot. A full scan
+is serialized with cooperating Nodus writers through the vault root lock.
+Reconciliation metrics track scan start/completion and actual files and bytes
+read; warm database requests perform no full content scan.
+
+The recursive watcher uses Node.js `fs.watch` recursive mode. Support and event
+details depend on the host operating system and filesystem; watcher failure is
+handled as loss of trust and recovered with periodic reconciliation and watcher
+restart. Direct `FileSystemVault` callers that do not opt into the hosted
+lifecycle retain fresh-scan semantics.
+
 ## Contracts
 
 `src/storage/contracts.ts` defines note, database-definition, and saved-view stores plus one vault contract. None of them reference a filesystem, browser, network, or UI type.

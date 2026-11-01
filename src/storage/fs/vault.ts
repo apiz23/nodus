@@ -50,6 +50,7 @@ import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } fro
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
 import { attachmentPathId, createAttachmentPath, markdownReferencesAttachment, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from './attachments.js';
 import { createVaultFolder, deleteVaultFolder, inspectVaultFolder, listVaultFolders, moveVaultFolder } from './folders.js';
+import { SnapshotReconciler, type SnapshotReconciler as SnapshotReconcilerType, type SnapshotReconcilerOptions } from './snapshot-reconciler.js';
 
 interface ParsedNote {
   note: Note;
@@ -71,7 +72,13 @@ export interface DatabaseRowsVaultSnapshot {
   databases: Array<{ database: DatabaseDefinition; hash: string }>;
 }
 
-const DATABASE_ROWS_READ_BATCH_SIZE = 32;
+export interface DatabaseRowsSnapshotMetrics {
+  durationMs: number;
+  filesRead: number;
+  bytesRead: number;
+  noteFilesRead: number;
+  databaseFilesRead: number;
+}
 
 const NOTE_NOT_FOUND = (id: string) =>
   new StorageError('NOT_FOUND', `Note "${id}" was not found`, { details: { ids: [id] } });
@@ -102,9 +109,23 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   readonly root: string;
   // Derived note-only snapshots never participate in authoritative reads or writes.
   private noteSnapshot = new Map<string, { hash: string; note: Note }>();
+  private databaseRowsCache?: { manifest: string; snapshot: DatabaseRowsVaultSnapshot };
+  private databaseSnapshotReconciler?: SnapshotReconcilerType<DatabaseRowsVaultSnapshot>;
+  private lastDatabaseRowsMetrics?: DatabaseRowsSnapshotMetrics;
+  private disposed = false;
 
   private constructor(root: string) {
     this.root = root;
+  }
+
+  /** Release derived in-memory state when the owning API server shuts down. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.noteSnapshot.clear();
+    this.databaseRowsCache = undefined;
+    this.databaseSnapshotReconciler?.dispose();
+    this.databaseSnapshotReconciler = undefined;
   }
 
   /** Opens (and creates) a vault directory. */
@@ -777,54 +798,142 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   /** Reads the parsed note and schema data required by database rows under one root lock and one vault walk. */
   async databaseRowsSnapshot(): Promise<DatabaseRowsVaultSnapshot> {
+    if (this.disposed) throw new Error('Vault has been disposed.');
     return withVaultRootLock(this.root, () => this.databaseRowsSnapshotUnlocked());
+  }
+
+  /** Start independent watcher/reconciliation ownership for API query snapshots. */
+  startDatabaseSnapshotLifecycle(options: SnapshotReconcilerOptions = {}): void {
+    if (this.disposed) throw new Error('Vault has been disposed.');
+    if (this.databaseSnapshotReconciler) return;
+    const reconciler = new SnapshotReconciler(this.root, () => this.databaseRowsSnapshot(), options);
+    this.databaseSnapshotReconciler = reconciler;
+    reconciler.start();
+  }
+
+  async databaseRowsSnapshotForQuery(): Promise<DatabaseRowsVaultSnapshot> {
+    if (this.disposed) throw new Error('Vault has been disposed.');
+    this.startDatabaseSnapshotLifecycle();
+    return this.databaseSnapshotReconciler!.get();
+  }
+
+  invalidateDatabaseRowsSnapshot(): void {
+    this.databaseSnapshotReconciler?.invalidate();
+  }
+
+  get databaseRowsSnapshotMetrics(): DatabaseRowsSnapshotMetrics | undefined {
+    return this.lastDatabaseRowsMetrics;
+  }
+
+  get databaseSnapshotReconciliationMetrics(): Pick<SnapshotReconcilerType<DatabaseRowsVaultSnapshot>, 'state' | 'lastStartedAt' | 'lastCompletedAt' | 'lastDurationMs'> | undefined {
+    return this.databaseSnapshotReconciler;
   }
 
   /** Caller must hold the vault root lock. */
   private async databaseRowsSnapshotUnlocked(): Promise<DatabaseRowsVaultSnapshot> {
-      const { entries, issues } = await walkVault(this.root);
-      const databaseIssue = issues.find((issue) => issue.path === 'databases' || issue.path.startsWith('databases/'));
-      if (databaseIssue) throw new StorageError('INVALID_CONTENT', databaseIssue.message, { path: databaseIssue.path });
-
-      const noteEntries = entries.filter((entry) => entry.kind === 'note');
-      const databaseEntries = entries.filter((entry) => entry.kind === 'database');
-      const notes: DatabaseRowsVaultSnapshot['notes'] = [];
-      const seenNotes = new Map<string, string>();
-      for (let offset = 0; offset < noteEntries.length; offset += DATABASE_ROWS_READ_BATCH_SIZE) {
-        const batch = noteEntries.slice(offset, offset + DATABASE_ROWS_READ_BATCH_SIZE);
-        const reads = await Promise.allSettled(batch.map(async (entry) => {
-          const bytes = await this.readBytes(entry);
-          const text = decodeVaultText(bytes, entry.path);
-          return { note: parseNote(text, entry.path), hash: sha256Hex(bytes) };
-        }));
-        for (const [index, read] of reads.entries()) {
-          const entry = batch[index]!;
-          let result: { note: Note; hash: string };
-          try {
-            if (read.status === 'rejected') throw read.reason;
-            result = read.value;
-          } catch (error) { throw wrapContentError(error, entry.path); }
-          const previous = seenNotes.get(result.note.id);
-          if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Note ID "${result.note.id}" is used by both "${previous}" and "${entry.path}"`, { details: { ids: [result.note.id], paths: [previous, entry.path] } });
-          seenNotes.set(result.note.id, entry.path);
-          notes.push({ note: result.note, hash: result.hash });
+      const startedAt = performance.now();
+      let stable: Awaited<ReturnType<FileSystemVault['captureDatabaseRowsFiles']>> | undefined;
+      let filesRead = 0;
+      let bytesRead = 0;
+      let noteFilesRead = 0;
+      let databaseFilesRead = 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const first = await this.captureDatabaseRowsFiles();
+          filesRead += first.filesRead;
+          bytesRead += first.bytesRead;
+          noteFilesRead += first.noteFilesRead;
+          databaseFilesRead += first.databaseFilesRead;
+          if (await this.verifyDatabaseRowsMembership(first)) { stable = first; break; }
+        } catch (error) {
+          if (!(error instanceof StorageError) || error.code !== 'CONFLICT') throw error;
         }
       }
-
-      const databases: DatabaseRowsVaultSnapshot['databases'] = [];
-      for (const entry of databaseEntries) {
-        let database: DatabaseDefinition;
-        let hash: string;
-        try {
-          const bytes = await this.readBytes(entry);
-          database = parseDatabase(decodeVaultText(bytes, entry.path));
-          hash = sha256Hex(bytes);
-        } catch (error) { throw wrapContentError(error, entry.path); }
-        const expected = databasePath(database.id);
-        if (entry.path !== expected) throw new StorageError('INVALID_CONTENT', `Database ID "${database.id}" must be stored at "${expected}", found "${entry.path}"`, { path: entry.path, details: { ids: [database.id], paths: [entry.path] } });
-        databases.push({ database, hash });
+      if (!stable) throw new StorageError('CONFLICT', 'Vault files changed repeatedly while database rows were being reconciled; retry the request.', { path: this.root });
+      this.lastDatabaseRowsMetrics = {
+        durationMs: Math.max(0, performance.now() - startedAt),
+        filesRead,
+        bytesRead,
+        noteFilesRead,
+        databaseFilesRead,
+      };
+      if (this.databaseRowsCache?.manifest === stable.manifest) return this.databaseRowsCache.snapshot;
+      const files = stable.files!;
+      const notes: DatabaseRowsVaultSnapshot['notes'] = [];
+      const seenNotes = new Map<string, string>();
+      for (const [path, file] of files) if (file.kind === 'note') {
+        let note: Note;
+        try { note = parseNote(decodeVaultText(file.bytes, path), path); }
+        catch (error) { throw wrapContentError(error, path); }
+        const previous = seenNotes.get(note.id);
+        if (previous !== undefined) throw new StorageError('DUPLICATE_ID', `Note ID "${note.id}" is used by both "${previous}" and "${path}"`, { details: { ids: [note.id], paths: [previous, path] } });
+        seenNotes.set(note.id, path);
+        notes.push({ note, hash: file.hash });
       }
-      return { notes, databases };
+      const databases: DatabaseRowsVaultSnapshot['databases'] = [];
+      for (const [path, file] of files) if (file.kind === 'database') {
+        let database: DatabaseDefinition;
+        try {
+          database = parseDatabase(decodeVaultText(file.bytes, path));
+        } catch (error) { throw wrapContentError(error, path); }
+        const expected = databasePath(database.id);
+        if (path !== expected) throw new StorageError('INVALID_CONTENT', `Database ID "${database.id}" must be stored at "${expected}", found "${path}"`, { path, details: { ids: [database.id], paths: [path] } });
+        databases.push({ database, hash: file.hash });
+      }
+      const snapshot = { notes, databases };
+      if (this.disposed) throw new Error('Vault has been disposed.');
+      this.databaseRowsCache = { manifest: stable.manifest, snapshot };
+      return snapshot;
+  }
+
+  private async captureDatabaseRowsFiles(): Promise<{ manifest: string; filesRead: number; bytesRead: number; noteFilesRead: number; databaseFilesRead: number; files: Map<string, { kind: 'note' | 'database'; bytes: Buffer; hash: string; stat: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint } }> }> {
+    const { entries, issues } = await walkVault(this.root);
+    const databaseIssue = issues.find((issue) => issue.path === 'databases' || issue.path.startsWith('databases/'));
+    if (databaseIssue) throw new StorageError('INVALID_CONTENT', databaseIssue.message, { path: databaseIssue.path });
+    const relevant = entries.filter((entry) => entry.kind === 'note' || entry.kind === 'database');
+    const files = new Map<string, { kind: 'note' | 'database'; bytes: Buffer; hash: string; stat: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint } }>();
+    let bytesRead = 0;
+    for (let offset = 0; offset < relevant.length; offset += 32) {
+      const batch = relevant.slice(offset, offset + 32);
+      const reads = await Promise.allSettled(batch.map(async (entry) => {
+        const before = await lstat(entry.absolute, { bigint: true });
+        if (!before.isFile()) throw new StorageError('CONFLICT', `File changed type during database snapshot: ${entry.path}`, { path: entry.path });
+        const bytes = await this.readBytes(entry);
+        const after = await lstat(entry.absolute, { bigint: true });
+        if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+          throw new StorageError('CONFLICT', `File changed while database snapshot was being captured: ${entry.path}`, { path: entry.path });
+        }
+        return { entry, bytes, after };
+      }));
+      for (const read of reads) {
+        if (read.status === 'rejected') throw read.reason;
+        const { entry, bytes, after } = read.value;
+        bytesRead += bytes.byteLength;
+        files.set(entry.path, { kind: entry.kind as 'note' | 'database', bytes, hash: sha256Hex(bytes), stat: { dev: after.dev, ino: after.ino, size: after.size, mtimeNs: after.mtimeNs, ctimeNs: after.ctimeNs } });
+      }
+    }
+    const manifest = createHash('sha256').update([...files].map(([path, file]) => `${path}\0${file.kind}\0${file.hash}\n`).join('')).digest('hex');
+    const noteFilesRead = [...files.values()].filter((file) => file.kind === 'note').length;
+    return { manifest, files, filesRead: files.size, bytesRead, noteFilesRead, databaseFilesRead: files.size - noteFilesRead };
+  }
+
+  /** Rewalk membership and verify each captured inode/version after reading; metadata never replaces content hashes. */
+  private async verifyDatabaseRowsMembership(captured: Awaited<ReturnType<FileSystemVault['captureDatabaseRowsFiles']>>): Promise<boolean> {
+    const { entries, issues } = await walkVault(this.root);
+    if (issues.some((issue) => issue.path === 'databases' || issue.path.startsWith('databases/'))) return false;
+    const relevant = entries.filter((entry) => entry.kind === 'note' || entry.kind === 'database');
+    if (relevant.length !== captured.files.size || relevant.some((entry) => !captured.files.has(entry.path))) return false;
+    for (let offset = 0; offset < relevant.length; offset += 64) {
+      const batch = relevant.slice(offset, offset + 64);
+      const stats = await Promise.allSettled(batch.map((entry) => lstat(entry.absolute, { bigint: true })));
+      for (const [index, result] of stats.entries()) {
+        if (result.status === 'rejected') return false;
+        const current = result.value;
+        const prior = captured.files.get(batch[index]!.path)!.stat;
+        if (!current.isFile() || prior.dev !== current.dev || prior.ino !== current.ino || prior.size !== current.size || prior.mtimeNs !== current.mtimeNs || prior.ctimeNs !== current.ctimeNs) return false;
+      }
+    }
+    return true;
   }
 
   async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {

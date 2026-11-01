@@ -18,6 +18,7 @@ const localApi = createLocalApiMiddleware({
   configuredVaultPath,
   preferencesPath: process.env.NODUS_PREFERENCES_PATH,
   interactiveStartup: true,
+  watchSnapshots: true,
 });
 const localUiOrigins = [
   'http://127.0.0.1:5173',
@@ -31,9 +32,11 @@ function localApiPlugin(): Plugin {
     name: 'nodus-local-api',
     configureServer(server) {
       server.middlewares.use(localApi);
+      server.httpServer?.once('close', () => { void localApi.dispose(); });
     },
     configurePreviewServer(server) {
       server.middlewares.use(localApi);
+      server.httpServer?.once('close', () => { void localApi.dispose(); });
     },
   };
 }

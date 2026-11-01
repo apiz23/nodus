@@ -52,6 +52,7 @@ function propertiesNamespace(databases: Record<string, unknown>, extra: Record<s
 interface StartedApi {
   server: Server;
   base: string;
+  dispose(): Promise<void>;
 }
 
 async function startApi(
@@ -69,7 +70,7 @@ async function startApi(
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (typeof address !== 'object' || address === null) throw new Error('No test port');
-  return { server, base: `http://127.0.0.1:${address.port}` };
+  return { server, base: `http://127.0.0.1:${address.port}`, dispose: () => middleware.dispose() };
 }
 
 async function stopApi(started: StartedApi): Promise<void> {
@@ -77,6 +78,7 @@ async function stopApi(started: StartedApi): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     started.server.close((error) => (error ? reject(error) : resolve()));
   });
+  await started.dispose();
 }
 
 async function json<T>(
@@ -104,6 +106,66 @@ function noteFixture(id: string, title: string, path: string, body: string): Not
 }
 
 describe('local UI API', () => {
+  it('disposes each owned vault once and shares repeated shutdown work', async () => {
+    await withTempDir(async (root) => {
+      const vaultPath = join(root, 'vault');
+      const originalOpen = FileSystemVault.open;
+      let opened: FileSystemVault | undefined;
+      const open = vi.spyOn(FileSystemVault, 'open').mockImplementation(async (path) => {
+        opened = await originalOpen(path);
+        vi.spyOn(opened, 'dispose');
+        return opened;
+      });
+      const started = await startApi(vaultPath);
+      try {
+        expect((await json<{ notes: unknown[] }>(started.base, '/api/notes')).status).toBe(200);
+        expect(opened).toBeDefined();
+        const firstDispose = started.dispose();
+        const secondDispose = started.dispose();
+        expect(secondDispose).toBe(firstDispose);
+        await firstDispose;
+        expect(opened!.dispose).toHaveBeenCalledTimes(1);
+      } finally {
+        open.mockRestore();
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('waits for an in-flight vault open and disposes it without starting post-shutdown work', async () => {
+    await withTempDir(async (root) => {
+      const vaultPath = join(root, 'vault');
+      const originalOpen = FileSystemVault.open;
+      let signalOpen!: () => void;
+      const openStarted = new Promise<void>((resolve) => { signalOpen = resolve; });
+      let releaseOpen!: () => void;
+      const openingGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+      let opened: FileSystemVault | undefined;
+      const open = vi.spyOn(FileSystemVault, 'open').mockImplementation(async (path) => {
+        signalOpen();
+        await openingGate;
+        opened = await originalOpen(path);
+        vi.spyOn(opened, 'dispose');
+        return opened;
+      });
+      const started = await startApi(vaultPath);
+      try {
+        const responsePromise = fetch(`${started.base}/api/notes`);
+        await openStarted;
+        const disposal = started.dispose();
+        releaseOpen();
+        const response = await responsePromise;
+        expect(response.status).toBe(503);
+        await disposal;
+        expect(opened!.dispose).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseOpen();
+        open.mockRestore();
+        await stopApi(started);
+      }
+    });
+  });
+
   it('asks before creating a first-run vault, then restores the last selected vault', async () => {
     await withTempDir(async (dir) => {
       const defaultVault = join(dir, 'vault');

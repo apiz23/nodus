@@ -13,6 +13,46 @@ const B = '22222222-2222-4222-8222-222222222222';
 const note = (id = A, path = 'a.md') => createNote({ id, path, title: 'Alpha', body: 'Café 😀', aliases: ['Alias'], now: NOW });
 
 describe('byte-verified derived note snapshots', () => {
+  it('serves trusted database snapshots without a second vault scan', async () => {
+    await withTempDir(async (root) => {
+      const vault = await FileSystemVault.open(root);
+      await vault.createNote(note());
+      const rebuild = vi.spyOn(vault, 'databaseRowsSnapshot');
+      try {
+        const first = await vault.databaseRowsSnapshotForQuery();
+        const warm = await vault.databaseRowsSnapshotForQuery();
+        expect(warm).toBe(first);
+        expect(rebuild).toHaveBeenCalledTimes(1);
+      } finally { vault.dispose(); rebuild.mockRestore(); }
+    });
+  });
+
+  it('reuses database snapshots only when a fresh captured content manifest matches', async () => {
+    await withTempDir(async (root) => {
+      const vault = await FileSystemVault.open(root);
+      const source = note();
+      await vault.createNote(source);
+      const parse = vi.spyOn(format, 'parseNote');
+      try {
+        const first = await vault.databaseRowsSnapshot();
+        const second = await vault.databaseRowsSnapshot();
+        expect(second).toBe(first);
+        expect(parse).toHaveBeenCalledTimes(1);
+        const path = join(root, 'a.md');
+        const before = await stat(path);
+        const oldBytes = await readFile(path);
+        const changed = Buffer.from(oldBytes.toString('utf8').replace('Alpha', 'Bravo'));
+        expect(changed.byteLength).toBe(oldBytes.byteLength);
+        await writeFile(path, changed);
+        await utimes(path, before.atime, before.mtime);
+        const rebuilt = await vault.databaseRowsSnapshot();
+        expect(rebuilt).not.toBe(first);
+        expect(rebuilt.notes[0]?.note.title).toBe('Bravo');
+        expect(rebuilt.notes[0]?.hash).not.toBe(first.notes[0]?.hash);
+      } finally { parse.mockRestore(); }
+    });
+  });
+
   it('bounds concurrent file reads even for a larger snapshot', async () => {
     await withTempDir(async (root) => {
       const vault = await FileSystemVault.open(root);

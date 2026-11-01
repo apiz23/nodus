@@ -78,6 +78,8 @@ export interface LocalApiOptions {
   interactiveStartup?: boolean;
   /** Injectable per-user preference file path. */
   preferencesPath?: string;
+  /** Enable lifecycle-owned watcher/reconciliation snapshots for hosted UI servers. */
+  watchSnapshots?: boolean;
   /** Injectable clock for tests. */
   now?: () => string;
   /** Injectable native folder picker for tests. */
@@ -85,6 +87,7 @@ export interface LocalApiOptions {
 }
 
 export type NextFunction = (error?: unknown) => void;
+export type LocalApiMiddleware = ((req: IncomingMessage, res: ServerResponse, next: NextFunction) => void) & { dispose(): Promise<void> };
 
 class ApiError extends Error {
   readonly status: number;
@@ -112,15 +115,18 @@ class ApiError extends Error {
  */
 export function createLocalApiMiddleware(
   options: LocalApiOptions,
-): (req: IncomingMessage, res: ServerResponse, next: NextFunction) => void {
+): LocalApiMiddleware {
   let activeVaultPath: string | null = options.interactiveStartup ? null : resolve(options.vaultPath);
   const clock = options.now ?? NOW;
   const chooseFolder = options.folderPicker ?? pickFolder;
   const preferencesFile = options.preferencesPath ?? applicationPreferencesPath();
   const defaultVaultPath = resolve(options.defaultVaultPath ?? options.vaultPath);
   let vaultPromise: Promise<FileSystemVault> | undefined;
+  const ownedVaults = new Set<FileSystemVault>();
   let setupState: UiVaultSetupState | null = null;
   let startupPromise: Promise<void> | undefined;
+  let disposed = false;
+  let disposalPromise: Promise<void> | undefined;
   type KnowledgeSnapshot = { notes: Note[]; catalog: PropertyCatalog; catalogIssue?: string };
   const loadKnowledgeSnapshot = async (vault: FileSystemVault): Promise<KnowledgeSnapshot> => {
     const notes = await vault.snapshotNotes();
@@ -143,7 +149,7 @@ export function createLocalApiMiddleware(
   };
   type RelationSnapshot = { notes: Note[]; schemas: Map<string, DatabaseDefinition> };
   const loadRelationSnapshot = async (vault: FileSystemVault): Promise<RelationSnapshot> => {
-    const snapshot = await vault.databaseRowsSnapshot();
+    const snapshot = options.watchSnapshots ? await vault.databaseRowsSnapshotForQuery() : await vault.databaseRowsSnapshot();
     return { notes: snapshot.notes.map(({ note }) => note), schemas: new Map(snapshot.databases.map(({ database }) => [database.id, database])) };
   };
   const buildRelationIndex = (snapshot: RelationSnapshot) => ({
@@ -156,9 +162,16 @@ export function createLocalApiMiddleware(
     if (!index) { index = createSnapshotCache(() => loadRelationSnapshot(vault), buildRelationIndex); relationIndexes.set(vault, index); }
     return index;
   };
-  const backlinkIndex = { markDirty() {
+  const markProjectionCachesDirty = () => {
     for (const index of indexes.values()) index.markDirty();
     for (const index of relationIndexes.values()) index.markDirty();
+  };
+  const backlinkIndex = { markDirty() {
+    if (options.watchSnapshots) {
+      for (const vault of ownedVaults) vault.invalidateDatabaseRowsSnapshot();
+    } else {
+      markProjectionCachesDirty();
+    }
   } };
 
   const ensureStartup = (): Promise<void> => {
@@ -223,20 +236,25 @@ export function createLocalApiMiddleware(
   };
 
   const getVault = async (): Promise<FileSystemVault> => {
+    if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.');
     await ensureStartup();
     if (setupState !== null || activeVaultPath === null) {
       throw new ApiError(409, 'VAULT_SETUP_REQUIRED', setupState?.message ?? 'Choose a vault to continue.');
     }
     if (vaultPromise === undefined) {
-      vaultPromise = FileSystemVault.open(activeVaultPath).catch((error: unknown) => {
+      vaultPromise = FileSystemVault.open(activeVaultPath).then((vault) => { ownedVaults.add(vault); return vault; }).catch((error: unknown) => {
         vaultPromise = undefined;
         throw error;
       });
     }
-    return vaultPromise;
+    const vault = await vaultPromise;
+    if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.');
+    if (options.watchSnapshots) vault.startDatabaseSnapshotLifecycle({ onInvalidate: markProjectionCachesDirty });
+    return vault;
   };
 
   const activateVault = async (selected: string, activation: { create: boolean; persist: boolean }): Promise<UiVaultStatus> => {
+    if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.');
     const selectedPath = resolve(selected);
     let info;
     try {
@@ -250,14 +268,27 @@ export function createLocalApiMiddleware(
     }
 
     const nextVault = await FileSystemVault.open(selectedPath);
-    const status = await buildStatus(nextVault);
+    if (disposed) { nextVault.dispose(); throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.'); }
+    let status: UiVaultStatus;
+    try {
+      status = await buildStatus(nextVault);
+    } catch (error) {
+      nextVault.dispose();
+      throw error;
+    }
+    if (disposed) { nextVault.dispose(); throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.'); }
     if (activation.persist) {
       try {
         await writeLastVaultPreference(preferencesFile, nextVault.root);
       } catch {
+        nextVault.dispose();
         throw new ApiError(500, 'PREFERENCE_WRITE_FAILED', 'Nodus could not save the selected folder on this device. The active vault was not changed. Check application configuration permissions and try again.');
       }
     }
+    if (disposed) { nextVault.dispose(); throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.'); }
+    const previous = await vaultPromise?.catch(() => undefined);
+    if (previous && previous !== nextVault) { previous.dispose(); ownedVaults.delete(previous); }
+    ownedVaults.add(nextVault);
     activeVaultPath = nextVault.root;
     vaultPromise = Promise.resolve(nextVault);
     setupState = null;
@@ -670,7 +701,7 @@ export function createLocalApiMiddleware(
       return sendJson(
         res,
         200,
-        await listDatabaseRows(await getVault(), decodeURIComponent(databaseRowsMatch[1] ?? ''), expectedSchemaHash),
+        await listDatabaseRows(await getVault(), decodeURIComponent(databaseRowsMatch[1] ?? ''), expectedSchemaHash, options.watchSnapshots === true),
       );
     }
 
@@ -741,7 +772,7 @@ export function createLocalApiMiddleware(
     throw new ApiError(404, 'NOT_FOUND', `Unknown route ${method} ${path}`);
   };
 
-  return (req, res, next) => {
+  const middleware = ((req, res, next) => {
     const url = req.url ?? '/';
     if (!/^\/api(?:\/|$)/.test(url)) {
       next();
@@ -751,7 +782,22 @@ export function createLocalApiMiddleware(
     handle(req, res).catch((error: unknown) => {
       sendError(res, error);
     });
+  }) as LocalApiMiddleware;
+  middleware.dispose = () => {
+    if (disposalPromise) return disposalPromise;
+    disposed = true;
+    disposalPromise = (async () => {
+      await startupPromise?.catch(() => undefined);
+      await vaultPromise?.catch(() => undefined);
+      for (const vault of ownedVaults) vault.dispose();
+      ownedVaults.clear();
+      vaultPromise = undefined;
+      indexes.clear();
+      relationIndexes.clear();
+    })();
+    return disposalPromise;
   };
+  return middleware;
 }
 
 async function buildStatus(vault: FileSystemVault): Promise<UiVaultStatus> {
@@ -866,13 +912,14 @@ async function listDatabaseRows(
   vault: FileSystemVault,
   databaseId: string,
   expectedSchemaHash?: string,
+  watchSnapshots = false,
 ): Promise<UiDatabaseRowsResponse> {
   if (!isUuidV4(databaseId)) {
     throw new ApiError(400, 'INVALID_INPUT', 'Database ID must be a lowercase UUID v4');
   }
 
   // One root-locked scan parses notes and schemas once without validating unrelated views or reading attachments.
-  const snapshot = await vault.databaseRowsSnapshot();
+  const snapshot = watchSnapshots ? await vault.databaseRowsSnapshotForQuery() : await vault.databaseRowsSnapshot();
   const schemaEntry = snapshot.databases.find((entry) => entry.database.id === databaseId);
   if (schemaEntry === undefined) throw new ApiError(404, 'NOT_FOUND', 'Database was not found.');
   const schemaHash = schemaEntry.hash;
