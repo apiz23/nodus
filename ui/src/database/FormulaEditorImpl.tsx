@@ -3,7 +3,7 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { EditorState, StateEffect } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet } from '@codemirror/view';
 import { AlertCircle, BookOpen, Check, ChevronDown, Code2, FunctionSquare, X } from 'lucide-react';
-import type { FormulaDiagnostic, FormulaEditorSuggestion } from '../../../src/database/formula-engine.js';
+import type { FormulaDiagnostic, FormulaEditorSuggestion, FormulaDatabaseContext } from '../../../src/database/formula-engine.js';
 import { FORMULA_EDITOR_SUGGESTIONS } from '../../../src/database/formula-engine.js';
 import type { FormulaType, FormulaValue } from '../../../src/database/formula-contract.js';
 import { tokenizeFormula } from '../../../src/database/formula-tokenizer.js';
@@ -15,7 +15,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { analyzeFormulaDraft, formulaCompletions, formatFormulaPreview, formulaTypeLabel, inferFormulaTypes, type FormulaCompletion } from './formula-editor-model.js';
+import { analyzeFormulaDraft, formulaCompletions, formatFormulaPreview, formulaTypeLabel, inferFormulaTypes, type FormulaCompletion, type FormulaRelatedProperty } from './formula-editor-model.js';
 
 const diagnosticsChanged = StateEffect.define<void>();
 const functionNames = new Set(FORMULA_EDITOR_SUGGESTIONS.map((item) => item.name));
@@ -25,11 +25,14 @@ export interface FormulaEditorProps {
   properties: readonly Property[];
   previewRow?: UiDatabaseRow;
   disabled?: boolean;
+  databases?: readonly FormulaDatabaseContext[];
+  currentDatabaseId?: string;
+  relatedProperties?: readonly FormulaRelatedProperty[];
   onApply: (expression: string) => void;
   onCancel: () => void;
 }
 
-export function FormulaEditor({ property, properties, previewRow, disabled = false, onApply, onCancel }: FormulaEditorProps) {
+export function FormulaEditor({ property, properties, previewRow, disabled = false, databases, currentDatabaseId, relatedProperties = [], onApply, onCancel }: FormulaEditorProps) {
   const initialExpression = property.formula?.expression ?? '';
   const [expression, setExpression] = useState(initialExpression);
   const [referenceOpen, setReferenceOpen] = useState(false);
@@ -45,16 +48,22 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
   const completionRef = useRef<FormulaCompletion | null>(null);
   const completionIndexRef = useRef(completionIndex);
   const propertiesRef = useRef(properties);
+  const relatedPropertiesRef = useRef(relatedProperties);
+  const databasesRef = useRef(databases);
+  const currentDatabaseIdRef = useRef(currentDatabaseId);
   const onApplyRef = useRef(onApply);
   const onCancelRef = useRef(onCancel);
   expressionRef.current = expression;
   completionRef.current = completion;
   completionIndexRef.current = completionIndex;
   propertiesRef.current = properties;
+  relatedPropertiesRef.current = relatedProperties;
+  databasesRef.current = databases;
+  currentDatabaseIdRef.current = currentDatabaseId;
   onApplyRef.current = onApply;
   onCancelRef.current = onCancel;
 
-  const analysis = useMemo(() => analyzeFormulaDraft(expression, properties, property.id), [expression, properties, property.id]);
+  const analysis = useMemo(() => analyzeFormulaDraft(expression, properties, property.id, undefined, databases, currentDatabaseId), [expression, properties, property.id, databases, currentDatabaseId]);
   diagnosticsRef.current = analysis.diagnostics;
 
   useEffect(() => {
@@ -92,7 +101,7 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
       if (update.docChanged) setExpression(update.state.doc.toString());
       if (update.docChanged || update.selectionSet) {
         const pos = update.state.selection.main.head;
-        const next = formulaCompletions(update.state.doc.toString(), pos, propertiesRef.current);
+        const next = formulaCompletions(update.state.doc.toString(), pos, propertiesRef.current, relatedPropertiesRef.current, databasesRef.current, currentDatabaseIdRef.current);
         setCompletionIndex(0);
         if (!next) { setCompletion(null); return; }
         const point = update.view.coordsAtPos(pos);
@@ -174,13 +183,13 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
     const timer = window.setTimeout(() => {
       if (!current) return;
       if (analysis.diagnostics.length || !previewRow) { setPreview(null); return; }
-      const latest = analyzeFormulaDraft(expression, properties, property.id, previewRow);
+      const latest = analyzeFormulaDraft(expression, properties, property.id, previewRow, databases, currentDatabaseId);
       if (current) setPreview(latest.preview ?? null);
     }, 180);
     return () => { current = false; window.clearTimeout(timer); };
-  }, [analysis.diagnostics, expression, properties, property.id, previewRow]);
+  }, [analysis.diagnostics, expression, properties, property.id, previewRow, databases, currentDatabaseId]);
 
-  const inferred = useMemo(() => inferFormulaTypes(properties), [properties]);
+  const inferred = useMemo(() => inferFormulaTypes(properties, databases, currentDatabaseId), [properties, databases, currentDatabaseId]);
   const canApply = expression.trim().length > 0 && analysis.diagnostics.length === 0 && !disabled;
   const selectedCompletion = completion?.options[completionIndex];
 
@@ -266,7 +275,7 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
       <CollapsibleTrigger asChild><Button type="button" size="xs" variant="ghost"><BookOpen data-icon="inline-start" />Function reference<ChevronDown className={cn('size-3.5 transition-transform', referenceOpen && 'rotate-180')} /></Button></CollapsibleTrigger>
       <CollapsibleContent className="mt-2 max-h-64 overflow-auto rounded-md border bg-background p-2">
         <div className="flex flex-col gap-3">
-          {(['Strings', 'Numbers', 'Dates', 'Logic'] as const).map((category) => <section key={category} aria-label={`${category} formula functions`}>
+          {(['Strings', 'Numbers', 'Dates', 'Relations', 'Logic'] as const).map((category) => <section key={category} aria-label={`${category} formula functions`}>
             <h5 className="mb-1 text-[11px] font-medium text-muted-foreground">{category}</h5>
             <ul className="grid gap-2 sm:grid-cols-2">
               {FORMULA_EDITOR_SUGGESTIONS.filter((item) => item.category === category).map((item) => <li key={item.name} className="min-w-0 rounded-sm bg-muted/40 px-2 py-1.5">

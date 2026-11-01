@@ -1,5 +1,5 @@
 import type { FormulaExpression, FormulaType, FormulaValue } from '../../../src/database/formula-contract.js';
-import { evaluateFormula, FORMULA_EDITOR_SUGGESTIONS, inferFormulaPropertyTypes, parseFormula, validateFormula, type FormulaDiagnostic, type FormulaEditorSuggestion, type FormulaProperty, type FormulaSchema } from '../../../src/database/formula-engine.js';
+import { buildFormulaSchema, evaluateFormula, FORMULA_EDITOR_SUGGESTIONS, inferFormulaPropertyTypes, parseFormula, RELATION_FORMULA_FUNCTIONS, validateFormula, type FormulaDatabaseContext, type FormulaDiagnostic, type FormulaEditorSuggestion, type FormulaProperty, type FormulaSchema } from '../../../src/database/formula-engine.js';
 import type { Property } from '../../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../../src/ui-server/dto.js';
 
@@ -31,6 +31,8 @@ export function analyzeFormulaDraft(
   properties: readonly Property[],
   propertyId: string,
   previewRow?: Pick<UiDatabaseRow, 'values' | 'issues'>,
+  databases?: readonly FormulaDatabaseContext[],
+  currentDatabaseId = 'current',
 ): FormulaDraftAnalysis {
   const candidateProperties = properties.map((property) => property.id === propertyId && property.type === 'formula'
     ? { ...property, formula: { expression } }
@@ -40,8 +42,11 @@ export function analyzeFormulaDraft(
 
   const dependencies = [...new Set(propertyReferences(parsed.value))];
   const cycle = formulaCycleContaining(candidateProperties, propertyId);
-  const inferred = inferFormulaPropertyTypes(candidateProperties);
-  const schema = formulaSchema(candidateProperties, inferred);
+  const inferred = inferFormulaPropertyTypes(candidateProperties, databases, currentDatabaseId);
+  const contexts = databases === undefined
+    ? [{ id: currentDatabaseId, properties: candidateProperties }]
+    : databases.map((database) => database.id === currentDatabaseId ? { ...database, properties: candidateProperties } : database);
+  const schema = buildFormulaSchema(contexts, inferred, currentDatabaseId);
   const checked = validateFormula(parsed.value, schema);
   const diagnostics = [...checked.ok ? [] : checked.diagnostics];
   if (cycle) diagnostics.push({
@@ -53,7 +58,7 @@ export function analyzeFormulaDraft(
 
   const resultType = inferred.get(propertyId) ?? (checked.ok ? checked.value : undefined);
   let preview: FormulaValue | undefined;
-  if (diagnostics.length === 0 && checked.ok && previewRow) {
+  if (diagnostics.length === 0 && checked.ok && previewRow && !containsRelationFunction(parsed.value)) {
     const values: Record<string, FormulaValue> = {};
     for (const property of candidateProperties) {
       if (property.type === 'formula') continue;
@@ -90,28 +95,41 @@ export function analyzeFormulaDraft(
   return { diagnostics, ...(resultType ? { resultType } : {}), dependencies, ...(preview ? { preview } : {}) };
 }
 
-export function formulaCompletions(source: string, cursor: number, properties: readonly Property[]): FormulaCompletion | undefined {
+export interface FormulaRelatedProperty { property: Property; databaseName: string }
+export function formulaCompletions(source: string, cursor: number, properties: readonly Property[], relatedProperties: readonly FormulaRelatedProperty[] = [], databases?: readonly FormulaDatabaseContext[], currentDatabaseId?: string): FormulaCompletion | undefined {
   const before = source.slice(0, cursor);
   if (insideStringLiteral(before)) return undefined;
   const propertyMatch = /@\{([0-9a-z-]*)$/i.exec(before);
   if (propertyMatch) {
     const from = propertyMatch.index;
     const query = propertyMatch[1]!.toLowerCase();
-    const types = inferFormulaPropertyTypes(properties);
+    const types = inferFormulaPropertyTypes(properties, databases, currentDatabaseId);
     const matches = properties.filter((property) => query === '' || property.id.toLowerCase().includes(query) || property.name.toLocaleLowerCase().includes(query));
-    const supported = matches.filter((property) => supportedFormulaProperty(property, types)).slice(0, 40).map((property) => ({
-      key: property.id,
-      label: property.name,
-      detail: `${formulaPropertyType(property, types)} · ${property.id}`,
-      insertText: `@{${property.id}}`,
-    }));
-    const unsupported = matches.filter((property) => !supportedFormulaProperty(property, types)).slice(0, 8).map((property) => ({
-      key: `unsupported:${property.id}`,
-      label: property.name,
+    const relatedMatches = relatedProperties.filter(({ property }) => query === '' || property.id.toLowerCase().includes(query) || property.name.toLocaleLowerCase().includes(query));
+    const supported = [
+      ...matches.filter((property) => supportedFormulaProperty(property, types)).map((property) => ({
+        key: property.id,
+        label: property.name,
+        detail: `${formulaPropertyType(property, types)} · ${property.id}${property.type === 'relation' ? ' · use relatedCount or relatedSum' : ''}`,
+        insertText: `@{${property.id}}`,
+      })),
+      ...relatedMatches.filter(({ property }) => supportedFormulaProperty(property, types)).map(({ property, databaseName }) => ({
+        key: `related:${property.id}`,
+        label: `${databaseName} · ${property.name}`,
+        detail: `${formulaPropertyType(property, types)} · ${property.id}`,
+        insertText: `@{${property.id}}`,
+      })),
+    ].slice(0, 40);
+    const unsupported = [
+      ...matches.filter((property) => !supportedFormulaProperty(property, types)).map((property) => ({ property, databaseName: undefined as string | undefined })),
+      ...relatedMatches.filter(({ property }) => !supportedFormulaProperty(property, types)).map(({ property, databaseName }) => ({ property, databaseName })),
+    ].slice(0, 8).map(({ property, databaseName }) => ({
+      key: `unsupported:${databaseName ?? ''}:${property.id}`,
+      label: databaseName === undefined ? property.name : `${databaseName} · ${property.name}`,
       detail: `${propertyTypeName(property)} · unavailable`,
       insertText: '',
       disabled: true,
-      reason: 'Formula references currently support text, number, checkbox, date, numeric rollup, and typed formula values.',
+      reason: 'Formula references currently support text, number, checkbox, date, numeric rollup, relation arguments, and typed formula values.',
     }));
     return { kind: 'property', from, to: cursor, options: [...supported, ...unsupported] };
   }
@@ -139,12 +157,12 @@ function insideStringLiteral(source: string): boolean {
 }
 
 export function supportedFormulaProperty(property: Property, inferredTypes: ReadonlyMap<string, FormulaType>): boolean {
-  if (property.type === 'text' || property.type === 'number' || property.type === 'checkbox' || property.type === 'date' || property.type === 'rollup') return true;
+  if (property.type === 'text' || property.type === 'number' || property.type === 'checkbox' || property.type === 'date' || property.type === 'rollup' || property.type === 'relation') return true;
   return property.type === 'formula' && inferredTypes.has(property.id) && inferredTypes.get(property.id) !== 'error';
 }
 
-export function inferFormulaTypes(properties: readonly Property[]): Map<string, FormulaType> {
-  return inferFormulaPropertyTypes(properties);
+export function inferFormulaTypes(properties: readonly Property[], databases?: readonly FormulaDatabaseContext[], currentDatabaseId?: string): Map<string, FormulaType> {
+  return inferFormulaPropertyTypes(properties, databases, currentDatabaseId);
 }
 
 export function formulaTypeLabel(type: FormulaType | undefined): string {
@@ -161,14 +179,7 @@ export function formatFormulaPreview(value: FormulaValue): string {
 }
 
 function formulaSchema(properties: readonly Property[], inferred: ReadonlyMap<string, FormulaType>): FormulaSchema {
-  const result = new Map<string, FormulaProperty>();
-  for (const property of properties) {
-    result.set(property.id, {
-      type: property.type,
-      ...(inferred.has(property.id) ? { valueType: inferred.get(property.id)! } : {}),
-    });
-  }
-  return result;
+  return buildFormulaSchema([{ id: 'current', properties }], inferred, 'current');
 }
 
 function toFormulaValue(property: Property, value: unknown, inferredType?: FormulaType): FormulaValue {
@@ -187,9 +198,23 @@ function toFormulaValue(property: Property, value: unknown, inferredType?: Formu
 }
 
 function formulaPropertyType(property: Property, inferred: ReadonlyMap<string, FormulaType>): string {
-  return property.type === 'formula' ? formulaTypeLabel(inferred.get(property.id)) : property.type === 'rollup' ? 'Number (rollup)' : property.type;
+  return property.type === 'formula' ? formulaTypeLabel(inferred.get(property.id)) : property.type === 'rollup' ? 'Number (rollup)' : property.type === 'relation' ? 'Relation' : property.type;
 }
 function propertyTypeName(property: Property): string { return property.type === 'multi-select' ? 'Multi-select' : property.type.charAt(0).toUpperCase() + property.type.slice(1); }
+
+function containsRelationFunction(expression: FormulaExpression): boolean {
+  const stack = [expression];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.kind === 'call') {
+      if (RELATION_FORMULA_FUNCTIONS.has(node.name)) return true;
+      stack.push(...node.arguments);
+    } else if (node.kind === 'unary') stack.push(node.operand);
+    else if (node.kind === 'binary') stack.push(node.left, node.right);
+    else if (node.kind === 'conditional') stack.push(node.condition, node.whenTrue, node.whenFalse);
+  }
+  return false;
+}
 
 function propertyReferences(expression: FormulaExpression): string[] {
   const found: string[] = [];
@@ -200,7 +225,10 @@ function propertyReferences(expression: FormulaExpression): string[] {
     else if (node.kind === 'unary') stack.push(node.operand);
     else if (node.kind === 'binary') stack.push(node.left, node.right);
     else if (node.kind === 'conditional') stack.push(node.condition, node.whenTrue, node.whenFalse);
-    else if (node.kind === 'call') stack.push(...node.arguments);
+    else if (node.kind === 'call') {
+      if (RELATION_FORMULA_FUNCTIONS.has(node.name)) { if (node.arguments[0]) stack.push(node.arguments[0]); }
+      else stack.push(...node.arguments);
+    }
   }
   return found;
 }

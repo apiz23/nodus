@@ -819,7 +819,7 @@ export function DatabasesView({
       const previous = selected?.id === schemaDraft.id ? selected.properties.find((candidate) => candidate.id === property.id && candidate.type === 'formula') : undefined;
       const expression = property.formula?.expression ?? '';
       if (!schemaCreating && previous?.formula?.expression === expression) continue;
-      const validation = analyzeFormulaDraft(expression, schemaDraft.properties, property.id);
+      const validation = analyzeFormulaDraft(expression, schemaDraft.properties, property.id, undefined, databases, schemaDraft.id);
       if (validation.diagnostics.length) {
         const first = validation.diagnostics[0]!;
         setSchemaError(`Formula “${property.name}” is invalid (${first.code}): ${first.message}`);
@@ -1740,6 +1740,8 @@ export function DatabasesView({
                             properties={schemaDraft.properties}
                             previewRow={currentRowData?.rows[0]}
                             disabled={schemaSaving || schemaStale}
+                            databases={databases}
+                            databaseId={schemaDraft.id}
                             onApply={(expression) => updateSchemaProperty(index, { formula: { expression } })}
                           /> : null}
                           {(property.type === 'select' || property.type === 'multi-select') ? (
@@ -1905,21 +1907,29 @@ function FormulaPropertyConfiguration({
   properties,
   previewRow,
   disabled,
+  databases,
+  databaseId,
   onApply,
 }: {
   property: Property;
   properties: readonly Property[];
   previewRow?: UiDatabaseRow;
   disabled: boolean;
+  databases: readonly UiDatabase[];
+  databaseId: string;
   onApply: (expression: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const inferredTypes = useMemo(() => inferFormulaTypes(properties), [properties]);
+  const inferredTypes = useMemo(() => inferFormulaTypes(properties, databases, databaseId), [properties, databases, databaseId]);
+  const relatedProperties = useMemo(() => databases.filter((database) => database.id !== databaseId).flatMap((database) => database.properties.map((candidate) => ({ property: candidate, databaseName: database.name }))), [databases, databaseId]);
   if (editing) return <FormulaEditor
     property={property}
     properties={properties}
     previewRow={previewRow}
     disabled={disabled}
+    databases={databases}
+    currentDatabaseId={databaseId}
+    relatedProperties={relatedProperties}
     onApply={(expression) => { onApply(expression); setEditing(false); }}
     onCancel={() => setEditing(false)}
   />;

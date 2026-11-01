@@ -38,7 +38,7 @@ describe('formula editor model', () => {
       insertText: `@{${IDS.title}}`, detail: expect.stringContaining(IDS.title),
     });
     const all = formulaCompletions('@{', 2, properties)!;
-    expect(all.options.find((option) => option.label === 'Related')).toMatchObject({ disabled: true, reason: expect.stringContaining('numeric rollup') });
+    expect(all.options.find((option) => option.label === 'Related')).toMatchObject({ insertText: '@{66666666-6666-4666-8666-666666666666}', detail: expect.stringContaining('use relatedCount') });
     expect(all.options.find((option) => option.label === 'Status')).toMatchObject({ disabled: true });
   });
 

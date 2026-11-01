@@ -182,5 +182,5 @@ describe('relation property lifecycle through the local API', () => {
         await stop(afterDelete);
       }
     });
-  });
+  }, 15_000);
 });

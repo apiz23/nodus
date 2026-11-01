@@ -1,6 +1,8 @@
 import { lazy, Suspense } from 'react';
 import type { Property } from '../../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../../src/ui-server/dto.js';
+import type { FormulaDatabaseContext } from '../../../src/database/formula-engine.js';
+import type { FormulaRelatedProperty } from './formula-editor-model.js';
 import { Skeleton } from '@/components/ui/skeleton';
 
 export interface FormulaEditorProps {
@@ -8,6 +10,9 @@ export interface FormulaEditorProps {
   properties: readonly Property[];
   previewRow?: UiDatabaseRow;
   disabled?: boolean;
+  databases?: readonly FormulaDatabaseContext[];
+  currentDatabaseId?: string;
+  relatedProperties?: readonly FormulaRelatedProperty[];
   onApply: (expression: string) => void;
   onCancel: () => void;
 }

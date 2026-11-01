@@ -3,8 +3,8 @@ import { isUuidV4 } from '../domain/ids.js';
 import { projectNoteProperties, type NoteDatabaseRow, type NotePropertyValue, type RelationDiagnostic, type StructuredDataIssue } from './note-properties.js';
 import { validateRelationValue, type RelationTargetReference, type RelationWriteDiagnostic } from './relation-contract.js';
 import { isDerivedProperty, type DatabaseDefinition, type Property } from './schema.js';
-import { evaluateFormula, parseFormula, validateFormula, type FormulaDiagnostic, type FormulaProperty, type FormulaSchema } from './formula-engine.js';
-import type { FormulaErrorCode, FormulaExpression, FormulaSourceSpan, FormulaType, FormulaValue } from './formula-contract.js';
+import { buildFormulaSchema, evaluateFormula, parseFormula, RELATION_FORMULA_FUNCTIONS, validateFormula, type FormulaDiagnostic, type FormulaRelatedRow, type FormulaRelationValues } from './formula-engine.js';
+import { DEFAULT_FORMULA_EVALUATION_LIMITS, type FormulaErrorCode, type FormulaExpression, type FormulaSourceSpan, type FormulaType, type FormulaValue } from './formula-contract.js';
 
 /** Backward-compatible name for consumers of the existing relation projection. */
 export type RelationReference = RelationTargetReference;
@@ -204,21 +204,64 @@ function projectFormulaValues(notes: readonly Note[], rows: Map<string, Map<stri
     const keyRef=key(db.id,property.id); formulaProps.set(keyRef,property); const parsed=parseFormula(property.formula?.expression??''); if(parsed.ok)compiled.set(keyRef,parsed.value);
     else diagnostics.push({noteId:'',path:`databases/${db.id}.json`,databaseId:db.id,propertyId:property.id,code:'FORMULA_ERROR',formulaErrorCode:parsed.diagnostics[0]?.code,formulaErrorSpan:parsed.diagnostics[0]?.span,message:parsed.diagnostics[0]?.message??'Invalid formula syntax'});
   }
+  const relationAccessByDatabase = new Map<string, Set<string>>();
+  for (const [ref, ast] of compiled) {
+    const databaseId = ref.slice(0, ref.indexOf(':'));
+    const accessed = relationAccessByDatabase.get(databaseId) ?? new Set<string>();
+    collectRelationAccess(ast, accessed);
+    if (accessed.size > 0) relationAccessByDatabase.set(databaseId, accessed);
+  }
   const dependencies=new Map<string,string[]>();
-  const refs=(node:FormulaExpression,out:string[])=>{if(node.kind==='property')out.push(node.propertyId);else if(node.kind==='unary')refs(node.operand,out);else if(node.kind==='binary'){refs(node.left,out);refs(node.right,out);}else if(node.kind==='conditional'){refs(node.condition,out);refs(node.whenTrue,out);refs(node.whenFalse,out);}else if(node.kind==='call')for(const a of node.arguments)refs(a,out);};
+  const refs=(node:FormulaExpression,out:string[])=>{if(node.kind==='property')out.push(node.propertyId);else if(node.kind==='unary')refs(node.operand,out);else if(node.kind==='binary'){refs(node.left,out);refs(node.right,out);}else if(node.kind==='conditional'){refs(node.condition,out);refs(node.whenTrue,out);refs(node.whenFalse,out);}else if(node.kind==='call'){if(RELATION_FORMULA_FUNCTIONS.has(node.name)){if(node.arguments[0])refs(node.arguments[0],out);}else for(const a of node.arguments)refs(a,out);}};
   for(const [ref,ast] of compiled){const ids:string[]=[];refs(ast,ids);const dbId=ref.slice(0,ref.indexOf(':'));dependencies.set(ref,[...new Set(ids)].map(id=>key(dbId,id)).filter(dep=>formulaProps.has(dep)));}
   const visiting=new Set<string>(),done=new Set<string>(),cyclic=new Set<string>(),order:string[]=[];const visit=(id:string,stack:string[])=>{if(visiting.has(id)){const at=stack.indexOf(id);for(const c of stack.slice(at))cyclic.add(c);return;}if(done.has(id))return;visiting.add(id);for(const dep of dependencies.get(id)??[])visit(dep,[...stack,id]);visiting.delete(id);done.add(id);order.push(id);};for(const id of compiled.keys())visit(id,[]);
   for(const ref of cyclic){const [dbId,propertyId]=ref.split(':');diagnostics.push({noteId:'',path:`databases/${dbId}.json`,databaseId:dbId,propertyId,code:'FORMULA_ERROR',message:'Circular formula dependency'});}
-  const inferred=new Map<string,FormulaType>();let changed=true;while(changed){changed=false;for(const ref of order){if(inferred.has(ref)||cyclic.has(ref))continue;const ast=compiled.get(ref);if(!ast)continue;const dbId=ref.slice(0,ref.indexOf(':'));const schema=formulaSchema(schemas.get(dbId)!,inferred);const result=validateFormula(ast,schema);if(result.ok){inferred.set(ref,result.value);changed=true;}}}
-  const invalid=new Map<string,FormulaDiagnostic>();for(const [ref,ast] of compiled){if(cyclic.has(ref))continue;const dbId=ref.slice(0,ref.indexOf(':'));const result=validateFormula(ast,formulaSchema(schemas.get(dbId)!,inferred));if(!result.ok){const d=result.diagnostics[0]!;invalid.set(ref,d);const property=formulaProps.get(ref)!;diagnostics.push({noteId:'',path:`databases/${dbId}.json`,databaseId:dbId,propertyId:property.id,code:'FORMULA_ERROR',formulaErrorCode:d.code,formulaErrorSpan:d.span,message:d.message});}}
+  const inferred=new Map<string,FormulaType>();const inferredForDatabase=(databaseId:string)=>new Map([...inferred].filter(([ref])=>ref.startsWith(`${databaseId}:`)).map(([ref,type])=>[ref.slice(databaseId.length+1),type] as const));let changed=true;while(changed){changed=false;for(const ref of order){if(inferred.has(ref)||cyclic.has(ref))continue;const ast=compiled.get(ref);if(!ast)continue;const dbId=ref.slice(0,ref.indexOf(':'));const schema=buildFormulaSchema([...schemas.values()],inferredForDatabase(dbId),dbId);const result=validateFormula(ast,schema);if(result.ok){inferred.set(ref,result.value);changed=true;}}}
+  const invalid=new Map<string,FormulaDiagnostic>();for(const [ref,ast] of compiled){if(cyclic.has(ref))continue;const dbId=ref.slice(0,ref.indexOf(':'));const result=validateFormula(ast,buildFormulaSchema([...schemas.values()],inferredForDatabase(dbId),dbId));if(!result.ok){const d=result.diagnostics[0]!;invalid.set(ref,d);const property=formulaProps.get(ref)!;diagnostics.push({noteId:'',path:`databases/${dbId}.json`,databaseId:dbId,propertyId:property.id,code:'FORMULA_ERROR',formulaErrorCode:d.code,formulaErrorSpan:d.span,message:d.message});}}
   for(const note of notes){const membership=rows.get(note.id);if(!membership)continue;for(const row of membership.values()){
-    const db=schemas.get(row.databaseId)!;const resolving=new Set<string>(),cache=new Map<string,FormulaValue>();
+    const db=schemas.get(row.databaseId)!;const resolving=new Set<string>(),cache=new Map<string,FormulaValue>();const relationValues=relationFormulaValues(row,db,schemas,rows,relationAccessByDatabase.get(db.id));
     const calc=(property:Property):FormulaValue=>{const ref=key(row.databaseId,property.id);const cached=cache.get(ref);if(cached)return cached;if(cyclic.has(ref))return errorValue('CIRCULAR_DEPENDENCY','Circular formula dependency',property.id);if(invalid.has(ref)){const d=invalid.get(ref)!;return errorValue(d.code,d.message,property.id,d.span);}const ast=compiled.get(ref);if(!ast)return errorValue('SYNTAX_ERROR','Formula could not be parsed',property.id);if(resolving.has(ref))return errorValue('CIRCULAR_DEPENDENCY','Circular formula evaluation',property.id);resolving.add(ref);const ctx:Record<string,FormulaValue>={};const referenced:string[]=[];refs(ast,referenced);const required=new Set(referenced);for(const dep of db.properties){if(dep.type==='formula'){if(required.has(dep.id))ctx[dep.id]=calc(dep);continue;}const issue=row.issues.find(x=>x.propertyId===dep.id&&['INVALID_VALUE','TYPE_MISMATCH','MISSING_OPTION'].includes(x.code));if(issue){ctx[dep.id]=errorValue('INVALID_PROPERTY_VALUE',issue.message,dep.id);continue;}const v=row.values[dep.id];ctx[dep.id]=toFormulaValue(dep,v);}
-      const result=evaluateFormula(ast,ctx);resolving.delete(ref);cache.set(ref,result);return result;};
+      const result=evaluateFormula(ast,ctx,DEFAULT_FORMULA_EVALUATION_LIMITS,relationValues);resolving.delete(ref);cache.set(ref,result);return result;};
     for(const property of db.properties.filter(p=>p.type==='formula')){const result=calc(property);if(result.type==='error'){row.values[property.id]=null;const issue:StructuredDataIssue={noteId:row.noteId,path:row.path,databaseId:row.databaseId,propertyId:property.id,code:'FORMULA_ERROR',formulaErrorCode:result.error.code,formulaErrorSpan:result.error.span,message:result.error.message};row.issues.push(issue);diagnostics.push(issue);}else row.values[property.id]=result.type==='null'?null:result.value;}
   }}
 }
-function formulaSchema(db:DatabaseDefinition,inferred:ReadonlyMap<string,FormulaType>):FormulaSchema{const map=new Map<string,FormulaProperty>();for(const p of db.properties){const type=p.type==='formula'?'formula':p.type;map.set(p.id,{type:type as FormulaProperty['type'],...(inferred.has(key(db.id,p.id))?{valueType:inferred.get(key(db.id,p.id))}: {})});}return map;}
+function collectRelationAccess(node: FormulaExpression, out: Set<string>): void {
+  if (node.kind === 'call') {
+    if (RELATION_FORMULA_FUNCTIONS.has(node.name)) {
+      const first = node.arguments[0];
+      if (first?.kind === 'property') out.add(first.propertyId);
+    } else {
+      for (const argument of node.arguments) collectRelationAccess(argument, out);
+    }
+  } else if (node.kind === 'unary') collectRelationAccess(node.operand, out);
+  else if (node.kind === 'binary') { collectRelationAccess(node.left, out); collectRelationAccess(node.right, out); }
+  else if (node.kind === 'conditional') { collectRelationAccess(node.condition, out); collectRelationAccess(node.whenTrue, out); collectRelationAccess(node.whenFalse, out); }
+}
+
+function relationFormulaValues(row: RelatedRow, db: DatabaseDefinition, schemas: ReadonlyMap<string, DatabaseDefinition>, rows: Map<string, Map<string, RelatedRow>>, access?: ReadonlySet<string>): FormulaRelationValues {
+  const result: Record<string, FormulaRelatedRow[]> = {};
+  if (access === undefined || access.size === 0) return result;
+  for (const property of db.properties) {
+    if (property.type !== 'relation' || !property.relation || !access.has(property.id)) continue;
+    const targetDatabase = schemas.get(property.relation.databaseId);
+    if (!targetDatabase) { result[property.id] = []; continue; }
+    result[property.id] = (row.relations[property.id] ?? []).filter((reference) => reference.status === 'resolved').flatMap((reference) => {
+      const target = rows.get(reference.id)?.get(targetDatabase.id);
+      if (!target) return [];
+      const values: Record<string, FormulaValue> = {};
+      for (const targetProperty of targetDatabase.properties) {
+        if (targetProperty.type === 'formula' || targetProperty.type === 'relation' || targetProperty.type === 'select' || targetProperty.type === 'multi-select') continue;
+        const issue = target.issues.find((candidate) => candidate.propertyId === targetProperty.id && ['INVALID_VALUE', 'TYPE_MISMATCH', 'MISSING_OPTION', 'ROLLUP_ERROR', 'CIRCULAR_ROLLUP'].includes(candidate.code));
+        values[targetProperty.id] = issue
+          ? { type: 'error', error: { code: 'INVALID_PROPERTY_VALUE', message: issue.message, propertyId: targetProperty.id } }
+          : toFormulaValue(targetProperty, target.values[targetProperty.id]);
+      }
+      return [{ values }];
+    });
+  }
+  return result;
+}
+
 function toFormulaValue(property:Property,value:NotePropertyValue|undefined):FormulaValue{if(value===undefined||value===null)return {type:'null'};if(property.type==='text'&&typeof value==='string')return {type:'string',value};if(property.type==='date'&&typeof value==='string')return {type:'date',value};if(property.type==='number'&&typeof value==='number')return {type:'number',value};if(property.type==='checkbox'&&typeof value==='boolean')return {type:'boolean',value};if(property.type==='rollup'&&typeof value==='number')return {type:'number',value};return {type:'error',error:{code:'UNSUPPORTED_PROPERTY_TYPE',message:`Property type ${property.type} is not supported by formulas`,propertyId:property.id}};}
 function errorValue(code:FormulaErrorCode,message:string,propertyId:string,span?:FormulaSourceSpan):FormulaValue{return {type:'error',error:{code,message,propertyId,...(span?{span}:{})}};}
 
