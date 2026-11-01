@@ -285,17 +285,19 @@ export function PropertyControl({
   relationReferences,
   targetDatabaseName,
   targetAvailable,
+  databaseId,
 }: {
   property: Property;
   relationOptions?: Array<RelationReference & { aliases?: string[]; tags?: string[] }>;
   relationReferences?: RelationReference[];
   targetDatabaseName?: string;
   targetAvailable?: boolean;
+  databaseId?: string;
   value: unknown;
   label: string;
   onChange: (value: unknown) => void;
 }) {
-  if (property.type === 'relation') return <RelationControl property={property} value={value} references={relationReferences} label={label} options={relationOptions} targetDatabaseName={targetDatabaseName} targetAvailable={targetAvailable} onChange={onChange} />;
+  if (property.type === 'relation') return <RelationControl property={property} value={value} references={relationReferences} label={label} options={relationOptions} targetDatabaseName={targetDatabaseName} targetAvailable={targetAvailable} databaseId={databaseId} onChange={onChange} />;
   if (property.type === 'select' || property.type === 'multi-select') {
     const options = property.options ?? [];
     if (options.length > SEARCHABLE_OPTIONS_THRESHOLD) {
@@ -1291,7 +1293,7 @@ export function DatabasesView({
                           {candidateProperty && editing?.source === 'add' ? (
                             <div className="flex flex-col gap-1 text-xs font-medium">
                               {candidateProperty.name}
-                              <PropertyControl relationOptions={currentRowData?.relationCandidates?.[candidateProperty.relation?.databaseId ?? '']} targetDatabaseName={databases.find((database) => database.id === candidateProperty.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === candidateProperty.relation?.databaseId)} property={candidateProperty} value={editing.draft} label={`${candidateProperty.name} value for ${candidate.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
+                              <PropertyControl relationOptions={currentRowData?.relationCandidates?.[candidateProperty.relation?.databaseId ?? '']} targetDatabaseName={databases.find((database) => database.id === candidateProperty.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === candidateProperty.relation?.databaseId)} databaseId={selected.id} property={candidateProperty} value={editing.draft} label={`${candidateProperty.name} value for ${candidate.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
                             </div>
                           ) : null}
                           <Button type="button" variant={confirmedAdd ? 'secondary' : 'outline'} size="sm" aria-pressed={confirmedAdd} onClick={() => setConfirmedAdd((value) => !value)}>
@@ -1552,7 +1554,7 @@ export function DatabasesView({
                   <h3 className="text-sm font-medium">{selected.properties.find((property) => property.id === editing.propertyId)?.name} for {currentRowData?.rows.find((row) => row.noteId === editing.noteId)?.title}</h3>
                   {selected.properties.filter((property) => property.id === editing.propertyId).map((property) => {
                     const row = currentRowData?.rows.find((item) => item.noteId === editing.noteId);
-                    return <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} relationReferences={row?.relations?.[property.id]} targetDatabaseName={databases.find((database) => database.id === property.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === property.relation?.databaseId)} key={property.id} property={property} value={editing.draft} label={`Edit card ${property.name}`} onChange={(draft) => setEditing({ ...editing, draft, remove: false })} />;
+                    return <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} relationReferences={row?.relations?.[property.id]} targetDatabaseName={databases.find((database) => database.id === property.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === property.relation?.databaseId)} databaseId={selected.id} key={property.id} property={property} value={editing.draft} label={`Edit card ${property.name}`} onChange={(draft) => setEditing({ ...editing, draft, remove: false })} />;
                   })}
                   {editing.remove ? <p className="text-xs text-muted-foreground">Saving will clear this value and keep the note in the database.</p> : null}
                   <div className="flex flex-wrap gap-2"><Button size="sm" disabled={saving || stale} onClick={() => void submitEdit()}>Save card</Button><Button size="sm" variant="outline" disabled={saving} onClick={() => setEditing({ ...editing, remove: true })}>Clear value</Button><Button size="sm" variant="ghost" disabled={saving} onClick={() => { restoreCardFocus(editing.noteId); setEditing(null); }}>Cancel card edit</Button></div>
@@ -1605,7 +1607,7 @@ export function DatabasesView({
                                   <TableCell key={property.id} className="min-w-0 align-top whitespace-normal">
                                     {isEditing && editing ? (
                                       <div className="flex min-w-0 flex-col gap-2">
-                                        <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} relationReferences={row.relations?.[property.id]} targetDatabaseName={databases.find((database) => database.id === property.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === property.relation?.databaseId)} property={property} value={editing.draft} label={`${property.name} for ${row.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
+                                        <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} relationReferences={row.relations?.[property.id]} targetDatabaseName={databases.find((database) => database.id === property.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === property.relation?.databaseId)} databaseId={selected.id} property={property} value={editing.draft} label={`${property.name} for ${row.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
                                         <div className="flex gap-1">
                                           <Button type="button" size="xs" disabled={saving || stale} onClick={() => void submitEdit()}>{saving ? 'Saving…' : 'Save'}</Button>
                                           <Button type="button" size="xs" variant="ghost" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button>

@@ -96,6 +96,26 @@ describe('relation property lifecycle through the local API', () => {
         expect(before.relationCandidates?.[TASKS]?.some((note) => note.id === A1)).toBe(false);
         expect(before.relationCandidates?.[ARCHIVE]).toBeUndefined();
 
+        const search = async (query: string, limit = 20) => call<{ candidates: Array<{ id: string; title: string }>; truncated: boolean }>(
+          started.base,
+          `/api/databases/${PROJECTS}/relation-candidates?propertyId=${REL}&query=${encodeURIComponent(query)}&limit=${limit}`,
+        );
+        const first = await search('Task');
+        expect(first.status, JSON.stringify(first.body)).toBe(200);
+        expect(first.body.candidates.map((candidate) => candidate.id)).toEqual([T1, T2]);
+        expect(first.body.truncated).toBe(false);
+        const bounded = await search('Task', 1);
+        expect(bounded.body.candidates.map((candidate) => candidate.id)).toEqual([T1]);
+        expect(bounded.body.truncated).toBe(true);
+        expect((await search('Archived')).body.candidates).toEqual([]);
+        expect((await search('', 1)).body.candidates.map((candidate) => candidate.id)).toEqual([T1]);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${TEXT}&query=Task`)).status).toBe(400);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${id(999)}&query=Task`)).status).toBe(400);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${REL}&query=Task&limit=0`)).status).toBe(400);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${REL}&query=Task&limit=51`)).status).toBe(400);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${REL}&query=${'a'.repeat(201)}`)).status).toBe(400);
+        expect((await call(started.base, `/api/databases/${PROJECTS}/relation-candidates?query=Task`)).status).toBe(400);
+
         const project = await vault.readNoteWithHash(P1);
         const linked = await call<{ rows: Array<{ values: Record<string, unknown> }> }>(started.base, `/api/notes/${P1}/properties`, {
           method: 'PUT',
@@ -155,6 +175,9 @@ describe('relation property lifecycle through the local API', () => {
         expect(row.values[REL]).toEqual([T1, T2]);
         expect(response.body.diagnostics.some((issue) => issue.code === 'INVALID_CONFIGURATION')).toBe(true);
         expect(response.body.relationCandidates?.[TASKS]).toEqual([]);
+        const missingTarget = await call<{ error: { code: string } }>(afterDelete.base, `/api/databases/${PROJECTS}/relation-candidates?propertyId=${REL}&query=Task`);
+        expect(missingTarget.status).toBe(422);
+        expect(missingTarget.body.error.code).toBe('INVALID_CONFIGURATION');
       } finally {
         await stop(afterDelete);
       }

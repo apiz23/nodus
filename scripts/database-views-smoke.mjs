@@ -441,7 +441,9 @@ try {
   const relationTableId = await createView('Relations table', 'table');
   await page.getByRole('button', { name: `Edit Related for ${alpha.title}`, exact: true }).click();
   await page.getByRole('button', { name: `Related for ${alpha.title}`, exact: true }).click();
+  const relationSearch = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/databases/${DB}/relation-candidates` && response.status() === 200);
   await page.getByRole('combobox', { name: `Related for ${alpha.title}`, exact: true }).fill('Related target');
+  await relationSearch;
   await page.getByRole('option', { name: 'Choose Related target', exact: true }).click();
   const relationSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/notes/${alpha.id}/properties`);
   await page.getByRole('button', { name: 'Save', exact: true }).click();

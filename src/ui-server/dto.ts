@@ -100,6 +100,13 @@ export interface UiRelationCandidate {
   tags: string[];
 }
 
+/** Bounded server-side search results for a relation picker. */
+export interface UiRelationCandidatesResponse {
+  candidates: UiRelationCandidate[];
+  /** True when more compatible records match than the requested limit. */
+  truncated: boolean;
+}
+
 export interface UiDatabaseRowsResponse {
   relationCandidates?: Record<string, UiRelationCandidate[]>;
   databaseId: string;

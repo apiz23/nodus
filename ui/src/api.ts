@@ -340,6 +340,11 @@ export const api = {
     return request(`/api/databases/${encodeURIComponent(databaseId)}/views/order`, { method: 'PUT', body: jsonBody({ viewIds, baseHash }) });
   },
 
+  relationCandidates(databaseId: string, propertyId: string, query: string, limit = 20): Promise<import('../../src/ui-server/dto.js').UiRelationCandidatesResponse> {
+    const params = new URLSearchParams({ propertyId, query, limit: String(limit) });
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/relation-candidates?${params.toString()}`);
+  },
+
   createDatabaseView(view: DatabaseView): Promise<{ view: UiDatabaseView }> {
     return request(`/api/databases/${encodeURIComponent(view.databaseId)}/views`, { method: 'POST', body: jsonBody({ view }) });
   },

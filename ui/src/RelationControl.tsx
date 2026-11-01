@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import type { Property } from '../../src/database/schema';
 import type { RelationReference } from '../../src/database/relations';
@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { api } from './api';
 
 type RelationOption = RelationReference & { aliases?: string[]; tags?: string[] };
 const SELECTED_PAGE_SIZE = 12;
@@ -15,7 +16,7 @@ function shortId(id: string): string {
   return id.slice(-8);
 }
 
-export function RelationControl({ property, value, options = [], references = [], label, onChange, inline = false, targetDatabaseName, targetAvailable = true }: {
+export function RelationControl({ property, value, options = [], references = [], label, onChange, inline = false, targetDatabaseName, targetAvailable = true, databaseId }: {
   property: Property;
   value: unknown;
   options?: RelationOption[];
@@ -25,22 +26,58 @@ export function RelationControl({ property, value, options = [], references = []
   inline?: boolean;
   targetDatabaseName?: string;
   targetAvailable?: boolean;
+  /** Source database ID enables bounded server-side search of the target. */
+  databaseId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedPage, setSelectedPage] = useState(0);
+  const [remoteOptions, setRemoteOptions] = useState<RelationOption[] | null>(null);
+  const [remoteTruncated, setRemoteTruncated] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const ids: string[] = Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : typeof value === 'string' && value ? [value] : [];
   const multiple = property.relation?.cardinality === 'many';
   const selectedPages = Math.max(1, Math.ceil(ids.length / SELECTED_PAGE_SIZE));
   const page = Math.min(selectedPage, selectedPages - 1);
   const selectedIds = ids.slice(page * SELECTED_PAGE_SIZE, (page + 1) * SELECTED_PAGE_SIZE);
   const knownReferences = useMemo(() => new Map([...options, ...references].map((item) => [item.id, item])), [options, references]);
-  const matching = useMemo(() => {
+  const localMatching = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return options;
     return options.filter((option) => [option.title, option.path, ...(option.aliases ?? []), ...(option.tags ?? [])]
       .some((field) => field?.toLocaleLowerCase().includes(normalized)));
   }, [options, query]);
+  const searchable = databaseId !== undefined && property.relation !== undefined;
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!searchable || normalized === '' || databaseId === undefined) {
+      setRemoteOptions(null); setRemoteTruncated(false); setSearching(false); setSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setSearching(true); setSearchError(null);
+      api.relationCandidates(databaseId, property.id, normalized, OPTION_RESULT_LIMIT)
+        .then((result) => {
+          if (cancelled) return;
+          setRemoteOptions(result.candidates);
+          setRemoteTruncated(result.truncated);
+        })
+        .catch((cause: unknown) => {
+          if (cancelled) return;
+          setRemoteOptions([]);
+          setRemoteTruncated(false);
+          setSearchError(cause instanceof Error ? cause.message : 'Relation search failed.');
+        })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [databaseId, property.id, query, searchable]);
+
+  const matching = remoteOptions ?? localMatching;
+  const truncated = remoteOptions === null ? matching.length > OPTION_RESULT_LIMIT : remoteTruncated;
   const select = (id: string) => {
     onChange(multiple ? ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id] : ids.includes(id) ? null : id);
     if (!multiple) setOpen(false);
@@ -48,7 +85,7 @@ export function RelationControl({ property, value, options = [], references = []
   const command = <Command shouldFilter={false} label={label}>
     <CommandInput aria-label={label} value={query} onValueChange={setQuery} placeholder="Search title, path, alias, or tag" />
     <CommandList className="max-h-60">
-      <CommandEmpty>{query ? 'No matching records in the target database.' : 'No records are available in the target database.'}</CommandEmpty>
+      <CommandEmpty>{searching ? 'Searching the target database…' : searchError ? 'Relation search failed. Type to retry.' : query ? 'No matching records in the target database.' : 'No records are available in the target database.'}</CommandEmpty>
       <CommandGroup heading={multiple ? 'Select one or more records' : 'Select one record'}>
         {matching.slice(0, OPTION_RESULT_LIMIT).map((option) => {
           const selected = ids.includes(option.id);
@@ -62,7 +99,9 @@ export function RelationControl({ property, value, options = [], references = []
         })}
       </CommandGroup>
     </CommandList>
-    {matching.length > OPTION_RESULT_LIMIT ? <p className="px-3 pb-2 text-xs text-muted-foreground" role="status">Showing the first {OPTION_RESULT_LIMIT} matches. Refine your search to see other records.</p> : null}
+    {searching ? <p role="status" className="px-3 pb-2 text-xs text-muted-foreground">Searching the target database…</p> : null}
+    {searchError ? <p role="alert" className="px-3 pb-2 text-xs text-destructive">{searchError}</p> : null}
+    {truncated ? <p className="px-3 pb-2 text-xs text-muted-foreground" role="status">Showing the first {OPTION_RESULT_LIMIT} matches. Refine your search to see other records.</p> : null}
   </Command>;
 
   return <div className="flex min-w-0 flex-col gap-2">

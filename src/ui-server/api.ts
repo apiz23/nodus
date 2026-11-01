@@ -43,6 +43,7 @@ import type {
   UiDatabaseView,
   UiDatabaseViewOrder,
   UiDatabaseViewsResponse,
+  UiRelationCandidatesResponse,
   UiDeleteNoteInput,
   UiHealthIssue,
   UiMoveNoteInput,
@@ -706,6 +707,18 @@ export function createLocalApiMiddleware(
       );
     }
 
+    const relationCandidatesMatch = /^\/api\/databases\/([^/]+)\/relation-candidates$/.exec(path);
+    if (method === 'GET' && relationCandidatesMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(relationCandidatesMatch[1] ?? ''), 'database ID');
+      const propertyId = requireUuid(url.searchParams.get('propertyId') ?? '', 'relation property ID');
+      const query = url.searchParams.get('query') ?? '';
+      if (query.length > 200) throw new ApiError(400, 'INVALID_INPUT', 'Relation search query must be 200 characters or fewer.');
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw === null ? 20 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new ApiError(400, 'INVALID_INPUT', 'Relation search limit must be an integer from 1 to 50.');
+      return sendJson(res, 200, await searchRelationCandidates(await getVault(), databaseId, propertyId, query, limit));
+    }
+
     const databaseViewsMatch = /^\/api\/databases\/([^/]+)\/views$/.exec(path);
     if (databaseViewsMatch !== null) {
       const databaseId = requireUuid(decodeURIComponent(databaseViewsMatch[1] ?? ''), 'database ID');
@@ -1192,6 +1205,46 @@ async function reorderLocalDatabaseViews(vault: FileSystemVault, databaseId: str
     if (isStorageError(error) && error.code === 'INVALID_INPUT') throw new ApiError(400, 'INVALID_INPUT', error.message);
     throw error;
   }
+}
+
+/**
+ * Bounded relation picker search. Only records that are valid members of the
+ * configured target database are considered, so callers cannot enumerate
+ * unrelated vault notes.
+ */
+async function searchRelationCandidates(
+  vault: FileSystemVault,
+  databaseId: string,
+  propertyId: string,
+  query: string,
+  limit: number,
+): Promise<UiRelationCandidatesResponse> {
+  let schema;
+  try {
+    schema = await vault.readDatabaseWithHash(databaseId);
+  } catch (error) {
+    if (isStorageError(error) && error.code === 'NOT_FOUND') throw new ApiError(404, 'NOT_FOUND', 'Database was not found.');
+    throw error;
+  }
+  const property = schema.database.properties.find((item) => item.id === propertyId);
+  if (property === undefined || property.type !== 'relation' || property.relation === undefined) {
+    throw new ApiError(400, 'INVALID_INPUT', 'propertyId must identify a relation property of this database.');
+  }
+  try {
+    await vault.readDatabaseWithHash(property.relation.databaseId);
+  } catch (error) {
+    if (isStorageError(error) && error.code === 'NOT_FOUND') {
+      throw new ApiError(422, 'INVALID_CONFIGURATION', 'The relation target database is missing.');
+    }
+    throw error;
+  }
+  const rows = await listDatabaseRows(vault, databaseId);
+  const candidates = rows.relationCandidates?.[property.relation.databaseId] ?? [];
+  const normalized = query.trim().toLocaleLowerCase();
+  const matching = normalized === '' ? candidates : candidates.filter((candidate) =>
+    [candidate.title, candidate.path, ...candidate.aliases, ...candidate.tags].some((field) => field.toLocaleLowerCase().includes(normalized)),
+  );
+  return { candidates: matching.slice(0, limit), truncated: matching.length > limit };
 }
 
 async function createLocalDatabaseView(vault: FileSystemVault, databaseId: string, body: Record<string, unknown>): Promise<{ view: UiDatabaseView }> {
