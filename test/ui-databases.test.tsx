@@ -142,6 +142,27 @@ it('bounds selected relation chips and exposes pagination for large selections',
   expect(html).not.toContain(ids[12]!);
 });
 
+it('configures a new relation with a target database and cardinality', () => {
+  const source: DatabaseDefinition = {
+    id: IDS_DB_A,
+    name: 'Projects',
+    properties: [{ id: 'relation', name: 'Tasks', type: 'relation', relation: { databaseId: IDS_DB_B, cardinality: 'many' } }],
+  };
+  const target: DatabaseDefinition = { id: IDS_DB_B, name: 'Tasks', properties: [] };
+  const markup = renderToStaticMarkup(createElement(RelationSchemaFields, {
+    property: source.properties[0]!,
+    database: source,
+    databases: [source, target],
+    onChange: () => undefined,
+  }));
+
+  expect(markup).toContain('Target database');
+  expect(markup).toContain('Tasks Target database');
+  expect(markup).toContain('Cardinality');
+  expect(markup).toContain('Links point to records in');
+  expect(markup).toContain('Each note can link to multiple records');
+});
+
 it('explains a deleted relation target in the schema editor without hiding its configuration', () => {
   const source: DatabaseDefinition = {
     id: IDS_DB_A,

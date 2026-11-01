@@ -415,9 +415,78 @@ try {
   assert.equal((await request(`/api/databases/${DB}/views/${calendarId}`)).view.view.sort.direction, 'desc');
   assert.equal((await request(`/api/databases/${SECOND_DB}/views`)).views.length, 0);
   await page.unroute(viewRoute);
+
+  // Phase 11A: create a relation property, link a record, open it, render the
+  // same stable reference in every layout, and remove it again.
+  const related = (await request('/api/notes', 'POST', { title: 'Related target' })).note;
+  await request(`/api/databases/${SECOND_DB}/rows`, 'POST', { noteId: related.id, baseHash: related.contentHash, confirmCreate: true });
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('button', { name: /View tests/ }).click();
+  await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+  await controls.getByRole('combobox', { name: 'View', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
+  const relationSchema = page.getByRole('dialog', { name: 'Edit database schema' });
+  await relationSchema.getByRole('button', { name: 'Add property', exact: true }).click();
+  await relationSchema.getByLabel('Property 6 name', { exact: true }).fill('Related');
+  await relationSchema.getByLabel('Property 6 type', { exact: true }).click();
+  await page.getByRole('option', { name: 'Relation', exact: true }).click();
+  await relationSchema.getByLabel('Related Target database', { exact: true }).click();
+  await page.getByRole('option', { name: 'Z other database', exact: true }).click();
+  await relationSchema.getByLabel('Related Cardinality', { exact: true }).click();
+  await page.getByRole('option', { name: 'Multiple records', exact: true }).click();
+  const relationSchemaSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/databases/${DB}`);
+  await relationSchema.getByRole('button', { name: 'Save schema', exact: true }).click();
+  assert.equal((await relationSchemaSaved).status(), 200);
+  await relationSchema.waitFor({ state: 'hidden' });
+  const relationTableId = await createView('Relations table', 'table');
+  await page.getByRole('button', { name: `Edit Related for ${alpha.title}`, exact: true }).click();
+  await page.getByRole('button', { name: `Related for ${alpha.title}`, exact: true }).click();
+  await page.getByRole('combobox', { name: `Related for ${alpha.title}`, exact: true }).fill('Related target');
+  await page.getByRole('option', { name: 'Choose Related target', exact: true }).click();
+  const relationSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/notes/${alpha.id}/properties`);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  assert.equal((await relationSaved).status(), 200);
+  const linked = page.getByRole('button', { name: /^Open related record Related target/ });
+  await linked.waitFor();
+  await linked.click();
+  await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
+  assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).inputValue(), 'Related target');
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('heading', { name: 'View tests', exact: true }).waitFor();
+  await page.getByRole('button', { name: /View tests/ }).click();
+  await page.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+
+  async function selectView(name) {
+    await controls.getByRole('combobox', { name: 'View', exact: true }).click();
+    await page.getByRole('option', { name: new RegExp(name) }).click();
+    await page.waitForTimeout(200);
+    const confirmation = page.getByRole('alertdialog');
+    if (await confirmation.isVisible().catch(() => false)) {
+      await confirmation.getByRole('button', { name: 'Continue', exact: true }).click();
+    }
+  }
+  await createView('Relation gallery', 'gallery');
+  const relationGallery = page.getByRole('region', { name: 'Database gallery view' });
+  await relationGallery.getByRole('listitem', { name: alpha.title }).getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+  await createView('Relation list', 'list');
+  await page.getByRole('region', { name: 'Database list view' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
+  await createView('Relation board', 'kanban');
+  await page.getByRole('region', { name: 'Kanban grouped by Status' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
+  await createView('Relation calendar', 'calendar');
+  await page.getByLabel('Month', { exact: true }).fill('2026-10');
+  await page.getByRole('region', { name: 'Calendar by Due' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
+  await selectView('Relations table');
+  await page.getByRole('button', { name: `Edit Related for ${alpha.title}`, exact: true }).click();
+  const relationRemoved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/notes/${alpha.id}/properties`);
+  await page.getByRole('button', { name: 'Remove relation Related target', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  assert.equal((await relationRemoved).status(), 200);
+  assert.equal(await page.getByRole('button', { name: /^Open related record Related target/ }).count(), 0);
+  assert.equal((await request(`/api/databases/${DB}/views`)).views.some((view) => view.view.id === relationTableId), true);
+
   assert.deepEqual(failures, expectedFailures);
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, relation property creation/linking/opening/removal across all layouts, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});
