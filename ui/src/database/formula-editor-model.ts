@@ -1,5 +1,5 @@
 import type { FormulaExpression, FormulaType, FormulaValue } from '../../../src/database/formula-contract.js';
-import { buildFormulaSchema, evaluateFormula, FORMULA_EDITOR_SUGGESTIONS, inferFormulaPropertyTypes, parseFormula, RELATION_FORMULA_FUNCTIONS, validateFormula, type FormulaDatabaseContext, type FormulaDiagnostic, type FormulaEditorSuggestion, type FormulaProperty, type FormulaSchema } from '../../../src/database/formula-engine.js';
+import { buildFormulaSchema, evaluateFormula, FORMULA_EDITOR_SUGGESTIONS, inferFormulaPropertyTypes, parseFormula, RELATION_FORMULA_FUNCTIONS, validateFormula, type FormulaDatabaseContext, type FormulaDiagnostic, type FormulaEditorSuggestion, type FormulaProperty, type FormulaRelationValues, type FormulaSchema } from '../../../src/database/formula-engine.js';
 import type { Property } from '../../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../../src/ui-server/dto.js';
 
@@ -33,6 +33,7 @@ export function analyzeFormulaDraft(
   previewRow?: Pick<UiDatabaseRow, 'values' | 'issues'>,
   databases?: readonly FormulaDatabaseContext[],
   currentDatabaseId = 'current',
+  relations?: FormulaRelationValues,
 ): FormulaDraftAnalysis {
   const candidateProperties = properties.map((property) => property.id === propertyId && property.type === 'formula'
     ? { ...property, formula: { expression } }
@@ -58,14 +59,14 @@ export function analyzeFormulaDraft(
 
   const resultType = inferred.get(propertyId) ?? (checked.ok ? checked.value : undefined);
   let preview: FormulaValue | undefined;
-  if (diagnostics.length === 0 && checked.ok && previewRow && !containsRelationFunction(parsed.value)) {
+  if (diagnostics.length === 0 && checked.ok && previewRow && (!containsRelationFunction(parsed.value) || relations !== undefined)) {
     const values: Record<string, FormulaValue> = {};
     for (const property of candidateProperties) {
       if (property.type === 'formula') continue;
       const issue = previewRow.issues.find((item) => item.propertyId === property.id && ['FORMULA_ERROR', 'ROLLUP_ERROR', 'CIRCULAR_ROLLUP', 'INVALID_VALUE', 'TYPE_MISMATCH'].includes(item.code));
       values[property.id] = issue
         ? { type: 'error', error: { code: 'INVALID_PROPERTY_VALUE', message: issue.message, propertyId: property.id } }
-        : toFormulaValue(property, previewRow.values[property.id], inferred.get(property.id));
+        : formulaValueFor(property, previewRow.values[property.id], inferred.get(property.id));
     }
     const cache = new Map<string, FormulaValue>();
     const visiting = new Set<string>();
@@ -85,7 +86,7 @@ export function analyzeFormulaDraft(
       for (const dependency of propertyReferences(child.value)) {
         if (candidateProperties.some((candidate) => candidate.id === dependency && candidate.type === 'formula')) context[dependency] = calculate(dependency);
       }
-      const result = evaluateFormula(child.value, context);
+      const result = evaluateFormula(child.value, context, undefined, relations);
       visiting.delete(id);
       cache.set(id, result);
       return result;
@@ -182,7 +183,7 @@ function formulaSchema(properties: readonly Property[], inferred: ReadonlyMap<st
   return buildFormulaSchema([{ id: 'current', properties }], inferred, 'current');
 }
 
-function toFormulaValue(property: Property, value: unknown, inferredType?: FormulaType): FormulaValue {
+export function formulaValueFor(property: Property, value: unknown, inferredType?: FormulaType): FormulaValue {
   if (value === undefined || value === null) return { type: 'null' };
   if (property.type === 'text' && typeof value === 'string') return { type: 'string', value };
   if (property.type === 'date' && typeof value === 'string') return { type: 'date', value };

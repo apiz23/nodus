@@ -3,9 +3,10 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { EditorState, StateEffect } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet } from '@codemirror/view';
 import { AlertCircle, BookOpen, Check, ChevronDown, Code2, FunctionSquare, X } from 'lucide-react';
-import type { FormulaDiagnostic, FormulaEditorSuggestion, FormulaDatabaseContext } from '../../../src/database/formula-engine.js';
-import { FORMULA_EDITOR_SUGGESTIONS } from '../../../src/database/formula-engine.js';
+import type { FormulaDiagnostic, FormulaEditorSuggestion, FormulaDatabaseContext, FormulaRelationValues } from '../../../src/database/formula-engine.js';
+import { FORMULA_EDITOR_SUGGESTIONS, RELATION_FORMULA_FUNCTIONS } from '../../../src/database/formula-engine.js';
 import type { FormulaType, FormulaValue } from '../../../src/database/formula-contract.js';
+import { parseFormula } from '../../../src/database/formula-engine.js';
 import { tokenizeFormula } from '../../../src/database/formula-tokenizer.js';
 import type { Property } from '../../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../../src/ui-server/dto.js';
@@ -15,10 +16,60 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { analyzeFormulaDraft, formulaCompletions, formatFormulaPreview, formulaTypeLabel, inferFormulaTypes, type FormulaCompletion, type FormulaRelatedProperty } from './formula-editor-model.js';
+import { analyzeFormulaDraft, formulaCompletions, formatFormulaPreview, formulaTypeLabel, formulaValueFor, inferFormulaTypes, type FormulaCompletion, type FormulaRelatedProperty } from './formula-editor-model.js';
+import { api } from '../api';
 
 const diagnosticsChanged = StateEffect.define<void>();
 const functionNames = new Set(FORMULA_EDITOR_SUGGESTIONS.map((item) => item.name));
+
+/** Loads only the target rows needed to preview one record's relation aggregates. */
+async function previewRelationValues(expression: string, previewRow: UiDatabaseRow, databases: readonly FormulaDatabaseContext[] | undefined, currentDatabaseId: string | undefined): Promise<FormulaRelationValues | undefined> {
+  if (databases === undefined || currentDatabaseId === undefined) return undefined;
+  const parsed = parseFormula(expression);
+  if (!parsed.ok) return undefined;
+  const current = databases.find((database) => database.id === currentDatabaseId);
+  if (!current) return undefined;
+  const used = new Set<string>();
+  const stack = [parsed.value];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.kind === 'call') {
+      if (RELATION_FORMULA_FUNCTIONS.has(node.name)) {
+        const first = node.arguments[0];
+        if (first?.kind === 'property') used.add(first.propertyId);
+      } else stack.push(...node.arguments);
+    } else if (node.kind === 'unary') stack.push(node.operand);
+    else if (node.kind === 'binary') stack.push(node.left, node.right);
+    else if (node.kind === 'conditional') stack.push(node.condition, node.whenTrue, node.whenFalse);
+  }
+  if (used.size === 0) return undefined;
+  const rowsByDatabase = new Map<string, Map<string, UiDatabaseRow>>();
+  const result: Record<string, Array<{ values: Record<string, FormulaValue> }>> = {};
+  for (const relationId of used) {
+    const relation = current.properties.find((property) => property.id === relationId);
+    const targetId = relation?.relation?.databaseId;
+    const target = databases.find((database) => database.id === targetId);
+    if (targetId === undefined || target === undefined) { result[relationId] = []; continue; }
+    if (!rowsByDatabase.has(targetId)) {
+      try {
+        const response = await api.databaseRows(targetId);
+        rowsByDatabase.set(targetId, new Map(response.rows.map((row) => [row.noteId, row])));
+      } catch { return undefined; }
+    }
+    const rows = rowsByDatabase.get(targetId)!;
+    result[relationId] = (previewRow.relations?.[relationId] ?? []).filter((reference) => reference.status === 'resolved').flatMap((reference) => {
+      const row = rows.get(reference.id);
+      if (!row) return [];
+      const values: Record<string, FormulaValue> = {};
+      for (const property of target.properties) {
+        if (property.type === 'formula' || property.type === 'relation' || property.type === 'select' || property.type === 'multi-select') continue;
+        values[property.id] = formulaValueFor(property as Property, row.values[property.id]);
+      }
+      return [{ values }];
+    });
+  }
+  return result;
+}
 
 export interface FormulaEditorProps {
   property: Property;
@@ -180,10 +231,12 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
   useEffect(() => {
     let current = true;
     setPreview(undefined);
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       if (!current) return;
       if (analysis.diagnostics.length || !previewRow) { setPreview(null); return; }
-      const latest = analyzeFormulaDraft(expression, properties, property.id, previewRow, databases, currentDatabaseId);
+      const relations = await previewRelationValues(expression, previewRow, databases, currentDatabaseId);
+      if (!current) return;
+      const latest = analyzeFormulaDraft(expression, properties, property.id, previewRow, databases, currentDatabaseId, relations);
       if (current) setPreview(latest.preview ?? null);
     }, 180);
     return () => { current = false; window.clearTimeout(timer); };
@@ -259,7 +312,7 @@ export function FormulaEditor({ property, properties, previewRow, disabled = fal
         <h4 className="mb-1 flex items-center gap-2 text-xs font-medium"><Check className="size-3.5" />Preview</h4>
         {!previewRow ? <p className="text-xs text-muted-foreground">Add a record to this database to preview the formula in record context.</p>
           : preview === undefined ? <p className="text-xs text-muted-foreground">Updating preview…</p>
-            : preview === null ? <p className="text-xs text-muted-foreground">Preview is unavailable until the formula is valid.</p>
+            : preview === null ? <p className="text-xs text-muted-foreground">{analysis.diagnostics.length === 0 ? 'Preview is unavailable for this relation-aware formula.' : 'Preview is unavailable until the formula is valid.'}</p>
               : <div className="min-w-0 rounded-sm bg-muted/40 px-2.5 py-2">
                 <p className="text-[11px] text-muted-foreground">Example record: <span className="font-medium text-foreground">{previewRow.title}</span></p>
                 <p className={cn('mt-1 break-words text-sm', preview.type === 'error' && 'text-destructive')}>
