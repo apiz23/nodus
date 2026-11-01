@@ -24,7 +24,7 @@ export interface Property {
   rollup?: { relationPropertyId: string; operation: RollupOperation; targetPropertyId?: string; condition?: { propertyId: string; value: string | number | boolean } };
   formula?: { expression: string; resultType?: FormulaType };
 }
-export const ROLLUP_OPERATIONS = ['count', 'conditional-count', 'sum', 'completed-task-count', 'completion-percentage'] as const;
+export const ROLLUP_OPERATIONS = ['count', 'count-non-empty', 'sum', 'average', 'minimum', 'maximum', 'conditional-count', 'completed-task-count', 'completion-percentage'] as const;
 export type RollupOperation = typeof ROLLUP_OPERATIONS[number];
 export function isDerivedProperty(property: Property): boolean { return property.type === 'rollup' || property.type === 'formula' || !!property.relation?.reversePropertyId; }
 export function databaseVersion(database: DatabaseDefinition): number { return database.properties.some((p) => p.type === 'formula') ? 3 : database.properties.some((p) => p.type === 'relation' || p.type === 'rollup') ? 2 : 1; }
@@ -141,7 +141,8 @@ function parseProperty(value: unknown, index: number, version: number): Property
     const relationPropertyId = requireUuid(config.relationPropertyId, 'relationPropertyId');
     const operation = config.operation as RollupOperation;
     const targetPropertyId = config.targetPropertyId === undefined ? undefined : requireUuid(config.targetPropertyId, 'targetPropertyId');
-    if (['sum', 'completed-task-count', 'completion-percentage'].includes(operation) !== !!targetPropertyId) throw invalidDatabase('Sum and completion rollups require a target property; count operations do not');
+    const requiresTarget = ['count-non-empty', 'sum', 'average', 'minimum', 'maximum', 'completed-task-count', 'completion-percentage'].includes(operation);
+    if (requiresTarget !== !!targetPropertyId) throw invalidDatabase('This rollup operation requires a target property; count does not');
     let condition: NonNullable<Property['rollup']>['condition'];
     if (operation === 'conditional-count') {
       if (!isPlainObject(config.condition)) throw invalidDatabase('Conditional count requires a condition');

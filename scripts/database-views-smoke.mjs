@@ -458,6 +458,24 @@ try {
   await page.getByRole('button', { name: /View tests/ }).click();
   await page.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
 
+  // Phase 11B: add an aggregate rollup over the relation and verify it across layouts.
+  await page.getByRole('button', { name: 'Edit schema', exact: true }).click();
+  const rollupSchema = page.getByRole('dialog', { name: 'Edit database schema' });
+  await rollupSchema.getByRole('button', { name: 'Add property', exact: true }).click();
+  await rollupSchema.getByLabel('Property 7 name', { exact: true }).fill('Related count');
+  await rollupSchema.getByLabel('Property 7 type', { exact: true }).click();
+  await page.getByRole('option', { name: 'Rollup', exact: true }).click();
+  await rollupSchema.getByLabel('Related count Relation', { exact: true }).click();
+  await page.getByRole('option', { name: 'Related', exact: true }).click();
+  await rollupSchema.getByLabel('Related count Operation', { exact: true }).click();
+  await page.getByRole('option', { name: 'Count records', exact: true }).click();
+  const rollupSchemaSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/databases/${DB}`);
+  await rollupSchema.getByRole('button', { name: 'Save schema', exact: true }).click();
+  assert.equal((await rollupSchemaSaved).status(), 200);
+  await rollupSchema.waitFor({ state: 'hidden' });
+  const rollupTableId = await createView('Rollup table', 'table');
+  await page.getByLabel(`Related count for ${alpha.title}`, { exact: true }).filter({ hasText: '1' }).waitFor();
+
   async function selectView(name) {
     await controls.getByRole('combobox', { name: 'View', exact: true }).click();
     await page.getByRole('option', { name: new RegExp(name) }).click();
@@ -467,28 +485,38 @@ try {
       await confirmation.getByRole('button', { name: 'Continue', exact: true }).click();
     }
   }
-  await createView('Relation gallery', 'gallery');
-  const relationGallery = page.getByRole('region', { name: 'Database gallery view' });
-  await relationGallery.getByRole('listitem', { name: alpha.title }).getByRole('button', { name: /^Open related record Related target/ }).waitFor();
-  await createView('Relation list', 'list');
-  await page.getByRole('region', { name: 'Database list view' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
-  await createView('Relation board', 'kanban');
-  await page.getByRole('region', { name: 'Kanban grouped by Status' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
-  await createView('Relation calendar', 'calendar');
+  await createView('Rollup gallery', 'gallery');
+  const rollupGallery = page.getByRole('region', { name: 'Database gallery view' });
+  const galleryCard = rollupGallery.getByRole('listitem', { name: alpha.title });
+  await galleryCard.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+  assert.match(await galleryCard.innerText(), /Related count\s+1/);
+  await createView('Rollup list', 'list');
+  const listCard = page.getByRole('region', { name: 'Database list view' }).getByRole('article', { name: alpha.title });
+  await listCard.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+  assert.match(await listCard.innerText(), /Related count\s+1/);
+  await createView('Rollup board', 'kanban');
+  const boardCard = page.getByRole('region', { name: 'Kanban grouped by Status' }).getByRole('article', { name: alpha.title });
+  await boardCard.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+  assert.match(await boardCard.innerText(), /Related count\s+1/);
+  await createView('Rollup calendar', 'calendar');
   await page.getByLabel('Month', { exact: true }).fill('2026-10');
-  await page.getByRole('region', { name: 'Calendar by Due' }).getByRole('button', { name: /^Open related record Related target/ }).first().waitFor();
-  await selectView('Relations table');
+  const calendarCard = page.getByRole('region', { name: 'Calendar by Due' }).getByRole('article', { name: alpha.title });
+  await calendarCard.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
+  assert.match(await calendarCard.innerText(), /Related count\s+1/);
+  await selectView('Rollup table');
   await page.getByRole('button', { name: `Edit Related for ${alpha.title}`, exact: true }).click();
   const relationRemoved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/notes/${alpha.id}/properties`);
   await page.getByRole('button', { name: 'Remove relation Related target', exact: true }).click();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   assert.equal((await relationRemoved).status(), 200);
+  await page.getByLabel(`Related count for ${alpha.title}`, { exact: true }).filter({ hasText: '0' }).waitFor();
   assert.equal(await page.getByRole('button', { name: /^Open related record Related target/ }).count(), 0);
   assert.equal((await request(`/api/databases/${DB}/views`)).views.some((view) => view.view.id === relationTableId), true);
+  assert.equal((await request(`/api/databases/${DB}/views`)).views.some((view) => view.view.id === rollupTableId), true);
 
   assert.deepEqual(failures, expectedFailures);
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, relation property creation/linking/opening/removal across all layouts, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, relation property creation/linking/opening/removal, rollup creation and computed counts across all layouts, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});

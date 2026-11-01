@@ -28,6 +28,7 @@ export function compatibleRelationTarget(row: RelatedRow | undefined): boolean {
   return !!row && !row.issues.some((issue) => issue.code === 'INVALID_NAMESPACE' && (!issue.databaseId || issue.databaseId === row.databaseId));
 }
 const idsOf = (value: unknown): string[] => typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+const isEmptyValue = (value: NotePropertyValue | undefined): boolean => value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
 const key = (databaseId: string, propertyId: string) => `${databaseId}:${propertyId}`;
 
 /** Cross-schema references are diagnostics, never an excuse to discard portable source data. */
@@ -51,7 +52,9 @@ export function configurationIssues(schemas: ReadonlyMap<string, DatabaseDefinit
     const target = relation?.type === 'relation' ? schemas.get(relation.relation!.databaseId) : undefined;
     if (!target) { issues.set(ref, 'Rollup requires an existing relation and target database'); continue; }
     const field = target.properties.find((item) => item.id === (config.targetPropertyId ?? config.condition?.propertyId));
-    if (config.operation === 'sum' && field?.type !== 'number' && field?.type !== 'rollup') issues.set(ref, 'Sum requires a numeric target property');
+    if (['sum', 'average'].includes(config.operation) && field?.type !== 'number' && field?.type !== 'rollup') issues.set(ref, `${config.operation === 'average' ? 'Average' : 'Sum'} requires a numeric target property`);
+    if (['minimum', 'maximum'].includes(config.operation) && !['number', 'rollup', 'date'].includes(field?.type ?? '')) issues.set(ref, `${config.operation === 'minimum' ? 'Minimum' : 'Maximum'} requires a numeric or date target property`);
+    if (config.operation === 'count-non-empty' && !field) issues.set(ref, 'Count non-empty requires an existing target property');
     if (['completed-task-count', 'completion-percentage'].includes(config.operation) && field?.type !== 'checkbox') issues.set(ref, 'Completion requires a Checkbox target property');
     if (config.operation === 'conditional-count' && (!field || !conditionFits(field, config.condition!.value))) issues.set(ref, 'Conditional count requires a compatible target property/value');
     if (field?.type === 'rollup') dependencies.set(ref, key(target.id, field.id));
@@ -140,7 +143,7 @@ export function projectRelations(notes: readonly Note[], schemas: ReadonlyMap<st
     if (evaluating.size >= 128) { report(row, property, 'INVALID_CONFIGURATION', 'Rollup dependency depth exceeds 128'); return undefined; }
     if (evaluating.has(cell)) { report(row, property, 'CIRCULAR_ROLLUP', 'Circular rollup evaluation; result is unavailable'); return undefined; }
     evaluating.add(cell);
-    const calculate = (): number | null | undefined => {
+    const calculate = (): NotePropertyValue | undefined => {
       const setting = property.rollup!;
       const relation = schemas.get(row.databaseId)!.properties.find((item) => item.id === setting.relationPropertyId)!;
       if (config.issues.has(key(row.databaseId, relation.id)) || row.issues.some((issue) => issue.propertyId === relation.id && ['INVALID_VALUE', 'TYPE_MISMATCH'].includes(issue.code))) return undefined;
@@ -154,10 +157,32 @@ export function projectRelations(notes: readonly Note[], schemas: ReadonlyMap<st
       const values = targets.map((target) => evaluate(target, targetProperty));
       if (targetProperty.type === 'rollup' && values.some((value) => value === undefined)) return undefined;
       if (setting.operation === 'conditional-count') return values.filter((value) => Array.isArray(value) ? value.includes(setting.condition!.value as string) : value === setting.condition!.value).length;
+      if (setting.operation === 'count-non-empty') return values.filter((value) => !isEmptyValue(value)).length;
       if (setting.operation === 'sum') {
         const sum = values.reduce<number>((sum, value) => sum + (typeof value === 'number' ? value : 0), 0);
         if (!Number.isFinite(sum)) { report(row, property, 'ROLLUP_ERROR', 'Rollup sum exceeds the finite numeric range'); return undefined; }
         return sum;
+      }
+      if (setting.operation === 'average') {
+        const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+        if (numbers.length === 0) return null;
+        const average = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+        if (!Number.isFinite(average)) { report(row, property, 'ROLLUP_ERROR', 'Rollup average exceeds the finite numeric range'); return undefined; }
+        return average;
+      }
+      if (setting.operation === 'minimum' || setting.operation === 'maximum') {
+        const usable = values.filter((value): value is number | string => typeof value === 'number' || typeof value === 'string');
+        if (usable.length === 0) return null;
+        const numbers = usable.filter((value): value is number => typeof value === 'number');
+        if (numbers.length === usable.length) {
+          return numbers.reduce((selected, value) => setting.operation === 'minimum' ? (value < selected ? value : selected) : (value > selected ? value : selected));
+        }
+        const strings = usable.filter((value): value is string => typeof value === 'string');
+        if (strings.length === usable.length) {
+          return strings.reduce((selected, value) => setting.operation === 'minimum' ? (value < selected ? value : selected) : (value > selected ? value : selected));
+        }
+        report(row, property, 'ROLLUP_ERROR', 'Rollup minimum/maximum requires values of one compatible type');
+        return undefined;
       }
       const completed = values.filter((value) => value === true).length;
       return setting.operation === 'completed-task-count' ? completed : targets.length ? 100 * completed / targets.length : null;

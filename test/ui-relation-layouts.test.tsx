@@ -9,11 +9,13 @@ import { RelationValue } from '../ui/src/RelationControl.js';
 const REL = '11111111-1111-4111-8111-111111111111';
 const STATUS = '22222222-2222-4222-8222-222222222222';
 const DATE = '33333333-3333-4333-8333-333333333333';
+const ROLLUP = '77777777-7777-4777-8777-777777777777';
 const TARGET = '44444444-4444-4444-8444-444444444444';
 const MISSING = '55555555-5555-4555-8555-555555555555';
 const OPENED: string[] = [];
 
 const relation: Property = { id: REL, name: 'Related tasks', type: 'relation', relation: { databaseId: '99999999-9999-4999-8999-999999999999', cardinality: 'many' } };
+const rollup: Property = { id: ROLLUP, name: 'Average estimate', type: 'rollup', rollup: { relationPropertyId: REL, operation: 'average', targetPropertyId: TARGET } };
 const status: Property = { id: STATUS, name: 'Status', type: 'select', options: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Open' }] };
 const date: Property = { id: DATE, name: 'Due', type: 'date' };
 
@@ -23,7 +25,7 @@ const row: UiDatabaseRow = {
   title: 'Project Alpha',
   updatedAt: '2026-11-01T00:00:00Z',
   contentHash: 'a'.repeat(64),
-  values: { [REL]: [TARGET, MISSING], [STATUS]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [DATE]: '2026-11-02' },
+  values: { [REL]: [TARGET, MISSING], [ROLLUP]: 12.5, [STATUS]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', [DATE]: '2026-11-02' },
   relations: { [REL]: [{ id: TARGET, title: 'Task Beta', path: 'tasks/beta.md', status: 'resolved' }, { id: MISSING, status: 'missing' }] },
   issues: [],
 };
@@ -41,7 +43,7 @@ describe('relation values in every database layout', () => {
   });
 
   it('renders relations in List, Kanban, Calendar, and Gallery layouts with property visibility', () => {
-    const common = { rows: [row], visibleProperties: [relation], disabled: false, onOpen: () => undefined, onEdit: () => undefined, formatValue, renderValue: (target: UiDatabaseRow) => renderRelation(target) };
+    const common = { rows: [row], visibleProperties: [relation, rollup], disabled: false, onOpen: () => undefined, onEdit: () => undefined, formatValue, renderValue: (target: UiDatabaseRow, property: Property) => property.type === 'rollup' ? formatValue(property, target.values[property.id]) : renderRelation(target) };
     const list = renderToStaticMarkup(createElement(ListView, common));
     const kanban = renderToStaticMarkup(createElement(KanbanView, { ...common, property: status }));
     const calendar = renderToStaticMarkup(createElement(CalendarView, { ...common, property: date, onCreate: () => undefined }));
@@ -51,6 +53,8 @@ describe('relation values in every database layout', () => {
       expect(markup).toContain('Related tasks');
       expect(markup).toContain('Open related record Task Beta, tasks/beta.md');
       expect(markup).toContain('Missing record');
+      expect(markup).toContain('Average estimate');
+      expect(markup).toContain('12.5');
       expect(markup).not.toContain('Estimate');
     }
     expect(list).toContain('aria-label="Database list view"');

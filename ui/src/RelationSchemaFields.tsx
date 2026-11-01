@@ -3,6 +3,18 @@ import { ROLLUP_OPERATIONS } from '../../src/database/schema';
 import { Input } from '@/components/ui/input';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 
+const ROLLUP_LABELS: Record<(typeof ROLLUP_OPERATIONS)[number], string> = {
+  count: 'Count records',
+  'count-non-empty': 'Count non-empty values',
+  sum: 'Sum',
+  average: 'Average',
+  minimum: 'Minimum',
+  maximum: 'Maximum',
+  'conditional-count': 'Conditional count',
+  'completed-task-count': 'Completed task count',
+  'completion-percentage': 'Completion percentage',
+};
+
 export function RelationSchemaFields({ property, database, databases, onChange }: {
   property: Property; database: DatabaseDefinition; databases: DatabaseDefinition[]; onChange: (update: Partial<Property>) => void;
 }) {
@@ -31,12 +43,19 @@ export function RelationSchemaFields({ property, database, databases, onChange }
   const config = property.rollup!;
   const relation = database.properties.find((item) => item.id === config.relationPropertyId && item.type === 'relation');
   const target = schemas.find((item) => item.id === relation?.relation?.databaseId);
-  const fields = target?.properties.filter((item) => config.operation === 'sum' ? item.type === 'number' || item.type === 'rollup' : ['completed-task-count', 'completion-percentage'].includes(config.operation) ? item.type === 'checkbox' : item.type !== 'relation') ?? [];
+  const fields = target?.properties.filter((item) => {
+    if (config.operation === 'sum' || config.operation === 'average') return item.type === 'number' || item.type === 'rollup';
+    if (config.operation === 'minimum' || config.operation === 'maximum') return item.type === 'number' || item.type === 'rollup' || item.type === 'date';
+    if (config.operation === 'completed-task-count' || config.operation === 'completion-percentage') return item.type === 'checkbox';
+    if (config.operation === 'conditional-count') return item.type !== 'relation';
+    if (config.operation === 'count-non-empty') return true;
+    return false;
+  }) ?? [];
   const fieldId = config.targetPropertyId ?? config.condition?.propertyId;
   const field = fields.find((item) => item.id === fieldId);
   return <div className="grid gap-2 sm:grid-cols-2">
     {choice('Relation', config.relationPropertyId, database.properties.filter((item) => item.type === 'relation'), (relationPropertyId) => onChange({ rollup: { relationPropertyId, operation: 'count' } }))}
-    {choice('Operation', config.operation, ROLLUP_OPERATIONS.map((id) => ({ id, name: id.replaceAll('-', ' ') })), (operation) => onChange({ rollup: { relationPropertyId: config.relationPropertyId, operation: operation as typeof config.operation,
+    {choice('Operation', config.operation, ROLLUP_OPERATIONS.map((id) => ({ id, name: ROLLUP_LABELS[id] })), (operation) => onChange({ rollup: { relationPropertyId: config.relationPropertyId, operation: operation as typeof config.operation,
       ...(operation === 'conditional-count' ? { condition: { propertyId: '', value: '' } } : operation === 'count' ? {} : { targetPropertyId: '' }) } }))}
     {config.operation !== 'count' ? choice('Target property', fieldId, fields, (id) => onChange({ rollup: { ...config, ...(config.operation === 'conditional-count' ? { condition: { propertyId: id, value: fields.find((item) => item.id === id)?.type === 'checkbox' ? true : '' } } : { targetPropertyId: id }) } })) : null}
     {config.operation === 'conditional-count' && config.condition ? field?.type === 'checkbox'
@@ -45,6 +64,6 @@ export function RelationSchemaFields({ property, database, databases, onChange }
         ? choice('Equals', String(config.condition.value), field.options ?? [], (value) => onChange({ rollup: { ...config, condition: { ...config.condition!, value } } }))
         : <label className="flex flex-col gap-1 text-xs">Equals<Input aria-label={`${property.name} Equals`} type={field?.type === 'number' || field?.type === 'rollup' ? 'number' : 'text'} value={String(config.condition.value)} onChange={(event) => onChange({ rollup: { ...config, condition: { ...config.condition!, value: field?.type === 'number' || field?.type === 'rollup' ? Number(event.currentTarget.value) : event.currentTarget.value } } })} /></label>
       : null}
-    <p className="text-xs text-muted-foreground sm:col-span-2">Derived and read-only. Completion uses a Checkbox on related task records; percentages range from 0 to 100. Invalid or circular configurations show diagnostics.</p>
+    <p className="text-xs text-muted-foreground sm:col-span-2">Derived and read-only. Average, minimum and maximum ignore empty values; minimum/maximum compare dates as ISO calendar dates. Completion uses a Checkbox on related task records; percentages range from 0 to 100. Invalid or circular configurations show diagnostics.</p>
   </div>;
 }

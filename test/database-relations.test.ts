@@ -18,25 +18,31 @@ import { readFile, writeFile } from 'node:fs/promises';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const DB = id(1), TASKS = id(2), REL = id(3), REV = id(4), NUM = id(5), DONE = id(6);
 const COUNT = id(7), SUM = id(8), CONDITIONAL = id(9), COMPLETE = id(10), PERCENT = id(11), SINGLE = id(12);
+const NONEMPTY = id(13), AVERAGE = id(14), MINIMUM = id(15), MAXIMUM = id(16), DATEMIN = id(17), DATEMAX = id(18);
+const DATE = id(19), LABEL = id(20);
 const P = id(100), T1 = id(101), T2 = id(102), MISSING = id(103);
 const NOW = '2026-10-29T00:00:00Z';
 const relation: Property = { id: REL, name: 'Tasks', type: 'relation', relation: { databaseId: TASKS, cardinality: 'many' } };
-const rollup = (propertyId: string, operation: NonNullable<Property['rollup']>['operation'], extra = {}): Property => ({ id: propertyId, name: operation, type: 'rollup', rollup: { relationPropertyId: REL, operation, ...extra } });
+const rollup = (propertyId: string, operation: NonNullable<Property['rollup']>['operation'], extra: Omit<NonNullable<Property['rollup']>, 'relationPropertyId' | 'operation'> = {}, name: string = operation): Property => ({ id: propertyId, name, type: 'rollup', rollup: { relationPropertyId: REL, operation, ...extra } });
 const projects: DatabaseDefinition = { id: DB, name: 'Projects', properties: [relation,
   { id: SINGLE, name: 'Lead task', type: 'relation', relation: { databaseId: TASKS, cardinality: 'one' } },
-  rollup(COUNT, 'count'), rollup(SUM, 'sum', { targetPropertyId: NUM }), rollup(CONDITIONAL, 'conditional-count', { condition: { propertyId: DONE, value: true } }),
+  rollup(COUNT, 'count'), rollup(SUM, 'sum', { targetPropertyId: NUM }, 'Estimate total'), rollup(CONDITIONAL, 'conditional-count', { condition: { propertyId: DONE, value: true } }),
   rollup(COMPLETE, 'completed-task-count', { targetPropertyId: DONE }), rollup(PERCENT, 'completion-percentage', { targetPropertyId: DONE }),
+  rollup(NONEMPTY, 'count-non-empty', { targetPropertyId: NUM }, 'Filled estimates'), rollup(AVERAGE, 'average', { targetPropertyId: NUM }, 'Average estimate'),
+  rollup(MINIMUM, 'minimum', { targetPropertyId: NUM }, 'Minimum estimate'), rollup(MAXIMUM, 'maximum', { targetPropertyId: NUM }, 'Maximum estimate'),
+  rollup(DATEMIN, 'minimum', { targetPropertyId: DATE }, 'Earliest due'), rollup(DATEMAX, 'maximum', { targetPropertyId: DATE }, 'Latest due'),
 ] };
 const tasks: DatabaseDefinition = { id: TASKS, name: 'Tasks', properties: [
   { id: NUM, name: 'Estimate', type: 'number' }, { id: DONE, name: 'Done', type: 'checkbox' },
   { id: REV, name: 'Projects', type: 'relation', relation: { databaseId: DB, cardinality: 'many', reversePropertyId: REL } },
+  { id: DATE, name: 'Due', type: 'date' }, { id: LABEL, name: 'Label', type: 'text' },
 ] };
 const schemas = new Map([[DB, projects], [TASKS, tasks]]);
 function note(noteId: string, databaseId: string, values: Record<string, unknown>): Note {
   return { ...createNote({ id: noteId, title: `Record ${noteId.slice(-3)}`, path: `${noteId}.md`, body: 'Portable [[wiki link]]\n', now: NOW }),
     extraFrontmatter: { custom: { preserve: true }, nodus_data: { format: 'nodus-note-properties', version: 1, databases: { [databaseId]: values } } } };
 }
-const fixture = () => [note(P, DB, { [REL]: [T1, T2], [SINGLE]: T1 }), note(T1, TASKS, { [NUM]: 3, [DONE]: true }), note(T2, TASKS, { [NUM]: 7, [DONE]: false })];
+const fixture = () => [note(P, DB, { [REL]: [T1, T2], [SINGLE]: T1 }), note(T1, TASKS, { [NUM]: 3, [DONE]: true, [DATE]: '2026-01-02' }), note(T2, TASKS, { [NUM]: 7, [DONE]: false, [DATE]: '2026-03-04' })];
 
 describe('portable database relations and rollups', () => {
   it('keeps legacy schemas at v1 and round-trips advanced schemas as v2', () => {
@@ -53,30 +59,89 @@ describe('portable database relations and rollups', () => {
     { ...relation, relation: { databaseId: 'title', cardinality: 'many' } },
     { ...relation, relation: { databaseId: TASKS, cardinality: 'one', reversePropertyId: REL } },
     { ...relation, relation: { ...relation.relation, unknown: true } },
-    rollup(SUM, 'sum'), rollup(CONDITIONAL, 'conditional-count'),
+    rollup(SUM, 'sum'), rollup(CONDITIONAL, 'conditional-count'), rollup(AVERAGE, 'average'), rollup(NONEMPTY, 'count-non-empty'),
     rollup(COUNT, 'count', { targetPropertyId: NUM }),
   ])('rejects malformed advanced configuration %#', (property) => {
     expect(() => serializeDatabase({ ...projects, properties: [property as Property] })).toThrow();
+  });
+
+  it('rejects incompatible rollup target types through projection diagnostics', () => {
+    const textTarget = projectRelations([], new Map([[DB, { ...projects, properties: [relation, rollup(MINIMUM, 'minimum', { targetPropertyId: LABEL }, 'Text minimum')] }], [TASKS, tasks]]));
+    expect(textTarget.diagnostics).toContainEqual(expect.objectContaining({ code: 'INVALID_CONFIGURATION', propertyId: MINIMUM }));
+    const dateAverage = projectRelations([], new Map([[DB, { ...projects, properties: [relation, rollup(AVERAGE, 'average', { targetPropertyId: DATE }, 'Date average')] }], [TASKS, tasks]]));
+    expect(dateAverage.diagnostics).toContainEqual(expect.objectContaining({ code: 'INVALID_CONFIGURATION', propertyId: AVERAGE }));
   });
 
   it('projects both cardinalities, reverse edges, all rollups, and preserves every source byte/value', () => {
     const notes = fixture(); const before = JSON.stringify(notes);
     const graph = projectRelations(notes, schemas);
     expect(graph.diagnostics).toEqual([]);
-    expect(graph.rows.get(P)?.get(DB)?.values).toMatchObject({ [REL]: [T1, T2], [SINGLE]: T1, [COUNT]: 2, [SUM]: 10, [CONDITIONAL]: 1, [COMPLETE]: 1, [PERCENT]: 50 });
+    expect(graph.rows.get(P)?.get(DB)?.values).toMatchObject({
+      [REL]: [T1, T2], [SINGLE]: T1, [COUNT]: 2, [SUM]: 10, [AVERAGE]: 5, [MINIMUM]: 3, [MAXIMUM]: 7,
+      [NONEMPTY]: 2, [DATEMIN]: '2026-01-02', [DATEMAX]: '2026-03-04', [CONDITIONAL]: 1, [COMPLETE]: 1, [PERCENT]: 50,
+    });
     expect(graph.rows.get(T1)?.get(TASKS)?.values[REV]).toEqual([P]);
     expect(graph.rows.get(P)?.get(DB)?.relations[REL]?.[0]).toMatchObject({ id: T1, status: 'resolved' });
     expect(JSON.stringify(notes)).toBe(before);
+  });
+
+  it('defines deterministic rollup behavior for empty, missing, and single relations', () => {
+    const empty = projectRelations([note(P, DB, { [REL]: null, [SINGLE]: null })], schemas).rows.get(P)!.get(DB)!;
+    expect(empty.values).toMatchObject({ [COUNT]: 0, [SUM]: 0, [AVERAGE]: null, [MINIMUM]: null, [MAXIMUM]: null, [NONEMPTY]: 0, [DATEMIN]: null, [DATEMAX]: null });
+    const missing = projectRelations([note(P, DB, { [REL]: [T1, MISSING], [SINGLE]: MISSING }), note(T1, TASKS, { [NUM]: 4, [DATE]: '2026-02-02' })], schemas).rows.get(P)!.get(DB)!;
+    expect(missing.values).toMatchObject({ [COUNT]: 1, [SUM]: 4, [AVERAGE]: 4, [MINIMUM]: 4, [MAXIMUM]: 4, [NONEMPTY]: 1, [DATEMIN]: '2026-02-02', [DATEMAX]: '2026-02-02' });
+    const single: Property = { ...rollup(AVERAGE, 'average', { targetPropertyId: NUM }), rollup: { relationPropertyId: SINGLE, operation: 'average', targetPropertyId: NUM } };
+    const singleGraph = projectRelations(fixture(), new Map([[DB, { ...projects, properties: [relation, { ...relation, id: SINGLE, name: 'Lead task', relation: { databaseId: TASKS, cardinality: 'one' } }, single] }], [TASKS, tasks]]));
+    expect(singleGraph.rows.get(P)?.get(DB)?.values[AVERAGE]).toBe(3);
+  });
+
+  it('recomputes rollups when related values change and ignores non-numeric values safely', () => {
+    const notes = fixture();
+    notes[1] = note(T1, TASKS, { [NUM]: 9, [DATE]: '2026-05-05' });
+    const updated = projectRelations(notes, schemas).rows.get(P)!.get(DB)!;
+    expect(updated.values).toMatchObject({ [SUM]: 16, [AVERAGE]: 8, [MINIMUM]: 7, [MAXIMUM]: 9, [DATEMIN]: '2026-03-04', [DATEMAX]: '2026-05-05' });
+    notes[1] = note(T1, TASKS, { [NUM]: 'not numeric', [DATE]: 'not a date' });
+    const invalid = projectRelations(notes, schemas).rows.get(P)!.get(DB)!;
+    expect(invalid.values[AVERAGE]).toBeUndefined();
+    expect(invalid.values[MINIMUM]).toBeUndefined();
+    expect(invalid.issues.some((issue) => issue.code === 'ROLLUP_ERROR')).toBe(true);
+  });
+
+  it('invalidates aggregate rollups when the target property is deleted or changes type', () => {
+    const deleted = new Map([[DB, projects], [TASKS, { ...tasks, properties: tasks.properties.filter((property) => property.id !== NUM) }]]);
+    const deletedGraph = projectRelations(fixture(), deleted);
+    expect(deletedGraph.rows.get(P)?.get(DB)?.values[SUM]).toBeUndefined();
+    expect(deletedGraph.rows.get(P)?.get(DB)?.values[AVERAGE]).toBeUndefined();
+    expect(deletedGraph.diagnostics).toContainEqual(expect.objectContaining({ code: 'INVALID_CONFIGURATION', propertyId: SUM }));
+    const retyped = new Map([[DB, projects], [TASKS, { ...tasks, properties: tasks.properties.map((property) => property.id === NUM ? { ...property, type: 'text' as const } : property) }]]);
+    const retypedGraph = projectRelations(fixture(), retyped);
+    expect(retypedGraph.rows.get(P)?.get(DB)?.values[AVERAGE]).toBeUndefined();
+    expect(retypedGraph.diagnostics).toContainEqual(expect.objectContaining({ code: 'INVALID_CONFIGURATION', propertyId: AVERAGE }));
+  });
+
+  it('exposes numeric aggregate rollups to formulas without persisting computed values', () => {
+    const formula: Property = { id: id(21), name: 'Average doubled', type: 'formula', formula: { expression: `@{${AVERAGE}} * 2` } };
+    const source: DatabaseDefinition = { ...projects, properties: [...projects.properties, formula] };
+    const graph = projectRelations(fixture(), new Map([[DB, source], [TASKS, tasks]]));
+    expect(graph.rows.get(P)?.get(DB)?.values[formula.id]).toBe(10);
+  });
+
+  it('computes aggregate rollups over large relation sets without losing precision', () => {
+    const targets = Array.from({ length: 1000 }, (_, index) => note(id(1000 + index), TASKS, { [NUM]: index + 1, [DATE]: `2026-${String((index % 12) + 1).padStart(2, '0')}-01` }));
+    const graph = projectRelations([note(P, DB, { [REL]: targets.map((target) => target.id) }), ...targets], schemas);
+    const row = graph.rows.get(P)!.get(DB)!;
+    expect(row.values).toMatchObject({ [COUNT]: 1000, [SUM]: 500500, [AVERAGE]: 500.5, [MINIMUM]: 1, [MAXIMUM]: 1000, [NONEMPTY]: 1000, [DATEMIN]: '2026-01-01', [DATEMAX]: '2026-12-01' });
   });
 
   it('follows IDs through renames/moves and preserves missing/incompatible references after deletion', () => {
     const notes = fixture(); notes[1] = { ...notes[1]!, title: '<script>Renamed</script>', path: 'moved/task.md' };
     let graph = projectRelations(notes, schemas);
     expect(graph.rows.get(P)?.get(DB)?.relations[REL]?.[0]).toMatchObject({ id: T1, title: '<script>Renamed</script>', path: 'moved/task.md' });
+    expect(graph.rows.get(P)?.get(DB)?.values).toMatchObject({ [SUM]: 10, [AVERAGE]: 5, [MINIMUM]: 3, [MAXIMUM]: 7 });
     notes.pop(); notes.push(note(MISSING, DB, {}));
     notes[0] = note(P, DB, { [REL]: [T1, T2, MISSING] });
     graph = projectRelations(notes, schemas);
-    expect(graph.rows.get(P)?.get(DB)?.values).toMatchObject({ [REL]: [T1, T2, MISSING], [COUNT]: 1, [SUM]: 3, [PERCENT]: 100 });
+    expect(graph.rows.get(P)?.get(DB)?.values).toMatchObject({ [REL]: [T1, T2, MISSING], [COUNT]: 1, [SUM]: 3, [AVERAGE]: 3, [MINIMUM]: 3, [MAXIMUM]: 3, [NONEMPTY]: 1, [PERCENT]: 100 });
     expect(graph.diagnostics.map((issue) => issue.code)).toEqual(expect.arrayContaining(['MISSING_TARGET', 'INCOMPATIBLE_TARGET']));
   });
 
@@ -217,6 +282,7 @@ describe('portable database relations and rollups', () => {
       const graph = projectRelations(importedNotes, actualSchemas);
       const incoming = projectIncomingRelations(importedNotes, actualSchemas);
       expect(graph.rows.get(P)?.get(DB)?.values[SUM]).toBe(10);
+      expect(graph.rows.get(P)?.get(DB)?.values[AVERAGE]).toBe(5);
       expect(graph.rows.get(T1)?.get(TASKS)?.values[REV]).toEqual([P]);
       expect(incoming.get(T1)).toEqual(expect.arrayContaining([expect.objectContaining({ sourceId: P, sourceDatabaseId: DB, propertyId: REL, status: 'resolved' })]));
       expect(await readFile(join(imported.root, `${P}.md`), 'utf8')).not.toContain(COUNT);

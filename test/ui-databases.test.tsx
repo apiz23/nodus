@@ -163,6 +163,37 @@ it('configures a new relation with a target database and cardinality', () => {
   expect(markup).toContain('Each note can link to multiple records');
 });
 
+it('configures aggregate rollups with compatible target properties', () => {
+  const source: DatabaseDefinition = {
+    id: IDS_DB_A,
+    name: 'Projects',
+    properties: [
+      { id: 'relation', name: 'Tasks', type: 'relation', relation: { databaseId: IDS_DB_B, cardinality: 'many' } },
+      { id: 'rollup', name: 'Average estimate', type: 'rollup', rollup: { relationPropertyId: 'relation', operation: 'average', targetPropertyId: 'number' } },
+    ],
+  };
+  const target: DatabaseDefinition = {
+    id: IDS_DB_B,
+    name: 'Tasks',
+    properties: [
+      { id: 'number', name: 'Estimate', type: 'number' },
+      { id: 'date', name: 'Due', type: 'date' },
+      { id: 'text', name: 'Label', type: 'text' },
+    ],
+  };
+  const markup = renderToStaticMarkup(createElement(RelationSchemaFields, {
+    property: source.properties[1]!,
+    database: source,
+    databases: [source, target],
+    onChange: () => undefined,
+  }));
+
+  expect(markup).toContain('Average estimate Operation');
+  expect(markup).toContain('Average estimate Target property');
+  expect(markup).toContain('Average, minimum and maximum ignore empty values');
+  expect(markup).toContain('Derived and read-only');
+});
+
 it('explains a deleted relation target in the schema editor without hiding its configuration', () => {
   const source: DatabaseDefinition = {
     id: IDS_DB_A,
