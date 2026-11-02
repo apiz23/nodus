@@ -1,8 +1,9 @@
-import { Fragment, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { markdownLanguage } from '@codemirror/lang-markdown';
 import { Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { parseWikiLinks, createLinkResolver, type LinkableNote } from '../../../src/links/wikilink.js';
+import { headingText, uniqueHeadingId } from './documentOutline.js';
 
 const IMAGE_TYPES = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 
@@ -123,10 +124,12 @@ interface MarkdownPreviewProps {
   notePath: string;
   notes: readonly LinkableNote[];
   onOpenNote: (id: string) => void;
+  onActiveHeadingChange?: (id: string | null) => void;
 }
 
 /** Read-only, escaped Markdown view. The original Markdown remains the only saved representation. */
-export function MarkdownPreview({ value, notePath, notes, onOpenNote }: MarkdownPreviewProps) {
+export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHeadingChange }: MarkdownPreviewProps) {
+  const articleRef = useRef<HTMLElement>(null);
   const rendered = useMemo(() => {
     const links = parseWikiLinks(value);
     const resolve = createLinkResolver(notes);
@@ -246,17 +249,14 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote }: Markdown
         while (contentFrom < contentTo && /[ \t]/.test(value[contentFrom] ?? '')) contentFrom += 1;
         while (contentTo > contentFrom && /[ \t\r\n]/.test(value[contentTo - 1] ?? '')) contentTo -= 1;
         const content = inlineBetween(node, contentFrom, contentTo);
-        const plain = value.slice(contentFrom, contentTo).replace(/[*_`~]/g, '').trim();
-        const base = plain.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/[\s]+/g, '-');
-        const count = usedHeadings.get(base) ?? 0;
-        usedHeadings.set(base, count + 1);
-        const id = `${base || 'section'}${count ? `-${count + 1}` : ''}`;
-        return level === 1 ? <h1 key={key} id={id} className="mt-7 scroll-mt-6 text-3xl font-semibold tracking-tight">{content}</h1>
-          : level === 2 ? <h2 key={key} id={id} className="mt-6 scroll-mt-6 text-2xl font-semibold tracking-tight">{content}</h2>
-            : level === 3 ? <h3 key={key} id={id} className="mt-5 scroll-mt-6 text-xl font-semibold">{content}</h3>
-              : level === 4 ? <h4 key={key} id={id} className="mt-4 scroll-mt-6 text-lg font-semibold">{content}</h4>
-                : level === 5 ? <h5 key={key} id={id} className="mt-4 scroll-mt-6 font-semibold">{content}</h5>
-                  : <h6 key={key} id={id} className="mt-3 scroll-mt-6 text-sm font-semibold uppercase tracking-wide">{content}</h6>;
+        const id = uniqueHeadingId(headingText(value.slice(contentFrom, contentTo)), usedHeadings);
+        const attributes = { id, 'data-outline-heading': true };
+        return level === 1 ? <h1 key={key} {...attributes} className="mt-7 scroll-mt-6 text-3xl font-semibold tracking-tight">{content}</h1>
+          : level === 2 ? <h2 key={key} {...attributes} className="mt-6 scroll-mt-6 text-2xl font-semibold tracking-tight">{content}</h2>
+            : level === 3 ? <h3 key={key} {...attributes} className="mt-5 scroll-mt-6 text-xl font-semibold">{content}</h3>
+              : level === 4 ? <h4 key={key} {...attributes} className="mt-4 scroll-mt-6 text-lg font-semibold">{content}</h4>
+                : level === 5 ? <h5 key={key} {...attributes} className="mt-4 scroll-mt-6 font-semibold">{content}</h5>
+                  : <h6 key={key} {...attributes} className="mt-3 scroll-mt-6 text-sm font-semibold uppercase tracking-wide">{content}</h6>;
       }
       if (name === 'Paragraph') return <p key={key} className="my-3 leading-7">{inlineBetween(node, node.from, node.to)}</p>;
       if (name === 'Document') return <>{childBlocks()}</>;
@@ -300,7 +300,19 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote }: Markdown
     return { tree: block(root.topNode, 'root') };
   }, [value, notePath, notes, onOpenNote]);
 
-  return <article aria-label="Markdown preview" className="min-w-0 break-words text-[16px] text-foreground [&_a]:break-all [&_img]:h-auto [&_img]:max-h-[70vh] [&_img]:max-w-full [&_img]:rounded-md">{rendered.tree}</article>;
+  useEffect(() => {
+    const article = articleRef.current;
+    if (article === null || onActiveHeadingChange === undefined || typeof IntersectionObserver === 'undefined') return;
+    const viewport = article.closest('[data-slot="scroll-area-viewport"]');
+    const observer = new IntersectionObserver((entries) => {
+      const active = entries.filter((entry) => entry.isIntersecting).sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
+      if (active) onActiveHeadingChange(active.target.id || null);
+    }, { root: viewport, rootMargin: '-15% 0px -75% 0px', threshold: 0 });
+    article.querySelectorAll<HTMLElement>('[data-outline-heading]').forEach((heading) => observer.observe(heading));
+    return () => observer.disconnect();
+  }, [onActiveHeadingChange, rendered.tree]);
+
+  return <article ref={articleRef} aria-label="Markdown preview" className="min-w-0 break-words text-[16px] text-foreground [&_a]:break-all [&_img]:h-auto [&_img]:max-h-[70vh] [&_img]:max-w-full [&_img]:rounded-md">{rendered.tree}</article>;
 }
 
 function PreviewImage({ src, alt }: { src: string; alt: string }) {

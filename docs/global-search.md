@@ -22,10 +22,14 @@ Markdown is displayed as escaped text. Each note appears once even if several fi
 
 In the sidebar, Enter in the search field opens the first result; ArrowDown focuses the first
 result. ArrowUp/ArrowDown and Home/End move among results; Enter opens the focused result.
-Escape clears the query and returns to the field. The command palette uses the existing shadcn
-Command keyboard selection and opens notes by ID. An empty palette shows workspace commands; an
-empty sidebar query shows the note tree unless filters are active. No matches and errors have
-separate states. Retry search preserves the query and forces a fresh disk snapshot.
+Escape clears the query and returns to the field. The command palette groups commands by
+category, searches names and keyword aliases, shows shortcut labels, and lists recent notes,
+databases, and folders alongside server-ranked note results. Command and note selection use the
+shared shadcn Command keyboard behavior; notes open by stable ID. An empty palette shows commands
+and up to five recent notes; an empty sidebar query shows the note tree unless filters are active.
+No matches, search errors, and command execution errors have separate states. Retry search
+preserves the query and forces a fresh disk snapshot. See [shortcuts](shortcuts.md) for the
+shortcut reference and focus rules.
 
 ## Derived index and refresh
 
