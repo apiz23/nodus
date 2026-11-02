@@ -4,7 +4,7 @@ export { validateNotePath } from './domain/paths.js';
 export { NOTE_FORMAT_VERSION, createNote, isTimestamp, validateNote, type CreateNoteInput, type Note } from './domain/note.js';
 export { parseNote, serializeNote } from './format/note-format.js';
 export { applyMigration, type Migration } from './format/migration.js';
-export { parseWikiLinks, resolveLink, type LinkableNote, type LinkResolution, type WikiLink } from './links/wikilink.js';
+export { isExternalTarget, parseWikiLinks, resolveLink, type LinkableNote, type LinkResolution, type WikiLink } from './links/wikilink.js';
 export {
   DATABASE_FORMAT,
   DATABASE_FORMAT_VERSION,
@@ -100,7 +100,8 @@ export type {
 } from './sync/contracts.js';
 
 export { buildLinkIndex, createLinkIndexCache, type LinkIndex, type IndexedLink, type IndexedNote } from './links/link-index.js';
-export { graphFromLinkIndex, type GraphNode, type GraphEdge, type NoteGraph } from './links/graph.js';
+export { graphFromLinkIndex, type GraphNode, type GraphEdge, type GraphUnresolvedLink, type NoteGraph } from './links/graph.js';
+export { outgoingLinksForNote, type BacklinkSource, type OutgoingLink } from './links/backlinks.js';
 
 export { buildSearchIndex, searchIndex, type SearchIndex, type SearchResult, type SearchMatch, type SearchField } from './search/search-index.js';
 

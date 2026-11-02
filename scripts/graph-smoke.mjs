@@ -35,11 +35,21 @@ try {
   assert.equal(await sourceNode.locator('circle').getAttribute('stroke-width'), '4', 'Keyboard focus should be visible on graph nodes');
   await page.keyboard.press('Enter');
   await page.getByRole('heading', { name: 'Incoming links (1)', exact: true }).waitFor();
-  await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Outgoing links (2)', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Select unresolved target Missing' }).waitFor();
   await page.getByText('1 unresolved excluded', { exact: true }).waitFor();
+  await page.getByRole('checkbox', { name: 'Show unresolved links' }).click();
+  await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
+  await page.getByRole('checkbox', { name: 'Show unresolved links' }).click();
+  await page.getByRole('heading', { name: 'Outgoing links (2)', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Explore neighbors', exact: true }).click();
   await page.getByText('2 of 3 notes shown', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Show full graph', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Show isolated notes' }).click();
+  await page.getByRole('button', { name: 'Select Graph Source' }).waitFor({ state: 'visible' });
+  assert.equal(await page.getByRole('button', { name: 'Select Lone Node' }).count(), 0, 'Isolated filter did not hide the isolated note');
+  await page.getByRole('checkbox', { name: 'Show isolated notes' }).click();
+  await page.getByRole('button', { name: 'Select Lone Node' }).waitFor({ state: 'visible' });
   const canvas = page.getByRole('group', { name: 'Directed wiki-link graph' });
   await page.getByRole('button', { name: 'Zoom in' }).click();
   assert.match(await canvas.locator('g').first().getAttribute('transform'), /scale\(1\.2\)/);
@@ -47,10 +57,14 @@ try {
   assert.match(await canvas.locator('g').first().getAttribute('transform'), /scale\(1\)/);
   await page.getByLabel('Filter notes by title or path').fill('no such note');
   await page.getByRole('heading', { name: 'No matching notes', exact: true }).waitFor();
-  await page.getByLabel('Filter notes by title or path').fill('');
+  await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
+  await page.getByRole('button', { name: 'Select Graph Source' }).waitFor({ state: 'visible' });
   await page.getByRole('button', { name: 'Select Graph Target' }).click();
   await page.getByRole('button', { name: 'Open note', exact: true }).click();
   await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, 'Graph Target');
+  await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
+  await page.getByRole('region', { name: 'Outgoing links' }).getByRole('button', { name: 'Open Graph Source', exact: true }).click();
+  await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, 'Graph Source');
   await page.keyboard.press('Control+k');
   await page.getByRole('option', { name: /Local graph/ }).click();
   await page.getByRole('heading', { name: 'Local graph', exact: true }).waitFor();
@@ -61,5 +75,5 @@ try {
   await page.getByRole('button', { name: 'Refresh from disk', exact: true }).click();
   await page.getByRole('heading', { name: 'No notes to map yet', exact: true }).waitFor();
   assert(first.id && lone.id && errors.length === 0, errors.join('\n'));
-  console.log('Graph browser smoke passed: navigation, keyboard selection, connections, neighbor focus, viewport controls, search and empty states, and stable-ID note opening.');
+  console.log('Graph browser smoke passed: navigation, keyboard selection, connections, unresolved targets, isolated filtering, neighbor focus, viewport controls, search/reset/empty states, and stable-ID note opening.');
 } finally { await browser?.close(); await server?.close(); await rm(root, { recursive: true, force: true }); }
