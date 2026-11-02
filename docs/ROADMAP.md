@@ -2502,7 +2502,8 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Tests executed:** Focused relationship/link/graph suite: 10 files / 87 tests; combined full serial suite: 98 files / 1,137 tests; `pnpm typecheck`; `pnpm build`; `pnpm test:browser`; `pnpm test:vault-onboarding`; `pnpm test:database-views`; graph and discovery browser smokes; `pnpm bench:graph`; `git diff --check` — all passed.
 - **Performance:** 1,000 notes / 3,000 occurrences: 16.27 ms total; 5,000 / 15,000: 78.45 ms total (local Node 24.18.1 median). No thresholds are enforced.
 - **Commit:** `df89954` — `feat: add knowledge graph exploration`; pushed to `origin/feat/phase-17-knowledge-graph`.
-- **Remaining work:** Radial layout and 200-node display bound remain; no persisted positions, heading/block targets, automatic link rewriting, or persistent relationship index. Phase 17 PR integration and final synchronization remain in progress.
+- **Remaining work:** Radial layout and 200-node display bound remain; no persisted positions, heading/block targets, automatic link rewriting, or persistent relationship index.
+- **Integration:** PR #5 merged to `main` as squash commit `a9dc1a4` under the active linear-history ruleset. The original implementation commit remains on the retained feature branch, not in `main` ancestry.
 - **Notes / decisions:** This delivery is recorded as 17G because the roadmap reserves Phase 17 for Tasks and Project Management. Path resolution is a fallback after title/alias/ID; external URL schemes are ignored. `orphans` remains for API compatibility while the UI uses the stricter two-way `isolated` definition. Graph projection is cached with the shared knowledge snapshot; UI filters never refetch.
 
 ### 2026-11-02 — Phase 16 — Markdown Editor Enhancements
