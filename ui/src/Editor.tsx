@@ -5,6 +5,7 @@ import {
   FileText,
   ImagePlus,
   Info,
+  ListTree,
   Loader2,
   Maximize2,
   Minimize2,
@@ -25,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
@@ -41,6 +42,7 @@ import { SidebarToggle } from './SidebarToggle';
 import { TagEditor } from './editor/TagEditor';
 import { PropertyEditor } from './editor/PropertyEditor';
 import type { NotePropertyValue } from '../../src/properties/catalog';
+import { buildOutlineTree, type DocumentHeading, type DocumentOutlineNode } from './editor/documentOutline';
 
 const CodeMirrorEditor = lazy(() => import('./editor/CodeMirrorEditor').then((module) => ({ default: module.CodeMirrorEditor })));
 const MarkdownPreview = lazy(() => import('./editor/MarkdownPreview').then((module) => ({ default: module.MarkdownPreview })));
@@ -124,8 +126,18 @@ export function Editor({
 }: EditorProps) {
   const [editorMode, setEditorMode] = useState<'source' | 'live'>('live');
   const [preview, setPreview] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [headings, setHeadings] = useState<readonly DocumentHeading[]>([]);
+  const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
+  const [outlineNavigationRequest, setOutlineNavigationRequest] = useState<{ id: string; sequence: number } | null>(null);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [titleFocused, setTitleFocused] = useState(false);
+
+  useEffect(() => {
+    setHeadings([]);
+    setActiveHeadingId(null);
+    setOutlineNavigationRequest(null);
+  }, [note?.id]);
 
   if (loading) {
     return (
@@ -319,6 +331,35 @@ export function Editor({
               </Button>
             ))}
           </div>
+          <Popover open={outlineOpen} onOpenChange={setOutlineOpen}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="gap-1.5" aria-label="Document outline">
+                <ListTree data-icon="inline-start" />
+                Outline
+                {headings.length ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{headings.length}</Badge> : null}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" aria-label="Document outline" className="w-[min(22rem,calc(100vw-2rem))] p-0">
+              <div className="border-b px-3 py-2">
+                <h2 className="text-xs font-semibold">Document outline</h2>
+                <p className="text-[11px] text-muted-foreground">Headings in this Markdown note</p>
+              </div>
+              {headings.length ? (
+                <ScrollArea className="max-h-[60vh] px-2 py-1">
+                  <nav aria-label="Headings">
+                    <OutlineList nodes={buildOutlineTree(headings)} activeId={activeHeadingId} onNavigate={(id) => {
+                      setOutlineOpen(false);
+                      setActiveHeadingId(id);
+                      if (preview) document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      else setOutlineNavigationRequest((previous) => ({ id, sequence: (previous?.sequence ?? 0) + 1 }));
+                    }} />
+                  </nav>
+                </ScrollArea>
+              ) : (
+                <p className="px-3 py-4 text-xs text-muted-foreground" role="status">No headings yet. Start a line with # to add a section.</p>
+              )}
+            </PopoverContent>
+          </Popover>
           <Button
             type="button"
             variant="ghost"
@@ -511,6 +552,9 @@ export function Editor({
                   value={body}
                   onChange={onBodyChange}
                   mode={editorMode}
+                  onOutlineChange={(next) => setHeadings((current) => sameHeadingList(current, next) ? current : next)}
+                  onActiveHeadingChange={setActiveHeadingId}
+                  outlineNavigationRequest={outlineNavigationRequest}
                   notes={notes}
                   onOpenNote={onOpenNote}
                   notePath={note.path}
@@ -520,7 +564,7 @@ export function Editor({
               </Suspense>
             </div>
             <div hidden={!preview}>
-              {preview ? <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading preview…</div>}><MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} /></Suspense> : null}
+              {preview ? <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading preview…</div>}><MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} onActiveHeadingChange={setActiveHeadingId} /></Suspense> : null}
             </div>
           </div>
 
@@ -545,4 +589,23 @@ export function Editor({
       />
     </section>
   );
+}
+
+function sameHeadingList(left: readonly DocumentHeading[], right: readonly DocumentHeading[]): boolean {
+  return left.length === right.length && left.every((heading, index) => {
+    const next = right[index]!;
+    return heading.id === next.id && heading.text === next.text && heading.level === next.level && heading.from === next.from;
+  });
+}
+
+function OutlineList({ nodes, activeId, onNavigate }: { nodes: readonly DocumentOutlineNode[]; activeId: string | null; onNavigate: (id: string) => void }) {
+  return <ol className="flex flex-col gap-0.5 py-1">
+    {nodes.map((node) => <li key={node.id}>
+      <Button type="button" variant="ghost" size="sm" className={cn('h-auto min-h-7 w-full justify-start gap-2 px-2 py-1 text-left text-xs font-normal', activeId === node.id && 'bg-muted text-foreground font-medium')} aria-current={activeId === node.id ? 'location' : undefined} onClick={() => onNavigate(node.id)}>
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">H{node.level}</span>
+        <span className="min-w-0 truncate">{node.text || 'Untitled heading'}</span>
+      </Button>
+      {node.children.length ? <div className="ml-3 border-l pl-1.5"><OutlineList nodes={node.children} activeId={activeId} onNavigate={onNavigate} /></div> : null}
+    </li>)}
+  </ol>;
 }

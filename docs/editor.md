@@ -40,6 +40,8 @@ List and blockquote continuation, checkbox continuation, ordered-sibling renumbe
 
 Tab/Shift+Tab indent/outdent list items, code, and multiline selections by four spaces. An ordinary plain-text caret keeps normal Tab focus navigation. Inside an indentation context, press Escape then Tab to move focus out of the editor.
 
+Inside a parsed GFM table, Tab and Shift+Tab move between cells without changing the Markdown source. Tab at the final body cell appends an empty row and places the caret in its first cell. Outside a table, the existing indentation and normal focus behavior remain in effect. Pasting rectangular spreadsheet text (at least two rows and columns) inserts a Markdown table at the current selection; irregular TSV and ordinary text use CodeMirror's normal paste behavior. Cell pipes and backslashes are escaped, and empty cells are retained.
+
 Inside a code fence, Enter retains the current line's indentation. Enter after a manually typed, unclosed opening fence adds a matching closing fence and places the caret between them; an existing closing fence is not duplicated.
 
 ## Source fidelity
@@ -56,6 +58,12 @@ Preview uses the existing GFM-capable Lezer Markdown parser and renders nodes as
 Resolved wiki links use stable note IDs and open through the existing navigation callback. Unresolved and ambiguous wiki links remain visibly inert. Backlinks remain available below the preview. Ordinary external links allow HTTP(S) and mailto destinations; HTTP(S) links open with `noopener noreferrer`. Unsafe protocols are rendered as inert labels. Raw HTML is always escaped.
 
 HTTPS remote images may load with `no-referrer`; other remote protocols are rejected. Relative local images resolve from the Markdown file's folder and are fetched through the local image API, which only returns supported raster formats from regular, non-symlink files inside the active vault, with a 10 MiB size limit. Missing or rejected images show fallback text. SVG and other unsupported formats do not render. Images resize to the available width. Preview rendering does not add an attachment manager or change the vault format.
+
+## Document outline
+
+The **Outline** control extracts ATX and Setext headings from CodeMirror's existing Lezer Markdown syntax tree. It shows nested levels, including skipped levels under the nearest preceding shallower heading. IDs use NFC-normalized, lowercase heading text; repeated headings receive `-2`, `-3`, and later suffixes, while empty headings use `section` with the same duplicate rule. The preview uses the same ID generation, so navigation targets agree between editing and preview. These IDs are derived navigation anchors, not stored document metadata.
+
+Outline updates are debounced until 120 ms after the latest document edit. Syntax-tree completion runs in bounded 25 ms work slices and retries when the existing incremental parser has not reached the document end. The outline is recomputed only after edits; caret movement updates the active heading using a binary search. The active editor heading follows the caret, and preview mode follows the heading in its scroll viewport. Selecting an outline entry moves the editor caret to that heading or scrolls the preview to its anchor. An empty note shows a Markdown placeholder and an outline message explaining how to add a heading.
 
 ## Line endings
 
@@ -79,6 +87,7 @@ HTTPS remote images may load with `no-referrer`; other remote protocols are reje
 - Decoration passes start from visible ranges; a large intersecting block may still receive line decorations outside the viewport. The full document is not rendered into DOM nodes. Wiki-link resolution scans visible line ranges and excludes code through the syntax tree.
 - Wiki-link title/alias lookup is built once per note-summary snapshot and reused across editor transactions. Updated summaries replace the resolver, so renames, aliases, and deleted targets retain the normal resolution rules.
 - Large-note rendering uses CodeMirror's viewport handling, with the block-decoration exception above. Prior measurements: a 100 KB note and an 850 KB note were both usable; the 850 KB note had a single very long line and took about 1.7 seconds to open. A 1 MB note remains unverified; use Source mode if the live editor is not responsive.
+- A synthetic outline measurement on 378,891 characters and 5,000 headings took a median 61.33 ms (p95 76.32 ms) for extraction from an already complete syntax tree. The earlier 342,785-character/5,000-heading baseline took a median 106.70 ms (p95 158.10 ms) for a fresh full parse plus a simpler heading scan. These runs used different source lengths and different parser-cache conditions, so they indicate the value of reusing the incremental tree but are not a controlled before/after comparison. The extraction still walks the complete syntax tree after a pause; very large heading-heavy documents may briefly delay the outline refresh. The benchmark is observational, not a CI timing threshold.
 
 ## Fallback
 

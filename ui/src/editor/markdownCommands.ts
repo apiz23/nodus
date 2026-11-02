@@ -310,6 +310,48 @@ function indentContext(state: EditorState): boolean {
 export const indentMarkdown: StateCommand = (target) => indentContext(target.state) && indentMore(target);
 export const outdentMarkdown: StateCommand = (target) => indentContext(target.state) && indentLess(target);
 
+/** Move between parsed GFM table cells; Tab at the last cell appends an empty row. */
+export function tableCellTab(backward = false): StateCommand {
+  return (target) => {
+    if (target.state.readOnly) return false;
+    const { state } = target;
+    const position = state.selection.main.head;
+    const table = ancestor(state, position, ['Table']);
+    if (!table) return false;
+    const rows = [
+      ...table.getChildren('TableHeader'),
+      ...table.getChildren('TableRow'),
+    ].sort((left, right) => left.from - right.from);
+    const cells = rows.flatMap((row) => row.getChildren('TableCell'));
+    const current = cells.findIndex((cell) => position >= cell.from && position <= cell.to);
+    if (current < 0) return false;
+    const destination = current + (backward ? -1 : 1);
+    if (destination >= 0 && destination < cells.length) {
+      target.dispatch(state.update({
+        selection: EditorSelection.cursor(cells[destination]!.from),
+        userEvent: 'select',
+        scrollIntoView: true,
+      }));
+      return true;
+    }
+    if (backward || rows.length < 2 || !rows.some((row) => row.name === 'TableRow')) return false;
+    const columnCount = rows[0]!.getChildren('TableCell').length;
+    if (columnCount < 1) return false;
+    const insertion = state.doc.lineAt(rows.at(-1)!.to).to;
+    const row = `| ${Array.from({ length: columnCount }, () => '').join(' | ')} |`;
+    const prefix = '\n';
+    const contentStart = insertion + prefix.length + 2;
+    target.dispatch(state.update({
+      changes: { from: insertion, insert: `${prefix}${row}` },
+      selection: EditorSelection.cursor(contentStart),
+      annotations: isolateHistory.of('full'),
+      userEvent: 'input',
+      scrollIntoView: true,
+    }));
+    return true;
+  };
+}
+
 function formattingKey(key: string, command: StateCommand): KeyBinding {
   return { key, run: (view) => {
     command(view);
@@ -322,7 +364,7 @@ function formattingKey(key: string, command: StateCommand): KeyBinding {
 export const markdownEditingKeymap: readonly KeyBinding[] = [
   { key: 'Enter', run: markdownEnter },
   { key: 'Backspace', run: deleteMarkupBackward },
-  { key: 'Tab', run: indentMarkdown, shift: outdentMarkdown },
+  { key: 'Tab', run: (view) => tableCellTab()(view) || indentMarkdown(view), shift: (view) => tableCellTab(true)(view) || outdentMarkdown(view) },
   formattingKey('Mod-b', toggleBold),
   formattingKey('Mod-i', toggleItalic),
   formattingKey('Mod-Shift-x', toggleStrikethrough),

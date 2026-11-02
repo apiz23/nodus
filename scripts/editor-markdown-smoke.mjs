@@ -57,6 +57,10 @@ try {
     propertyNote = (await request(`/notes/${note.id}/properties/${propertyId}`, 'PUT', { baseHash: propertyNote.contentHash, value })).note;
   }
   const { note: previewNote } = await request('/notes', 'POST', { title: 'Preview page' });
+  const { note: outlineNote } = await request('/notes', 'POST', { title: 'Outline editing' });
+  const outlineMarkdown = '# Alpha\n\n## Child\n\n### Nested\n\n## Duplicate\n\n## Duplicate';
+  await request(`/notes/${outlineNote.id}`, 'PUT', { title: outlineNote.title, body: outlineMarkdown, baseHash: outlineNote.contentHash });
+  const { note: blankNote } = await request('/notes', 'POST', { title: 'Blank Markdown' });
   await mkdir(join(root, 'notes', 'assets'), { recursive: true });
   await writeFile(join(root, 'notes', 'assets', 'tiny.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/S5sAAAAASUVORK5CYII=', 'base64'));
   const previewMarkdown = `# Preview title\n\n## Duplicate\n\n## Duplicate\n\nA paragraph with **bold**, *italic*, ~~strike~~, and \`inline\`.\nSoft break\nHard break  \nnext.\n\n- [x] task\n  - nested\n\n> quote\n\n| Name | Count |\n| --- | ---: |\n| Nodus | 2 |\n\n\`\`\`typescript\nconst greeting = "hello";\n\`\`\`\n\n[external](https://example.test) [unsafe](javascript:alert(1)) [[${target.id}|Stable target]] [[missing]]\n\n![local](assets/tiny.png) ![missing](assets/missing.png) ![remote](https://images.example/a.png)\n\n<script>alert(1)</script>`;
@@ -339,6 +343,8 @@ try {
   assert.equal(await tags.isDisabled(), true, 'Tag edits are blocked while the Markdown draft is unsaved');
 
   await page.setViewportSize({ width: 390, height: 844 });
+  const outlineBounds = await page.getByRole('button', { name: 'Document outline', exact: true }).boundingBox();
+  assert(outlineBounds && outlineBounds.x >= 0 && outlineBounds.x + outlineBounds.width <= 391, 'The outline control remains reachable in a narrow viewport');
   await page.getByRole('button', { name: 'Format Markdown', exact: true }).click();
   controls = page.getByRole('dialog', { name: 'Markdown formatting', exact: true });
   const bounds = await controls.boundingBox();
@@ -349,11 +355,80 @@ try {
   // The last edit may already be saving or saved by autosave. Waiting for the
   // persisted state avoids racing a click against the save button disabling.
   await page.getByText('Saved', { exact: true }).waitFor();
+  await page.getByRole('treeitem', { name: 'Blank Markdown (blank-markdown.md)', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Markdown body', exact: true }).waitFor();
+  await page.getByText('Start writing in Markdown…', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Document outline', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'No headings yet.' }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.getByRole('treeitem', { name: 'Outline editing (outline-editing.md)', exact: true }).click();
+  const outlineBody = page.getByRole('textbox', { name: 'Markdown body', exact: true });
+  await outlineBody.waitFor();
+  const outlineButton = page.getByRole('button', { name: 'Document outline', exact: true });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Document outline"]')?.textContent?.includes('5'));
+  await outlineButton.click();
+  const headingNav = page.locator('nav[aria-label="Headings"]');
+  await headingNav.getByRole('button', { name: 'H3 Nested', exact: true }).waitFor();
+  assert.equal(await headingNav.locator('ol ol').count() >= 2, true, 'The outline nests headings by hierarchy');
+  const duplicateButtons = headingNav.getByRole('button', { name: /H2 Duplicate/ });
+  assert.equal(await duplicateButtons.count(), 2, 'Duplicate titles remain independently navigable');
+  await duplicateButtons.nth(1).click();
+  const outlineEditor = async (selection) => page.evaluate(async (selection) => {
+    const url = performance.getEntriesByType('resource').map((entry) => entry.name).find((url) => url.includes('@codemirror_view.js'));
+    const { EditorView } = await import(url);
+    const view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    if (selection) { view.dispatch({ selection }); view.focus(); }
+    const range = view.state.selection.main;
+    return { text: view.state.sliceDoc(), head: range.head };
+  }, selection);
+  assert.equal((await outlineEditor()).text, outlineMarkdown);
+  assert.equal((await outlineEditor()).text.slice((await outlineEditor()).head, (await outlineEditor()).head + 12), '## Duplicate', 'Outline navigation selects the exact duplicate heading');
+  await outlineButton.click();
+  await headingNav.getByRole('button', { name: 'H2 Duplicate', exact: true }).last().waitFor();
+  await page.waitForFunction(() => [...document.querySelectorAll('nav[aria-label="Headings"] button')].some((button) => button.textContent.includes('Duplicate') && button.getAttribute('aria-current') === 'location'));
+  await page.keyboard.press('Escape');
+  const childAt = outlineMarkdown.indexOf('## Child');
+  await outlineEditor({ anchor: childAt });
+  await outlineButton.click();
+  await headingNav.getByRole('button', { name: 'H2 Child', exact: true }).getAttribute('aria-current').then((value) => assert.equal(value, 'location'));
+  await page.keyboard.press('Escape');
+  const editedAt = outlineMarkdown.indexOf('## Child') + 3;
+  await page.evaluate(async (position) => {
+    const url = performance.getEntriesByType('resource').map((entry) => entry.name).find((url) => url.includes('@codemirror_view.js'));
+    const { EditorView } = await import(url);
+    const view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    view.dispatch({ changes: { from: position, to: position + 5, insert: 'Edited' } });
+  }, editedAt);
+  await outlineButton.click();
+  await page.waitForFunction(() => document.querySelector('nav[aria-label="Headings"]')?.textContent?.includes('Edited'));
+  await page.keyboard.press('Escape');
+  await page.getByText('Saved', { exact: true }).waitFor();
+  await page.getByRole('treeitem', { name: 'Blank Markdown (blank-markdown.md)', exact: true }).click();
+  const pasteEditor = page.getByRole('textbox', { name: 'Markdown body', exact: true });
+  await pasteEditor.focus();
+  await pasteEditor.evaluate((element) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', 'Name\tCount\nOne\t1');
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  });
+  assert.equal((await outlineEditor()).text, '| Name | Count |\n| --- | --- |\n| One | 1 |', 'Rectangular spreadsheet paste creates a Markdown table');
+  const tableText = (await outlineEditor()).text;
+  await outlineEditor({ anchor: tableText.lastIndexOf('1') + 1 });
+  await page.keyboard.press('Tab');
+  assert((await outlineEditor()).text.includes('|  |  |'), 'Tab at the last table cell adds an editable row');
+  await page.getByText('Saved', { exact: true }).waitFor();
+  assert((await request(`/notes/${blankNote.id}`)).note.body.includes('| One | 1 |'), 'Table editing persists through the normal note autosave path');
   await page.getByRole('treeitem', { name: 'Preview page (preview-page.md)', exact: true }).click();
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   await page.getByRole('article', { name: 'Markdown preview', exact: true }).waitFor();
   const preview = page.getByRole('article', { name: 'Markdown preview', exact: true });
   await preview.getByRole('heading', { name: 'Preview title', level: 1 }).waitFor();
+  await page.getByRole('button', { name: 'Document outline', exact: true }).click();
+  const previewHeading = page.locator('nav[aria-label="Headings"]').getByRole('button', { name: 'H2 Duplicate', exact: true }).last();
+  await previewHeading.click();
+  await page.waitForFunction(() => document.querySelector('h2[id="duplicate-2"]')?.getBoundingClientRect().top !== undefined);
+  await page.getByRole('button', { name: 'Document outline', exact: true }).click();
+  await page.locator('nav[aria-label="Headings"] button[aria-current="location"]').waitFor();
   assert.equal(await preview.locator('h2[id="duplicate-2"]').count(), 1, 'Duplicate heading anchors are unique');
   assert.equal(await preview.locator('table tbody tr').count(), 1);
   assert.equal(await preview.getByRole('checkbox').count(), 1);
@@ -374,7 +449,7 @@ try {
   assert.equal(persistedPreview.body, previewMarkdown, 'Preview must not rewrite the Markdown source');
   assert.deepEqual((await request(`/notes/${note.id}`)).note.tags, ['planning', 'Persistent', 'Concurrent']);
   assert.deepEqual(errors, []);
-  console.log('Markdown browser smoke passed: tags keyboard/pointer/retry/loading/draft safety, formatting/shortcuts, undo/redo, source persistence, lists/code/links, wiki navigation, preview rendering/security/local images, and mobile controls.');
+  console.log('Markdown browser smoke passed: tags keyboard/pointer/retry/loading/draft safety, formatting/shortcuts, undo/redo, source persistence, outline synchronization/hierarchy/navigation/active state, spreadsheet paste/table navigation/autosave, lists/code/links, wiki navigation, preview rendering/security/local images, and mobile controls.');
 } finally {
   await browser?.close();
   await server?.close();
