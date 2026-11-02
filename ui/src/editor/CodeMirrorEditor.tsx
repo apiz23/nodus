@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Annotation, Compartment } from '@codemirror/state';
+import { Annotation, Compartment, Text } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorView, keymap, placeholder } from '@codemirror/view';
 import type { LinkableNote } from '../../../src/links/wikilink.js';
 import { createEditorState, getDocumentString } from './createEditorState.js';
 import { liveMarkdown } from './liveMarkdown.js';
@@ -11,6 +11,8 @@ import { AttachmentBrowser } from './AttachmentBrowser.js';
 import { Button } from '@/components/ui/button';
 import { api } from '../api.js';
 import { attachmentMarkdown, insertAttachmentMarkdown } from './attachmentMarkdown.js';
+import { documentOutline, outlineForNavigation, type DocumentHeading } from './documentOutline.js';
+import { spreadsheetTextToMarkdownTable } from './markdownClipboard.js';
 
 const remoteAnnotation = Annotation.define<boolean>();
 const liveCompartment = new Compartment();
@@ -21,6 +23,9 @@ export interface CodeMirrorEditorProps {
   mode?: 'source' | 'live';
   notes?: readonly LinkableNote[];
   onOpenNote?: (id: string) => void;
+  onOutlineChange?: (headings: readonly DocumentHeading[]) => void;
+  onActiveHeadingChange?: (id: string | null) => void;
+  outlineNavigationRequest?: { id: string; sequence: number } | null;
   notePath: string;
   className?: string;
   'aria-label'?: string;
@@ -110,9 +115,23 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
         const clipboard = (event as ClipboardEvent).clipboardData;
         if (!clipboard) return false;
         const files = Array.from(clipboard.items).filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter((file): file is File => file !== null);
-        if (!files.some((file) => file.type.startsWith('image/') || /\.(?:png|jpe?g|gif|webp|avif)$/i.test(file.name))) return false;
+        if (files.some((file) => file.type.startsWith('image/') || /\.(?:png|jpe?g|gif|webp|avif)$/i.test(file.name))) {
+          event.preventDefault();
+          void uploadImages(view, files, view.state.selection.main.head);
+          return true;
+        }
+        if (view.state.selection.ranges.length !== 1) return false;
+        const table = spreadsheetTextToMarkdownTable(clipboard.getData('text/plain'));
+        if (table === null) return false;
         event.preventDefault();
-        void uploadImages(view, files, view.state.selection.main.head);
+        const range = view.state.selection.main;
+        const length = Text.of(table.split('\n')).length;
+        view.dispatch({
+          changes: { from: range.from, to: range.to, insert: table },
+          selection: { anchor: range.from + length },
+          userEvent: 'input.paste',
+          scrollIntoView: true,
+        });
         return true;
       },
       dragover(event) {
@@ -147,6 +166,11 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
           liveCompartment.of(
             live ? liveMarkdown({ notes: initial.notes, onOpenNote: openNote }) : [],
           ),
+          placeholder('Start writing in Markdown…'),
+          documentOutline(() => ({
+            onOutlineChange: propsRef.current.onOutlineChange,
+            onActiveHeadingChange: propsRef.current.onActiveHeadingChange,
+          })),
           onChangeExtension,
           attachmentEvents,
         ],
@@ -160,6 +184,20 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       viewRef.current = null;
     };
   }, [openNote, uploadImages]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    const request = props.outlineNavigationRequest;
+    if (view === null || request === null || request === undefined) return;
+    const heading = outlineForNavigation(view.state, request.id);
+    if (heading === undefined) return;
+    view.dispatch({
+      selection: { anchor: heading.from },
+      effects: EditorView.scrollIntoView(heading.from, { y: 'start' }),
+      userEvent: 'select',
+    });
+    view.focus();
+  }, [props.outlineNavigationRequest]);
 
   useEffect(() => {
     const view = viewRef.current;

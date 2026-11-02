@@ -3,7 +3,7 @@ import { EditorSelection, EditorState, StateEffect, type StateCommand, type Tran
 import { history, redo, undo } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
 import { createEditorState, getDocumentString } from '../ui/src/editor/createEditorState.js';
-import { indentMarkdown, insertCodeBlock, insertMarkdownLink, markdownEnter, outdentMarkdown, toggleBlockquote, toggleBold, toggleHeading, toggleInlineCode, toggleItalic, toggleList, toggleStrikethrough } from '../ui/src/editor/markdownCommands.js';
+import { indentMarkdown, insertCodeBlock, insertMarkdownLink, markdownEnter, outdentMarkdown, tableCellTab, toggleBlockquote, toggleBold, toggleHeading, toggleInlineCode, toggleItalic, toggleList, toggleStrikethrough } from '../ui/src/editor/markdownCommands.js';
 import { collectWikiLinks } from '../ui/src/editor/wikiLinkData.js';
 import { findTaskMarker } from '../ui/src/editor/taskMarkers.js';
 
@@ -123,6 +123,31 @@ describe('Markdown inline formatting transactions', () => {
     toggleBold(view);
     expect(view.text()).toBe(`**${source}**`);
     expect(collectWikiLinks(view.state, [{ id: 'target', title: 'Target', aliases: [] }])[0]?.noteId).toBe('target');
+  });
+});
+
+describe('Markdown table keyboard navigation', () => {
+  it('moves forward and backward across parsed cells without changing source', () => {
+    const source = '| A | B |\n| --- | --- |\n| one | two |';
+    const view = editor(source, source.indexOf('one') + 1);
+    expect(tableCellTab()(view)).toBe(true);
+    expect(view.state.selection.main.head).toBe(source.indexOf('two'));
+    expect(tableCellTab(true)(view)).toBe(true);
+    expect(view.state.selection.main.head).toBe(source.indexOf('one'));
+    expect(view.text()).toBe(source);
+  });
+
+  it('adds an empty row after the final cell and places the cursor in its first cell', () => {
+    const source = '| A | B |\n| --- | --- |\n| one | two |';
+    const view = editor(source, source.indexOf('two') + 1);
+    expect(tableCellTab()(view)).toBe(true);
+    expect(view.text()).toBe(`${source}\n|  |  |`);
+    expect(view.state.doc.sliceString(view.state.selection.main.head, view.state.selection.main.head + 1)).toBe(' ');
+  });
+
+  it('leaves ordinary Tab indentation to existing list and code commands', () => {
+    const view = editor('- item', 4);
+    expect(tableCellTab()(view)).toBe(false);
   });
 });
 
