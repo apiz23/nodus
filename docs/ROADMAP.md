@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-02
-**Latest verified Git HEAD:** `02e62151ee23b648453ff24a168e40671af4490c` (`main`, commit `02e6215` — *feat: preview relation-aware formulas in the editor*)
+**Latest verified implementation commit:** `18539bb` (`main`, *feat: add note and database templates*). Roadmap history includes a documentation-only follow-up commit.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -65,10 +65,10 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 11A — Relation Lifecycle and Layout Coverage](#phase-11a--relation-lifecycle-and-layout-coverage)
    - [Phase 11B — Aggregate Rollups and Relation Search](#phase-11b--aggregate-rollups-and-relation-search)
    - [Phase 11C — Relation-Aware Formulas](#phase-11c--relation-aware-formulas)
-4. [Proposed Future Milestones (Phases 12–32)](#4-proposed-future-milestones-phases-1232)
-   - [Future Milestone Summary](#future-milestone-summary)
    - [Phase 12 — Database Automations](#phase-12--database-automations)
-     - [Phase 13 — Templates and Database Templates](#phase-13--templates-and-database-templates)
+   - [Phase 13 — Templates and Database Templates](#phase-13--templates-and-database-templates)
+4. [Proposed Future Milestones (Phases 14–32)](#4-proposed-future-milestones-phases-1432)
+   - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 14 — Advanced Database Queries](#phase-14--advanced-database-queries)
      - [Phase 15 — Database Protection and Safeguards](#phase-15--database-protection-and-safeguards)
      - [Phase 16 — Tasks and Project Management](#phase-16--tasks-and-project-management)
@@ -134,7 +134,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Markdown notes | **Implemented** | `src/domain/note.ts`, `src/format/note-format.ts`, `ui/src/editor/**` |
 | Filesystem vault | **Implemented with documented limits** | `src/storage/fs/vault.ts`, `docs/storage.md` |
 | Portable export/import | **Implemented** | `src/storage/portable/`, `test/storage-portable.test.ts` |
-| Backup/restore | **Implemented; manifest v5 committed, v6 in working tree** | `src/storage/backup/backup.ts` |
+| Backup/restore | **Implemented; manifest v7, reads v1–v7** | `src/storage/backup/backup.ts` |
 | Atomic writes and conditional writes | **Implemented** | `src/storage/fs/atomic.ts`, `src/storage/fs/root-lock.ts`, `expectedHash` contracts |
 | Cross-process vault lock | **Implemented for cooperating Nodus processes only** | `src/storage/fs/root-lock.ts`, `test/storage-root-lock.test.ts` |
 | Markdown editor | **Implemented** | `ui/src/editor/CodeMirrorEditor.tsx`, `ui/src/Editor.tsx` |
@@ -145,20 +145,22 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Saved views | **Implemented, versions 1–3; table/list/kanban/calendar/gallery** | `src/database/database-view.ts`, `ui/src/DatabaseLayouts.tsx` |
 | Relations and rollups | **Implemented** | `src/database/relations.ts`, `src/database/relation-contract.ts` |
 | Formula engine | **Implemented** | `src/database/formula-*.ts`, `ui/src/database/FormulaEditor*.tsx` |
-| Database automations | **IN_PROGRESS — uncommitted working-tree only** | `src/database/automations.ts`, `ui/src/DatabaseAutomations.tsx` |
+| Database automations | **Implemented with documented limits** | `src/database/automations.ts`, `ui/src/DatabaseAutomations.tsx`, `docs/database-automations.md` |
+| Note and database templates | **Implemented with documented limits** | `src/database/templates.ts`, `ui/src/TemplatesView.tsx`, `docs/templates.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **89 files / 912 declared tests (1,062 executed with parameterization)** | `test/` |
+| Test suite | **91 files / 1,067 executed tests** | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
-**Current working tree caveat:** the tree is dirty. At the time of writing it contains an uncommitted Phase 12 database-automation implementation (storage, API, UI, tests, docs, backup v6), font/design changes, and unrelated modifications. Those changes are **not** part of `HEAD` and must not be treated as stable until committed and verified. This roadmap records them but does not complete or authorize them.
+**Current working tree caveat:** separate typography/landing-page/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content remain outside the Phase 13 commits. The pre-existing roadmap edits were retained and updated for Phase 13.
 
 **Verified verification state for this document:**
 
-- `pnpm typecheck` — passed.
-- `pnpm test` — default parallel run: 81/89 files passed; 17 tests timed out at 5 s (see L-37). Targeted sequential rerun of the 8 affected files: 8 files / 82 tests passed.
-- `git diff --check` — passed after writing this document.
+- `pnpm test --maxWorkers=1` — passed: 91/91 files, 1,067 tests.
+- `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` — passed for Phase 13. The build reports the advisory that the App chunk is above 500 kB.
+- Focused template and automation tests — passed: 14 tests across four model/API files. Browser smoke covers template create/edit/preview/apply/delete.
+- The default parallel full-suite run exceeded test timeouts under load; the authoritative serial full-suite run passed.
 
 ---
 
@@ -185,6 +187,8 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | 11A | Relation lifecycle and layout coverage | COMPLETE | `214abe7` |
 | 11B | Aggregate rollups and relation search | COMPLETE | `12678e5`, `b1379ad` |
 | 11C | Relation-aware formulas | COMPLETE WITH DOCUMENTATION DEBT | `45eab83`, `02e6215` |
+| 12 | Database automations | COMPLETE WITH LIMITATIONS | `a1466ae` |
+| 13 | Templates and Database Templates | COMPLETE WITH LIMITATIONS | `18539bb` |
 
 ---
 
@@ -278,7 +282,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 - One malformed note blocks strict listing, export, and backup.
 - Every ID lookup scans and parses all notes.
 - Locking is cooperative and does not protect against external editors.
-- Backup manifest version was later extended; see Phase 7A, 10, and the working-tree Phase 12 notice.
+- Backup manifest version was later extended through v7; see Phase 7A, 10, Phase 12, and Phase 13.
 
 **Status:** **COMPLETE** (foundation; later hardening in Phase 8)
 
@@ -1032,7 +1036,90 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 
 ---
 
-## 4. Proposed Future Milestones (Phases 12–32)
+### Phase 12 — Database Automations
+
+**Objective:** Provide local, declarative workflows that respond to database record events without arbitrary scripting or network execution.
+
+**Implemented functionality**
+
+- Versioned automation definitions and execution history in `.nodus-automations/`, stored by stable database, automation, record, and property UUIDs.
+- Triggers for record membership creation, watched-property updates (including clearing a property), record deletion, and transitions into ANDed conditions.
+- Typed conditions and ordered actions: set/clear supported properties, update dates, and set checkboxes.
+- Deterministic automation-ID ordering, atomic event claims under the vault lock, duplicate suppression, and no recursive execution from action writes.
+- Management UI for creating/editing, enabling/disabling, confirmed deletion, and viewing execution outcomes.
+- Backup v6, portable export/import, and restore of definitions and history, while continuing to read backup versions 1–5.
+
+**Important source files**
+
+- `src/database/automations.ts`
+- `src/storage/contracts.ts`, `src/storage/fs/layout.ts`, `src/storage/fs/vault.ts`
+- `src/storage/backup/backup.ts`, `src/storage/portable/export.ts`, `src/storage/portable/import.ts`
+- `src/ui-server/api.ts`, `ui/src/DatabaseAutomations.tsx`, `ui/src/DatabasesView.tsx`
+- `docs/database-automations.md`
+
+**Tests and verification**
+
+- `test/database-automations.test.ts`, `test/database-automations-api.test.ts`
+- `test/ui-database-client.test.ts`, `test/ui-databases.test.tsx`
+- `scripts/browser-smoke.mjs` (automation create/edit/toggle/run/history/delete flow)
+- Full suite: `pnpm exec vitest run --no-cache --maxWorkers=2` — 89 files / 1,062 tests passed.
+- `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` passed.
+
+**Commit**
+
+- `a1466ae` — database automations (pushed to `origin/main`).
+
+**Known limitations**
+
+- Events run synchronously in the local API request path; there is no worker or scheduler.
+- A deleted record cannot receive row-local actions, so matching deletion automations are recorded as failures.
+- Action lists are ordered but not transactional; successful earlier actions remain if a later action fails.
+- History is append-only and unbounded. A persisted `running` claim is not retried after a crash, avoiding duplicate side effects.
+- The UI currently omits relation properties from action targets even though the storage validator supports relation assignments.
+- Hidden automation files are included in backup/export but are not yet inspected by storage health checks (L-05).
+
+**Status:** **COMPLETE WITH LIMITATIONS**
+
+---
+
+### Phase 13 — Templates and Database Templates
+
+**Objective:** Create reusable note and database templates without duplicating the editor or database engine.
+
+**Implemented functionality**
+
+- Strict, versioned `nodus-templates` v1 catalog in `.nodus-templates/templates.json`, stored through the vault root lock, atomic replacement, and SHA-256 compare-and-swap writes.
+- Note templates include Markdown, title, tags, aliases, icon, custom frontmatter, and declared text/date/number variables with deterministic interpolation and validation.
+- Database templates capture validated schemas, saved views, and optional starter rows checked with existing note-property rules.
+- Templates workspace supports create/edit/save/delete, preview, explicit apply, plus a direct “From template” entry from note creation.
+- Note apply uses the existing safe path allocator; database apply assigns fresh database/view/record IDs and uses `applyImport` conflict checks.
+- Portable export/import includes the catalog. Backup manifest v7 includes the template file identity, hash, bytes, and count; manifest versions 1–6 remain supported.
+
+**Important source files**
+
+- `src/database/templates.ts`, `src/storage/contracts.ts`, `src/storage/fs/layout.ts`, `src/storage/fs/vault.ts`
+- `src/storage/portable/export.ts`, `src/storage/portable/import.ts`, `src/storage/backup/backup.ts`
+- `src/ui-server/api.ts`, `ui/src/TemplatesView.tsx`, `ui/src/Sidebar.tsx`, `ui/src/App.tsx`
+- `docs/templates.md`
+
+**Tests and verification**
+
+- `test/database-templates.test.ts`, `test/database-templates-api.test.ts`; focused template and automation set: 4 files / 14 tests passed.
+- Full suite: `pnpm test --maxWorkers=1` — 91 files / 1,067 tests passed.
+- `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` passed.
+- Browser smoke covers template create/edit/preview/apply/delete. Build reports the existing App chunk size advisory above 500 kB.
+
+**Known limitations**
+
+- Database template schema/view/row writes reuse import safety and per-file atomic writes but are not one multi-file transaction; a later filesystem failure is surfaced as an incomplete import.
+- Hidden template files are not included in `checkHealth` diagnostics, consistent with the existing gap for hidden metadata (L-05).
+- Database template definitions are captured from an existing database in the UI; there is no standalone visual schema designer inside the template workspace.
+
+**Status:** **COMPLETE WITH LIMITATIONS**
+
+---
+
+## 4. Proposed Future Milestones (Phases 14–32)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
 
@@ -1040,8 +1127,6 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 | Phase | Name | Status | Primary dependencies |
 |---|---|---|---|
-| 12 | Database Automations | **IN_PROGRESS** (uncommitted partial work) | 7B, 7C, 7D, 8, 11 |
-| 13 | Templates and Database Templates | PLANNED | 7B, 7D, 12 optional |
 | 14 | Advanced Database Queries | PLANNED | 7B, 7D, 11, 9 review |
 | 15 | Database Protection and Safeguards | PLANNED | 7A, 7B, 8, 14 |
 | 16 | Tasks and Project Management | PLANNED | 13, 14, 17 |
@@ -1061,84 +1146,6 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | 30 | Security and Privacy | PLANNED | 8, 19, 27 |
 | 31 | Performance and Scalability | PLANNED | 9 review, 14, 21, 25 |
 | 32 | Release Preparation | PLANNED | All prior |
-
----
-
-### Phase 12 — Database Automations
-
-**Objective:** Provide local, declarative workflows that respond to database record events without arbitrary scripting or network execution.
-
-**Expected features**
-
-- Trigger types: record created, property updated, record deleted, condition entered.
-- ANDed conditions and bounded action lists.
-- Actions: set/clear property, update date, set checkbox.
-- Deterministic ordering, persisted execution claims, and no recursive automation loops.
-- Execution history with success/failure and completed-action counts.
-- Full backup, export, import, and schema-reference validation.
-
-**Dependencies:** Phase 7B (schemas/rows), 7C (schema references), 7D (derived property exclusion), 8 (conditional storage), 11A/B (lifecycle behavior).
-
-**Potential architecture impact**
-
-- New hidden vault storage under `.nodus-automations/`.
-- Backup manifest version bump (v6 in the current working tree).
-- API event emission in the local request path.
-- No background worker, scheduler, or cloud execution in the current design.
-- Action sequences are not atomic across multiple property writes.
-
-**Acceptance criteria**
-
-- Definitions are strict, versioned JSON with UUID references and deterministic order.
-- Invalid/stale references fail safely and appear in history.
-- Duplicate event/automation claims execute at most once, including concurrent requests.
-- Internal action writes do not emit automation events.
-- Backup/export/import round-trip definitions and history; older manifests still validate.
-- Automated tests cover definitions, matching, ordering, failures, claims, and portability.
-- Documentation and README accurately reflect implementation status.
-
-**Current working-tree state (do not assume stable):**
-
-- Uncommitted implementation exists in `src/database/automations.ts`, storage/backup/portable layers, API/DTO, `ui/src/DatabaseAutomations.tsx`, tests, and `docs/database-automations.md`.
-- `HEAD` remains backup manifest v5; the working tree is v6.
-- No commit hash exists for this work.
-- Known gaps: `record-created` is only emitted from the rows POST route; automation history is append-only without trimming; UI excludes relation action targets that the backend permits; action batches are not transactional; automated UI coverage is thin.
-- **This roadmap task did not implement or complete Phase 12.** Do not continue this work without maintainer approval.
-
-**Status:** **IN_PROGRESS — UNCOMMITTED PARTIAL IMPLEMENTATION**
-
----
-
-### Phase 13 — Templates and Database Templates
-
-**Objective:** Create reusable note and database templates without duplicating the editor or database engine.
-
-**Expected features**
-
-- Note templates with defined sections, frontmatter, tags, icons, and optional variables.
-- Database templates that create a schema, saved views, and optional starter rows.
-- Template selection during note creation.
-- Preview and explicit apply; never silently overwrite an existing note.
-- Versioned template format and portability.
-
-**Dependencies:** Phase 7B (database definitions/views), Phase 7D (formula schemas), Phase 12 optional for template-triggered workflows.
-
-**Potential architecture impact**
-
-- New versioned template storage or a documented extension to the property catalog.
-- Reuse of `createNote`, database schema validation, view creation, and import conflict rules.
-- Variable interpolation must be deterministic and limited to documented fields.
-
-**Acceptance criteria**
-
-- Templates are portable through backup/export/import.
-- Applying a template cannot bypass path, duplicate-ID, or overwrite safeguards.
-- Invalid template files are rejected without rewriting.
-- Tests cover note and database templates, variables, conflicts, and portability.
-
-**Status:** **PLANNED**
-
----
 
 ### Phase 14 — Advanced Database Queries
 
@@ -1878,14 +1885,34 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Direct relation/select/multi-select formula inputs | — | Not implemented |
 | Formula docs for `related*` functions | `docs/database-formulas.md` | Missing / stale |
 
-### 5.9 Backup and restore
+### 5.9 Database automations
+
+| Feature | Implementation | Status |
+|---|---|---|
+| Strict, UUID-referenced automation definitions | `src/database/automations.ts`, `src/storage/fs/vault.ts` | Implemented (format v1) |
+| Record-created, property-updated, record-deleted, condition-entered triggers | `src/ui-server/api.ts` | Implemented in local API request path |
+| Typed conditions and ordered property actions | `src/database/automations.ts`, `ui/src/DatabaseAutomations.tsx` | Implemented with supported-action limits |
+| Deterministic execution, deduplicated claims, history | `src/storage/fs/vault.ts`, `src/ui-server/api.ts` | Implemented; append-only history |
+| Automation management UI | `ui/src/DatabaseAutomations.tsx` | Implemented; relation assignments not exposed in UI |
+| Backup/export/import/restore | `src/storage/backup/backup.ts`, `src/storage/portable/` | Implemented (backup manifest v7) |
+
+### 5.10 Templates
+
+| Feature | Implementation | Status |
+|---|---|---|
+| Versioned note/database template catalog | `src/database/templates.ts`, `.nodus-templates/templates.json` | Working-tree only (format v1) |
+| Note template metadata and typed variables | `src/database/templates.ts`, `ui/src/TemplatesView.tsx` | Implemented |
+| Database template schema, views, starter rows | `src/database/templates.ts`, `src/ui-server/api.ts` | Implemented; schema designer reuses capture from an existing database |
+| Preview and explicit safe apply | `ui/src/TemplatesView.tsx`, `src/storage/fs/vault.ts` | Implemented |
+| Template portability | `src/storage/portable/`, `src/storage/backup/backup.ts` | Implemented (backup manifest v7) |
+
+### 5.11 Backup and restore
 
 | Feature | Implementation | Status |
 |---|---|---|
 | Byte-for-byte backup | `src/storage/backup/backup.ts` | Implemented |
 | SHA-256 manifest and digest | `src/storage/backup/backup.ts` | Implemented |
-| Manifest versions 1–5 | `src/storage/backup/backup.ts` | Implemented (HEAD) |
-| Manifest v6 (automations) | Working tree only | Working-tree only |
+| Manifest versions 1–7 | `src/storage/backup/backup.ts` | Implemented; reads legacy versions 1–6 |
 | Backup validation | `src/storage/backup/backup.ts` | Implemented |
 | Restore preview and conflicts | `src/storage/backup/backup.ts` | Implemented |
 | Restore merge, explicit overwrite | `src/storage/backup/backup.ts`, `src/storage/fs/vault.ts` | Implemented |
@@ -1894,7 +1921,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Scheduled/background backups | — | Not implemented |
 | Transactional restore / rollback | — | Not implemented |
 
-### 5.10 Performance and reliability
+### 5.12 Performance and reliability
 
 | Feature | Implementation | Status |
 |---|---|---|
@@ -1908,7 +1935,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Persistent/incremental index | — | Not implemented |
 | Multi-process cache lifecycle proof | — | Not verified |
 
-### 5.11 UI and accessibility
+### 5.13 UI and accessibility
 
 | Feature | Implementation | Status |
 |---|---|---|
@@ -1921,11 +1948,11 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Automated accessibility audit | — | Not implemented |
 | Reproducible manual accessibility evidence | — | Partial (user-confirmed only) |
 
-### 5.12 Testing and development tooling
+### 5.14 Testing and development tooling
 
 | Feature | Implementation | Status |
 |---|---|---|
-| Unit/integration test suite | `test/` | 89 files / 912 tests |
+| Unit/integration test suite | `test/` | 91 files / 1,067 executed tests |
 | Browser smoke | `scripts/browser-smoke.mjs` | Implemented |
 | Database-view smoke | `scripts/database-views-smoke.mjs` | Implemented |
 | Vault onboarding smoke | `scripts/vault-onboarding-smoke.mjs` | Implemented |
@@ -1987,15 +2014,16 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 <vault>/properties/catalog.json
 <vault>/attachments/<uuid>-<name>
 <vault>/.nodus-orders/database-views/<database-id>.json
-<vault>/.nodus-automations/automations.json        # working tree only
-<vault>/.nodus-automations/history.json           # working tree only
+<vault>/.nodus-automations/automations.json        # automation definitions
+<vault>/.nodus-automations/history.json           # execution history
+<vault>/.nodus-templates/templates.json           # local note/database templates
 ```
 
 **Why:** Portable files, predictable paths, and a replaceable storage adapter.
 
 **Consequences:** Reserved namespaces cannot contain notes. Hidden directories are not scanned. Database definitions and saved views are separate versioned files. Rows live in note frontmatter, not database JSON. Deleting a database does not cascade-delete views.
 
-**References:** `src/storage/contracts.ts`, `src/storage/fs/layout.ts`, `docs/storage.md` (Vault layout).
+**References:** `src/storage/contracts.ts`, `src/storage/fs/layout.ts`, `docs/storage.md` (Vault layout), `docs/templates.md`.
 
 ---
 
@@ -2052,7 +2080,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 **Why:** Detect incomplete or corrupt backups and keep restore behavior predictable.
 
-**Consequences:** Adding new vault data requires a manifest version bump and reader compatibility. `HEAD` supports manifests 1–5. The working tree adds v6 for automation files but is uncommitted. Backups are integrity checks, not authenticated signatures. Backup/export are not point-in-time snapshots across all file classes.
+**Consequences:** Adding new vault data requires a manifest version bump and reader compatibility. Phase 13 raises the writer to v7 for the optional template catalog; readers support manifests 1–7, with older versions retaining their existing behavior. Backups are integrity checks, not authenticated signatures. Backup/export are not point-in-time snapshots across all file classes.
 
 **References:** `src/storage/backup/backup.ts`, `docs/storage.md` (Backup and recovery), `README.md` (Compatibility policy).
 
@@ -2128,9 +2156,10 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | General property catalog | `nodus-property-catalog` | 1 | `properties/catalog.json` | Optional file |
 | Saved view | `nodus-database-view` | 1–3 | `database-views/<db>/<view>.json` | v3 sorts and empty filters |
 | Saved-view order | `nodus-database-view-order` | 1 | `.nodus-orders/database-views/<db>.json` | Hidden manifest |
-| Automation definitions | `nodus-database-automations` | 1 | `.nodus-automations/automations.json` | Working-tree only |
-| Automation history | `nodus-automation-history` | 1 | `.nodus-automations/history.json` | Working-tree only |
-| Backup manifest | `nodus-backup` | 1–5 at HEAD; 6 in working tree | Backup root `nodus-backup.json` | Written last |
+| Automation definitions | `nodus-database-automations` | 1 | `.nodus-automations/automations.json` | Implemented in Phase 12 |
+| Automation history | `nodus-automation-history` | 1 | `.nodus-automations/history.json` | Implemented in Phase 12; append-only |
+| Template catalog | `nodus-templates` | 1 | `.nodus-templates/templates.json` | Implemented in Phase 13; portable |
+| Backup manifest | `nodus-backup` | 1–7 | Backup root `nodus-backup.json` | Written last; v7 includes the template catalog |
 | App preferences | versioned JSON | 1 | Per-user config directory | Outside vault |
 | Sync state | SQLite | internal | `.nodus/sync.sqlite` | Experimental, outside vault content |
 
@@ -2224,11 +2253,14 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-30 | Sync | No production credential storage or encryption | Not release-safe | Phase 27/30 |
 | L-31 | Testing | No CI pipeline | Regressions found late | Phase 32 |
 | L-32 | Testing | No automated accessibility audit | Accessibility regressions possible | Add axe/AT checks |
-| L-33 | Docs | Multiple docs stale (backup v5/v6, attachments, relations, gallery, automations, watcher) | Agents may misread current state | Update docs when implementation changes |
-| L-34 | Working tree | Phase 12 automations uncommitted; backup v6 only in working tree | Inconsistent HEAD vs tree | Commit and verify, or revert with owner approval |
+| L-33 | Docs | Multiple docs stale (attachments, relations, gallery, formula functions, watcher) | Agents may misread current state | Update docs when implementation changes |
+| L-34 | Working tree | Uncommitted typography/landing/editor changes and untracked local files remain | Separate work may overlap future edits | Preserve and confirm scope before editing |
 | L-35 | Fonts | Working-tree Google Fonts update loads from the network | Offline font fallback; privacy/network consideration until committed | Self-host if offline fidelity is required |
 | L-36 | Performance | No CI budgets; measurements historical | Optimization claims unproven | Phase 31 |
 | L-37 | Testing | Default parallel full-suite run timed out 17 tests at 5 s on the current machine (Node 24.18.1); the same 8 files passed sequentially (82 tests) | Verification can look red for environmental reasons | Add per-area timeout/config review and record authoritative runs; do not treat isolated timeouts as product regressions without a targeted rerun |
+| L-38 | Automations | Execution history is append-only and has no retention limit | Long-lived vaults can accumulate a large history file and slower claim checks | Design bounded retention without weakening duplicate-event protection |
+| L-39 | Templates | Hidden template catalog is not included in `checkHealth` diagnostics | Invalid catalog is surfaced on template reads/export/backup, but not by the vault health panel | Extend hidden metadata health checks |
+| L-40 | Testing | Parallel full-suite runs are sensitive to fixed 5-second test timeouts under load | Unrelated integration tests can time out when many workers run together | Use the serial `pnpm test --maxWorkers=1` run as the verified full-suite result; review test timeout policy separately |
 
 ---
 
@@ -2259,6 +2291,26 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Commit:** `docs: establish master development roadmap` (this commit; use `git log -1` for the hash).
 - **Remaining work:** Phase 9 still needs review; Phase 12 automation work remains uncommitted; documentation drift is listed in L-33; the default full-suite timeout behavior should be rechecked on Node 24 with a dedicated run.
 - **Notes / decisions:** Verified `HEAD` as `02e62151ee23b648453ff24a168e40671af4490c`. The working tree contained unrelated changes and an uncommitted Phase 12 implementation; those were preserved and were not part of the roadmap commit. Historical Phase 4–6 and 10 labels are reconstructed from commit chronology because the repository has no phase tags. Test timeouts were environment/load-sensitive: the same files passed sequentially, so they are not recorded as product regressions without further evidence.
+
+### 2026-11-02 — Phase 12 — Database Automations
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Delivered local database automations with stable UUID references, four triggers, typed conditions, ordered property actions, event claims, execution history, management UI, and backup/export/import/restore support. Backup manifest v6 remains compatible with v1–v5. See `docs/database-automations.md` for execution and failure semantics.
+- **Files changed:** `src/database/automations.ts`, storage contracts/vault/backup/portable layers, local API and DTO, `ui/src/DatabaseAutomations.tsx`, database view integration, automation tests, browser smoke coverage, and documentation.
+- **Tests executed:** Focused automation model/API tests (9 passed); `pnpm exec vitest run --no-cache --maxWorkers=2` (89 files / 1,062 tests passed); `pnpm typecheck`; `pnpm build`; `pnpm test:database-views`; `pnpm test:browser`; `pnpm test:vault-onboarding`; `pnpm bench:databases`; `git diff --check` — all passed. The build emitted the existing 500 kB chunk-size advisory.
+- **Commit:** `a1466ae` — `feat: add database automations`, pushed to `origin/main`.
+- **Remaining work:** Phase 9 remains NEEDS REVIEW. Automation limitations are listed in L-05 and L-38 and in the Phase 12 section above.
+- **Notes / decisions:** Deletion events are observable as failures because deleted records cannot receive row-local actions. Ordered actions are individually atomic and validated but not a multi-action transaction. A `running` claim is intentionally not retried after a crash. The browser smoke exercises create, edit, disable/enable, execution history, and confirmed delete. The vault-onboarding smoke’s macOS preference path was corrected so its requested verification could run on this host. Unrelated uncommitted typography/editor changes and untracked files were preserved.
+
+### 2026-11-02 — Phase 13 — Templates and Database Templates
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added a versioned local template catalog; note/database template creation, editing, preview, and safe apply; note-variable validation; database schema/view/starter-row capture; and export/import/backup/restore support. Backup manifest is now v7 and older versions remain supported.
+- **Files changed:** `src/database/templates.ts`; storage contracts, filesystem, portable import/export, and backup; local API; `ui/src/TemplatesView.tsx`, sidebar/app/client/types; browser smoke; template and backup compatibility tests; `docs/templates.md`; roadmap.
+- **Tests executed:** Focused template and automation tests (4 files / 14 tests); `pnpm test --maxWorkers=1` (91 files / 1,067 tests); `pnpm typecheck`; `pnpm build`; `pnpm test:database-views`; `pnpm test:browser`; `pnpm test:vault-onboarding`; `pnpm bench:databases`; `git diff --check` — passed. Build emits the App chunk advisory above 500 kB.
+- **Commit:** `18539bb` — `feat: add note and database templates` (implementation); roadmap follow-up records final verification and synchronization.
+- **Remaining work:** Database template application uses the existing per-file atomic import path, not a multi-file transaction; hidden template files are not yet covered by `checkHealth`.
+- **Notes / decisions:** Reused `applyImport`, existing note path allocation, schema/view/property validation, vault-root locking, and shadcn primitives. Templates contain data only and execute no user code. Template catalogs are optional; invalid catalogs fail reads/portability without rewriting source bytes. Backup v7 is backward compatible with v1–v6. Browser smoke had one transient database-view fixture 404, then passed on rerun; this is reported rather than hidden. Push verification will be recorded after synchronization.
 
 ---
 
