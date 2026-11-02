@@ -76,6 +76,7 @@ Also not implemented: database/property/option removal, automations, accounts, A
 
 - [Note format](docs/note-format.md)
 - [Wiki-link rules](docs/wiki-links.md)
+- [Keyboard shortcuts and command palette](docs/shortcuts.md)
 - [Global Search and index refresh](docs/global-search.md)
 - [Database definition format](docs/database-format.md)
 - [Database relations and rollups](docs/database-relations.md)

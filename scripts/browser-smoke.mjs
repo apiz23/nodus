@@ -330,6 +330,91 @@ async function main() {
       'Reload did not restore the saved Markdown body',
     );
 
+    // Productivity and command discovery: command search, shortcuts, categories,
+    // keyboard execution, recent-note switching, and the shortcut reference.
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await palette.waitFor({ state: 'visible' });
+    const paletteInput = palette.locator('[data-slot="command-input"]');
+    assert.equal(await paletteInput.getAttribute('aria-label'), 'Search notes or commands');
+    assert.equal(
+      await paletteInput.evaluate((element) => element === document.activeElement),
+      true,
+      'The command palette did not focus its search input',
+    );
+    await paletteInput.fill('keyboard');
+    const shortcutCommand = palette.getByRole('option', { name: /Keyboard shortcuts/ });
+    await shortcutCommand.waitFor({ state: 'visible' });
+    await paletteInput.press('ArrowDown');
+    assert.equal(
+      await palette.locator('[role="option"][aria-selected="true"]').count() > 0,
+      true,
+      'Arrow keys did not move command selection',
+    );
+    assert.match(
+      (await shortcutCommand.textContent()) ?? '',
+      /Ctrl\+\/|⌘\//,
+      'The shortcut reference command did not display its key binding',
+    );
+    await paletteInput.fill('settings');
+    const settingsCommand = palette.getByRole('option', { name: 'Settings' });
+    await settingsCommand.waitFor({ state: 'visible' });
+    await paletteInput.press('Enter');
+    await palette.waitFor({ state: 'hidden' });
+    await page.getByRole('heading', { name: 'Settings' }).waitFor({ state: 'visible' });
+    await page.locator('#workspace-sidebar').getByRole('button', { name: 'All notes' }).click();
+    await page.getByRole('textbox', { name: 'Note title' }).waitFor({ state: 'visible' });
+
+    await page.keyboard.press('Control+Shift+H');
+    const recentDialog = page.getByRole('dialog', { name: 'Recent notes' });
+    await recentDialog.waitFor({ state: 'visible' });
+    const recentInput = recentDialog.locator('[data-slot="command-input"]');
+    assert.equal(await recentInput.getAttribute('aria-label'), 'Search recent notes');
+    assert.equal(
+      await recentInput.evaluate((element) => element === document.activeElement),
+      true,
+      'The recent-notes dialog did not focus its search input',
+    );
+    const secondRecent = recentDialog.getByRole('option', { name: 'Open Browser smoke second note' });
+    await secondRecent.waitFor({ state: 'visible' });
+    await recentInput.press('ArrowDown');
+    assert.equal(
+      await recentDialog.locator('[role="option"][aria-selected="true"]').count() > 0,
+      true,
+      'Arrow keys did not move recent-note selection',
+    );
+    await recentInput.fill('Browser smoke second note');
+    await recentInput.press('Enter');
+    await recentDialog.waitFor({ state: 'hidden' });
+    await page.waitForFunction(
+      () => document.querySelector('#note-title')?.value === 'Browser smoke second note',
+    );
+
+    await page.keyboard.press('Control+Shift+H');
+    const recentAgain = page.getByRole('dialog', { name: 'Recent notes' });
+    await recentAgain.waitFor({ state: 'visible' });
+    const recentAgainInput = recentAgain.locator('[data-slot="command-input"]');
+    await recentAgainInput.fill(firstNote.title);
+    await recentAgainInput.press('Enter');
+    await recentAgain.waitFor({ state: 'hidden' });
+    await page.waitForFunction(
+      (expectedTitle) => document.querySelector('#note-title')?.value === expectedTitle,
+      firstNote.title,
+    );
+
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+k');
+    const paletteAgain = page.getByRole('dialog', { name: 'Command palette' });
+    await paletteAgain.waitFor({ state: 'visible' });
+    await paletteAgain.locator('[data-slot="command-input"]').fill('keyboard shortcuts');
+    await paletteAgain.locator('[data-slot="command-input"]').press('Enter');
+    const shortcutReference = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    await shortcutReference.waitFor({ state: 'visible' });
+    assert.match((await shortcutReference.textContent()) ?? '', /Command palette/);
+    assert.match((await shortcutReference.textContent()) ?? '', /Ctrl\+K|⌘K/);
+    await page.keyboard.press('Escape');
+    await shortcutReference.waitFor({ state: 'hidden' });
+
     const sidebarSearch = page.getByRole('searchbox', { name: 'Search notes', exact: true });
     await sidebarSearch.fill(firstNote.title);
     const searchResults = page.locator('[data-search-result="true"]');
