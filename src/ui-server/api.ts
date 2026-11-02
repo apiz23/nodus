@@ -64,6 +64,11 @@ import type {
 import { pickFolder } from './folder-picker.js';
 import { applicationPreferencesPath, gettingStartedCompleted, readLastVaultPreference, setGettingStartedCompleted, writeLastVaultPreference } from './app-preferences.js';
 import { applyPageIcon, normalizePageIcon, readPageIcon } from './page-icon.js';
+import { parseTemplate, resolveNoteTemplate, type NodusTemplate } from '../database/templates.js';
+import { serializeDatabaseView } from '../database/database-view.js';
+import { databaseViewPath } from '../storage/fs/layout.js';
+import { projectNoteProperties } from '../database/note-properties.js';
+import { applyImport } from '../storage/portable/import.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -679,6 +684,79 @@ export function createLocalApiMiddleware(
 
     if (method === 'GET' && path === '/api/databases') {
       return sendJson(res, 200, { databases: await listDatabases(await getVault()) });
+    }
+
+    if (path === '/api/templates') {
+      const vault = await getVault();
+      if (method === 'GET') return sendJson(res, 200, await vault.readTemplates());
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        requireAllowedKeys(body, ['templates', 'baseHash'], 'request');
+        if (!Array.isArray(body.templates)) throw new ApiError(400, 'INVALID_INPUT', 'templates must be an array.');
+        const baseHash = body.baseHash === null ? null : requireHash(body.baseHash);
+        let templates: NodusTemplate[];
+        try { templates = body.templates.map(parseTemplate); }
+        catch (error) { throw new ApiError(422, 'INVALID_TEMPLATE', error instanceof Error ? error.message : 'Template catalog is invalid.'); }
+        try { return sendJson(res, 200, await vault.writeTemplates(templates, baseHash)); }
+        catch (error) { throw toStaleApiError(error, 'saving templates'); }
+      }
+    }
+    const templateAction = /^\/api\/templates\/([^/]+)\/(preview|apply)$/.exec(path);
+    if (templateAction && (method === 'POST')) {
+      const id = requireUuid(decodeURIComponent(templateAction[1] ?? ''), 'templateId');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['variables', 'folder'], 'request');
+      const vault = await getVault();
+      const { templates } = await vault.readTemplates();
+      const template = templates.find((candidate) => candidate.id === id);
+      if (!template) throw new ApiError(404, 'NOT_FOUND', 'Template was not found.');
+      const variables = body.variables === undefined ? {} : isPlainRecord(body.variables) ? body.variables : (() => { throw new ApiError(400, 'INVALID_INPUT', 'variables must be an object.'); })();
+      if (templateAction[2] === 'preview') {
+        if (template.type === 'note') {
+          let resolved;
+          try { resolved = resolveNoteTemplate(template, variables); }
+          catch (error) { throw new ApiError(422, 'INVALID_TEMPLATE', error instanceof Error ? error.message : 'Template variables are invalid.'); }
+          return sendJson(res, 200, { type: 'note', resolved });
+        }
+        return sendJson(res, 200, { type: 'database', name: template.name, schema: template.database, views: template.views, starterRows: template.starterRows.length });
+      }
+      if (template.type === 'note') {
+        let resolved;
+        try { resolved = resolveNoteTemplate(template, variables); }
+        catch (error) { throw new ApiError(422, 'INVALID_TEMPLATE', error instanceof Error ? error.message : 'Template variables are invalid.'); }
+        const folder = body.folder === undefined ? 'notes' : requireString(body.folder, 'folder');
+        if (body.folder !== undefined && folder !== '' && !(await vault.listFolders()).includes(folder)) throw new ApiError(404, 'NOT_FOUND', `Folder "${folder}" no longer exists.`);
+        const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const title = normalizeTitle(resolved.title);
+        const path = await uniqueNotePath(vault, slugify(title), folder);
+        const normalizedIcon = normalizePageIcon(resolved.icon);
+        if (!normalizedIcon.ok) throw new ApiError(422, 'INVALID_TEMPLATE', normalizedIcon.message);
+        const note = { ...createNote({ id: randomUUID(), title, path, body: resolved.body, now, tags: resolved.tags, aliases: resolved.aliases }), extraFrontmatter: applyPageIcon(resolved.frontmatter, normalizedIcon.value) };
+        await vault.createNote(note);
+        backlinkIndex.markDirty();
+        const saved = await vault.readNoteWithHash(note.id);
+        return sendJson(res, 201, { note: toUiNote(saved.note, saved.hash) });
+      }
+      const newDatabaseId = randomUUID();
+      const database: DatabaseDefinition = { ...template.database, id: newDatabaseId };
+      const views = template.views.map((view) => ({ ...view, id: randomUUID(), databaseId: newDatabaseId }));
+      const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const reservedPaths = new Set<string>();
+      const notes = await Promise.all(template.starterRows.map(async (row) => {
+        const title = normalizeTitle(row.title);
+        const baseSlug = slugify(title);
+        let path = await uniqueNotePath(vault, baseSlug);
+        for (let suffix = 2; reservedPaths.has(path.toLowerCase()); suffix += 1) path = await uniqueNotePath(vault, `${baseSlug}-${suffix}`);
+        reservedPaths.add(path.toLowerCase());
+        const note = { ...createNote({ id: randomUUID(), title, path, body: '', now }), extraFrontmatter: { nodus_data: { format: 'nodus-note-properties', version: 1, databases: { [newDatabaseId]: row.values } } } };
+        const projection = projectNoteProperties(note, new Map([[newDatabaseId, database]]));
+        if (projection.issues.length) throw new ApiError(422, 'INVALID_TEMPLATE', projection.issues.map((issue) => issue.message).join(' '));
+        return note;
+      }));
+      const entries = views.map((view) => ({ kind: 'database-view' as const, id: view.id, path: databaseViewPath(newDatabaseId, view.id), text: serializeDatabaseView(view) }));
+      const report = await applyImport(vault, { entries, notes, databases: [database], databaseViews: views });
+      backlinkIndex.markDirty();
+      return sendJson(res, 201, { databaseId: newDatabaseId, report });
     }
 
     if (method === 'POST' && path === '/api/databases') {
@@ -1580,7 +1658,7 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number; templateFiles?: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
@@ -1589,7 +1667,8 @@ async function validateVaultBackup(
       ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders.length }),
       ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
       ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }),
-      ...(validation.entries.some((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history') ? { automationFiles: validation.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history').length } : {}) },
+      ...(validation.entries.some((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history') ? { automationFiles: validation.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history').length } : {}),
+      ...(validation.entries.some((entry) => entry.kind === 'template-catalog') ? { templateFiles: 1 } : {}) },
   };
 }
 
@@ -1659,6 +1738,10 @@ function requireUuid(value: unknown, field: string): string {
     throw new ApiError(400, 'INVALID_INPUT', `${field} must be a lowercase UUID v4`);
   }
   return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function requireHash(value: unknown): string {

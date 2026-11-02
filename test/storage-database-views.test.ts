@@ -143,7 +143,7 @@ describe('saved-view storage and portability', () => {
       const backupDir = join(dir, 'backup');
       expect(await createBackup(source, backupDir)).toMatchObject({ databaseViews: 1 });
       const validated = await validateBackup(backupDir);
-      expect(validated.manifest.version).toBe(6);
+      expect(validated.manifest.version).toBe(7);
       expect(validated.databaseViews).toEqual([view]);
       const restored = await FileSystemVault.open(join(dir, 'restored'));
       expect(await restoreBackup(backupDir, restored.root)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });

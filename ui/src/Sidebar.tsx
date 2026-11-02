@@ -12,6 +12,7 @@ import {
   Plus,
   Search,
   Settings,
+  CopyPlus,
   Sun,
   X,
 } from 'lucide-react';
@@ -85,6 +86,7 @@ const navItems = [
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'databases' as const, label: 'Databases', icon: Database },
+  { id: 'templates' as const, label: 'Templates', icon: CopyPlus },
 ];
 
 export function Sidebar({
@@ -333,6 +335,18 @@ export function Sidebar({
         >
           <Plus data-icon={compact ? undefined : 'inline-start'} className="size-4" />
           {compact ? null : creating ? 'Creating…' : 'New page'}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={cn('h-7 w-full justify-start gap-1.5 px-2 text-[13px] font-normal text-muted-foreground hover:text-foreground', compact && 'md:justify-center md:px-0')}
+          onClick={() => onView('templates')}
+          disabled={navigationLocked}
+          aria-label="Create from template"
+        >
+          <CopyPlus data-icon={compact ? undefined : 'inline-start'} className="size-4" />
+          {compact ? null : 'From template'}
         </Button>
 
         <nav className={cn('flex w-full flex-col gap-0.5', compact && 'md:items-center')} aria-label="Primary">

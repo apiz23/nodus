@@ -17,6 +17,8 @@ import { walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES } from '../fs/attachments.js';
 import { DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH } from '../fs/layout.js';
 import { parseAutomationHistory, parseAutomations } from '../../database/automations.js';
+import { parseTemplates } from '../../database/templates.js';
+import { TEMPLATE_CATALOG_PATH } from '../fs/layout.js';
 
 /**
  * Reads and fully validates a portable import directory.
@@ -161,7 +163,27 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
   }
 
   entries.push(...await readImportDatabaseAutomationFiles(source));
+  entries.push(...await readImportTemplateFiles(source));
   return { entries, notes, databases, databaseViews, databaseViewOrders: await readImportDatabaseViewOrders(source), ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+}
+
+async function readImportTemplateFiles(source: string): Promise<VaultEntry[]> {
+  const root = join(source, '.nodus-templates');
+  let rootInfo;
+  try { rootInfo = await lstat(root); } catch (error) { if (isMissing(error)) return []; throw storageFailure(error, 'Read import template directory', '.nodus-templates'); }
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Template storage must be a regular .nodus-templates directory', { path: '.nodus-templates' });
+  const children = await readdir(root);
+  if (children.some((child) => child !== 'templates.json')) throw new StorageError('INVALID_CONTENT', 'Unexpected file in template storage', { path: '.nodus-templates' });
+  if (!children.includes('templates.json')) return [];
+  const path = TEMPLATE_CATALOG_PATH;
+  const absolute = join(root, 'templates.json');
+  const info = await lstat(absolute);
+  if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Template catalog must be a regular file', { path });
+  const bytes = await readFile(absolute);
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); parseTemplates(text); }
+  catch (error) { throw wrapContentError(error, path); }
+  return [{ kind: 'template-catalog', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', path, text, rawBytes: Buffer.from(bytes) }];
 }
 
 async function readImportDatabaseAutomationFiles(source: string): Promise<VaultEntry[]> {

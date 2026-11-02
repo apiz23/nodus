@@ -955,6 +955,28 @@ async function main() {
     await page.getByRole('button', { name: 'Switch to light theme' }).click();
     assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dark')), false, 'Light theme did not restore the dark class');
 
+    // Template creation, editing, preview, explicit apply, and deletion.
+    await page.getByRole('button', { name: 'Create from template', exact: true }).click();
+    await page.getByRole('heading', { name: 'Templates' }).waitFor({ state: 'visible' });
+    await page.getByText('No templates yet').waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: 'Note template', exact: true }).click();
+    await page.getByLabel('Template name').fill('Browser template');
+    await page.getByLabel('New note title').fill('Template result');
+    await page.getByLabel('Markdown body').fill('# Created from a saved template');
+    const saveTemplate = page.getByRole('button', { name: 'Save' });
+    await saveTemplate.click();
+    await page.getByText('Template library saved.').waitFor({ state: 'visible' });
+    await page.getByLabel('Markdown body').fill('# Edited saved template');
+    await saveTemplate.click();
+    await page.getByRole('button', { name: 'Preview' }).click();
+    await page.locator('pre').filter({ hasText: 'Edited saved template' }).waitFor({ state: 'visible' });
+    const createdFromTemplate = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/apply'));
+    await page.locator('main').getByRole('button', { name: 'Create from template', exact: true }).click();
+    assert.equal((await createdFromTemplate).status(), 201, 'Template apply did not create a note');
+    assert.equal((await (await fetch(`${baseUrl}/api/notes`)).json()).notes.some((note) => note.title === 'Template result'), true, 'Template apply did not persist its new note');
+    await page.getByRole('button', { name: 'Delete template' }).click();
+    await page.getByText('No templates yet').waitFor({ state: 'visible' });
+
     // Restore confirmation moves focus into the review region.
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('heading', { name: 'Settings' }).waitFor({ state: 'visible' });
@@ -974,7 +996,7 @@ async function main() {
     const expectedApiFailures = new Set([expectedStaleResponse, expectedInjectedFailure, expectedRowsFailure, expectedSchemaMismatch]);
     assert.deepEqual(apiFailures.filter((failure) => !expectedApiFailures.has(failure)), [], 'Unexpected local API request failed');
     assert.deepEqual(browserErrors, [], 'Browser reported uncaught or console errors');
-    console.log('Browser smoke passed: startup, note navigation/save/reload, global search, structured properties, database automation creation/edit/toggle/execution history/deletion, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
+    console.log('Browser smoke passed: startup, note navigation/save/reload, global search, structured properties, database automation creation/edit/toggle/execution history/deletion, template creation/edit/preview/apply/deletion, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
   } catch (error) {
     console.error(`Browser errors: ${JSON.stringify(browserErrors)}`);
     console.error(`API failures: ${JSON.stringify(apiFailures)}`);

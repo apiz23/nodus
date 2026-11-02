@@ -6,6 +6,7 @@ import { DATABASE_FORMAT_VERSION, parseDatabase } from '../../database/schema.js
 import { DATABASE_VIEW_VERSION, parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
 import { DATABASE_VIEW_ORDER_VERSION, parseDatabaseViewOrder } from '../../database/database-view-order.js';
 import { parseAutomationHistory, parseAutomations, validateAutomationReferences } from '../../database/automations.js';
+import { parseTemplates } from '../../database/templates.js';
 import type { Note } from '../../domain/note.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { isUuidV4 } from '../../domain/ids.js';
@@ -42,6 +43,7 @@ import {
   databaseViewPath,
   DATABASE_AUTOMATIONS_PATH,
   DATABASE_AUTOMATION_HISTORY_PATH,
+  TEMPLATE_CATALOG_PATH,
   DATABASE_VIEW_ORDER_DIR,
   DATABASE_VIEWS_DIR,
   isReservedNotePath,
@@ -52,6 +54,7 @@ import { isManagedAttachmentDirectory, walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from '../fs/attachments.js';
 
 const AUTOMATION_FILE_IDS = { 'automation-definitions': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'automation-history': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2' } as const;
+const TEMPLATE_FILE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
 
 /**
  * Creates a recovery snapshot: every note, database definition, and saved view, byte for
@@ -75,6 +78,7 @@ export async function createBackup(
   const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
   const databaseViewOrders = await vault.listDatabaseViewOrderFiles();
   const automationFiles = await vault.listDatabaseAutomationFiles();
+  const templateFiles = await vault.listTemplateFiles();
   for (const order of databaseViewOrders) {
     if (order.path !== databaseViewOrderPath(order.databaseId)) {
       throw new StorageError('INVALID_CONTENT', `Saved-view ordering manifest "${order.path}" does not match database "${order.databaseId}"`, { path: order.path });
@@ -134,6 +138,7 @@ export async function createBackup(
   let databaseViewOrderCount = 0;
   let attachments = 0;
   let automationFileCount = 0;
+  let templateFileCount = 0;
 
   try {
     for (const { entry, bytes } of backupEntries) {
@@ -186,6 +191,12 @@ export async function createBackup(
       files.push({ kind: entry.kind, id: entry.id, path: entry.path, sha256: sha256(bytes), bytes: bytes.byteLength });
       automationFileCount += 1;
     }
+    for (const entry of templateFiles) {
+      const bytes = entry.rawBytes ?? Buffer.from(entry.text, 'utf8');
+      await writeFileAtomic(resolveInsideRoot(target, entry.path), bytes);
+      files.push({ kind: entry.kind, id: entry.id, path: entry.path, sha256: sha256(bytes), bytes: bytes.byteLength });
+      templateFileCount += 1;
+    }
 
     const app = await readAppInfo();
     const manifest: BackupManifest = {
@@ -193,8 +204,8 @@ export async function createBackup(
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automations: 1 },
-      counts: { notes, databases, databaseViews, databaseViewOrders: databaseViewOrderCount, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1, automationFiles: automationFileCount },
+      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automations: 1, templates: 1 },
+      counts: { notes, databases, databaseViews, databaseViewOrders: databaseViewOrderCount, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1, automationFiles: automationFileCount, templateFiles: templateFileCount },
       ...(catalogMetadata === undefined ? {} : { propertyCatalog: catalogMetadata }),
       files,
     };
@@ -204,7 +215,7 @@ export async function createBackup(
     throw storageFailure(error, 'Write backup', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(databaseViewOrderCount === 0 ? {} : { databaseViewOrders: databaseViewOrderCount }), ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }), ...(automationFileCount === 0 ? {} : { automationFiles: automationFileCount }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(databaseViewOrderCount === 0 ? {} : { databaseViewOrders: databaseViewOrderCount }), ...(attachments === 0 ? {} : { attachments }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }), ...(automationFileCount === 0 ? {} : { automationFiles: automationFileCount }), ...(templateFileCount === 0 ? {} : { templateFiles: templateFileCount }) };
 }
 
 /**
@@ -315,6 +326,16 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
     const children = await readdir(join(target, automationDirectory));
     if (children.length !== expected.size || children.some((name) => !expected.has(`.nodus-automations/${name}`))) throw corruptBackup('Automation backup files are unsafe or missing from the manifest; no restore occurred');
   } else if (manifestAutomationFiles.length > 0) throw corruptBackup('Automation backup files are missing; no restore occurred');
+  const templateDirectory = (await readdir(target)).find((name) => name.toLowerCase() === '.nodus-templates');
+  const manifestTemplateFiles = manifest.files.filter((file) => file.kind === 'template-catalog');
+  if (templateDirectory !== undefined) {
+    if (manifest.version < 7) throw corruptBackup('Legacy backup manifest cannot account for template storage; no restore occurred');
+    const info = await lstat(join(target, templateDirectory));
+    if (templateDirectory !== '.nodus-templates' || !info.isDirectory() || info.isSymbolicLink()) throw corruptBackup('Template backup storage must be a regular .nodus-templates/ directory');
+    const expected = new Set(manifestTemplateFiles.map((file) => file.path));
+    const children = await readdir(join(target, templateDirectory));
+    if (children.length !== expected.size || children.some((name) => !expected.has(`.nodus-templates/${name}`))) throw corruptBackup('Template backup files are unsafe or missing from the manifest; no restore occurred');
+  } else if (manifestTemplateFiles.length > 0) throw corruptBackup('Template backup files are missing; no restore occurred');
 
   const issues: string[] = [];
   const entries: VaultEntry[] = [];
@@ -466,6 +487,14 @@ export async function validateBackup(targetDir: string): Promise<BackupValidatio
       entries.push({ kind: file.kind, id: file.id, path: file.path, text, rawBytes: Buffer.from(bytes) });
       continue;
     }
+    if (file.kind === 'template-catalog') {
+      try {
+        if (file.path !== TEMPLATE_CATALOG_PATH || file.id !== TEMPLATE_FILE_ID) throw new Error('Template catalog must use its managed path and ID');
+        parseTemplates(text);
+      } catch (error) { issues.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+      entries.push({ kind: file.kind, id: file.id, path: file.path, text, rawBytes: Buffer.from(bytes) });
+      continue;
+    }
 
     if (file.kind === 'note') {
       try {
@@ -608,6 +637,7 @@ export async function previewRestore(
   const targetCatalog = await vault.readPropertyCatalogWithHash();
   const existingOrders = await vault.listDatabaseViewOrderFiles();
   const existingAutomationFiles = await vault.listDatabaseAutomationFiles();
+  const existingTemplateFiles = await vault.listTemplateFiles();
   const catalogConflict = validation.propertyCatalog === undefined
     ? false
     : targetCatalog.hash === null
@@ -663,6 +693,10 @@ export async function previewRestore(
     const current = existingAutomationFiles.find((candidate) => candidate.path === entry.path);
     if (current && sha256(current.rawBytes ?? current.text) !== sha256(entry.rawBytes ?? entry.text)) paths.add(entry.path);
   }
+  for (const entry of validation.entries) if (entry.kind === 'template-catalog') {
+    const current = existingTemplateFiles.find((candidate) => candidate.path === entry.path);
+    if (current && sha256(current.rawBytes ?? current.text) !== sha256(entry.rawBytes ?? entry.text)) paths.add(entry.path);
+  }
 
   return {
     manifest: validation.manifest,
@@ -670,7 +704,8 @@ export async function previewRestore(
       ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders.length }),
       ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
       ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }),
-      ...(validation.entries.some((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history') ? { automationFiles: validation.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history').length } : {}) },
+      ...(validation.entries.some((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history') ? { automationFiles: validation.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history').length } : {}),
+      ...(validation.entries.some((entry) => entry.kind === 'template-catalog') ? { templateFiles: 1 } : {}) },
     ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: {
       path: PROPERTY_CATALOG_PATH,
       version: validation.propertyCatalog.version,
@@ -870,7 +905,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
       issues.push(`files[${index}] is not an object`);
       return;
     }
-    if (item.kind !== 'note' && item.kind !== 'database' && !(version >= 2 && item.kind === 'database-view') && !(version >= 3 && item.kind === 'attachment') && !(version >= 5 && item.kind === 'database-view-order') && !(version >= 6 && (item.kind === 'automation-definitions' || item.kind === 'automation-history'))) {
+    if (item.kind !== 'note' && item.kind !== 'database' && !(version >= 2 && item.kind === 'database-view') && !(version >= 3 && item.kind === 'attachment') && !(version >= 5 && item.kind === 'database-view-order') && !(version >= 6 && (item.kind === 'automation-definitions' || item.kind === 'automation-history')) && !(version >= 7 && item.kind === 'template-catalog')) {
       issues.push(`files[${index}].kind is not supported by backup version ${version}`);
       return;
     }
@@ -921,11 +956,12 @@ async function readManifest(target: string): Promise<BackupManifest> {
         (version >= 2 && !isIntegerAtLeast(data.formats.databaseView, 1)) ||
         (version >= 4 && !isIntegerAtLeast(data.formats.propertyCatalog, 1)) ||
         (version >= 5 && !isIntegerAtLeast(data.formats.databaseViewOrder, 1)) ||
-        (version >= 6 && !isIntegerAtLeast(data.formats.automations, 1))) {
+        (version >= 6 && !isIntegerAtLeast(data.formats.automations, 1)) ||
+        (version >= 7 && !isIntegerAtLeast(data.formats.templates, 1))) {
       issues.push('formats must contain positive integers note, database, backup, databaseView for v2+, propertyCatalog for v4+, and databaseViewOrder for v5+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrder'] : []), ...(version >= 6 ? ['automations'] : []), 'backup'], 'formats', issues);
-      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}), ...(version >= 4 ? { propertyCatalog: data.formats.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrder: data.formats.databaseViewOrder as number } : {}), ...(version >= 6 ? { automations: data.formats.automations as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.formats, ['note', 'database', 'databaseView', ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrder'] : []), ...(version >= 6 ? ['automations'] : []), ...(version >= 7 ? ['templates'] : []), 'backup'], 'formats', issues);
+      formats = { note: data.formats.note, database: data.formats.database, backup: data.formats.backup, ...(version >= 2 ? { databaseView: data.formats.databaseView as number } : {}), ...(version >= 4 ? { propertyCatalog: data.formats.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrder: data.formats.databaseViewOrder as number } : {}), ...(version >= 6 ? { automations: data.formats.automations as number } : {}), ...(version >= 7 ? { templates: data.formats.templates as number } : {}) };
     }
   }
 
@@ -938,18 +974,20 @@ async function readManifest(target: string): Promise<BackupManifest> {
         (version >= 3 && !isIntegerAtLeast(data.counts.attachments, 0)) ||
         (version >= 4 && !isIntegerAtLeast(data.counts.propertyCatalog, 0)) ||
         (version >= 5 && !isIntegerAtLeast(data.counts.databaseViewOrders, 0)) ||
-        (version >= 6 && !isIntegerAtLeast(data.counts.automationFiles, 0))) {
+        (version >= 6 && !isIntegerAtLeast(data.counts.automationFiles, 0)) ||
+        (version >= 7 && !isIntegerAtLeast(data.counts.templateFiles, 0))) {
       issues.push('counts must contain non-negative integers notes, databases, databaseViews for v2+, attachments for v3+, propertyCatalog for v4+, and databaseViewOrders for v5+');
     } else {
-      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : []), ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrders'] : []), ...(version >= 6 ? ['automationFiles'] : [])], 'counts', issues);
-      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}), ...(version >= 4 ? { propertyCatalog: data.counts.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrders: data.counts.databaseViewOrders as number } : {}), ...(version >= 6 ? { automationFiles: data.counts.automationFiles as number } : {}) };
+      if (version >= 2) rejectUnknownKeys(data.counts, ['notes', 'databases', 'databaseViews', ...(version >= 3 ? ['attachments'] : []), ...(version >= 4 ? ['propertyCatalog'] : []), ...(version >= 5 ? ['databaseViewOrders'] : []), ...(version >= 6 ? ['automationFiles'] : []), ...(version >= 7 ? ['templateFiles'] : [])], 'counts', issues);
+      counts = { notes: data.counts.notes, databases: data.counts.databases, ...(version >= 2 ? { databaseViews: data.counts.databaseViews as number } : {}), ...(version >= 3 ? { attachments: data.counts.attachments as number } : {}), ...(version >= 4 ? { propertyCatalog: data.counts.propertyCatalog as number } : {}), ...(version >= 5 ? { databaseViewOrders: data.counts.databaseViewOrders as number } : {}), ...(version >= 6 ? { automationFiles: data.counts.automationFiles as number } : {}), ...(version >= 7 ? { templateFiles: data.counts.templateFiles as number } : {}) };
       const noteFiles = files.filter((file) => file.kind === 'note').length;
       const databaseFiles = files.filter((file) => file.kind === 'database').length;
       const viewFiles = files.filter((file) => file.kind === 'database-view').length;
       const orderFiles = files.filter((file) => file.kind === 'database-view-order').length;
       const attachmentFiles = files.filter((file) => file.kind === 'attachment').length;
       const automationFiles = files.filter((file) => file.kind === 'automation-definitions' || file.kind === 'automation-history').length;
-      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version >= 2 && counts.databaseViews !== viewFiles) || (version >= 3 && counts.attachments !== attachmentFiles) || (version >= 5 && counts.databaseViewOrders !== orderFiles) || (version >= 6 && counts.automationFiles !== automationFiles)) {
+      const templateFiles = files.filter((file) => file.kind === 'template-catalog').length;
+      if (counts.notes !== noteFiles || counts.databases !== databaseFiles || (version >= 2 && counts.databaseViews !== viewFiles) || (version >= 3 && counts.attachments !== attachmentFiles) || (version >= 5 && counts.databaseViewOrders !== orderFiles) || (version >= 6 && counts.automationFiles !== automationFiles) || (version >= 7 && counts.templateFiles !== templateFiles)) {
         issues.push('counts does not match the number of file entries');
       }
     }
@@ -1001,6 +1039,8 @@ async function readManifest(target: string): Promise<BackupManifest> {
   if (version >= 4 && counts?.propertyCatalog === undefined) issues.push('v4 manifests require property catalog counts');
   if (version >= 5 && counts?.databaseViewOrders === undefined) issues.push('v5 manifests require saved-view ordering counts');
   if (version >= 6 && counts?.automationFiles === undefined) issues.push('v6 manifests require automation file counts');
+  if (version >= 7 && counts?.templateFiles === undefined) issues.push('v7 manifests require template file counts');
+  if (version >= 7 && formats?.templates === undefined) issues.push('v7 manifests require template format version');
   if (version >= 2 && files.some((file) => file.bytes === undefined)) issues.push('v2+ manifest file entries require byte lengths');
   if (version >= 2 && digest === undefined) issues.push('v2+ manifests require a digest');
   if (version >= 2 && formats?.databaseView !== undefined && formats.databaseView > DATABASE_VIEW_VERSION) {
@@ -1013,6 +1053,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
     throw new StorageError('UNSUPPORTED_VERSION', `Saved-view ordering format version ${formats.databaseViewOrder} is newer than supported version ${DATABASE_VIEW_ORDER_VERSION}`, { path: BACKUP_MANIFEST });
   }
   if (formats?.automations !== undefined && formats.automations > 1) throw new StorageError('UNSUPPORTED_VERSION', `Automation format version ${formats.automations} is newer than supported version 1`, { path: BACKUP_MANIFEST });
+  if (formats?.templates !== undefined && formats.templates > 1) throw new StorageError('UNSUPPORTED_VERSION', `Template format version ${formats.templates} is newer than supported version 1`, { path: BACKUP_MANIFEST });
   if (formats && formats.database > DATABASE_FORMAT_VERSION) throw new StorageError('UNSUPPORTED_VERSION', 'Backup requires a newer database format', { path: BACKUP_MANIFEST });
   if (version >= 2 && formats?.backup !== version) issues.push(`formats.backup must match manifest version ${version}`);
 
@@ -1022,7 +1063,7 @@ async function readManifest(target: string): Promise<BackupManifest> {
     } else {
       const candidate: BackupManifest = {
         format: BACKUP_FORMAT,
-        version: version as 1 | 2 | 3 | 4 | 5 | 6,
+        version: version as 1 | 2 | 3 | 4 | 5 | 6 | 7,
         createdAt: data.createdAt,
         ...(app === undefined ? {} : { app }),
         ...(formats === undefined ? {} : { formats }),
@@ -1087,7 +1128,8 @@ function corruptBackup(message: string): StorageError {
   return new StorageError('CORRUPT_BACKUP', message, { path: BACKUP_MANIFEST });
 }
 
-function restorePathIssue(kind: 'note' | 'database' | 'database-view' | 'database-view-order' | 'attachment' | 'automation-definitions' | 'automation-history', id: string, path: string): string | undefined {
+function restorePathIssue(kind: 'note' | 'database' | 'database-view' | 'database-view-order' | 'attachment' | 'automation-definitions' | 'automation-history' | 'template-catalog', id: string, path: string): string | undefined {
+  if (kind === 'template-catalog') return path === TEMPLATE_CATALOG_PATH && id === TEMPLATE_FILE_ID ? undefined : `Template catalog must be stored at "${TEMPLATE_CATALOG_PATH}" with its managed ID`;
   if (kind === 'automation-definitions' || kind === 'automation-history') {
     const expected = kind === 'automation-definitions' ? DATABASE_AUTOMATIONS_PATH : DATABASE_AUTOMATION_HISTORY_PATH;
     return path === expected && id === AUTOMATION_FILE_IDS[kind] ? undefined : `Automation file must be stored at "${expected}" with its managed ID`;
@@ -1216,6 +1258,7 @@ function canonicalDigestInput(
       ...(manifest.formats.databaseViewOrder === undefined ? {} : { databaseViewOrder: manifest.formats.databaseViewOrder }),
       ...(manifest.formats.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.formats.propertyCatalog }),
       ...(manifest.formats.automations === undefined ? {} : { automations: manifest.formats.automations }),
+      ...(manifest.formats.templates === undefined ? {} : { templates: manifest.formats.templates }),
       backup: manifest.formats.backup,
     };
   }
@@ -1228,6 +1271,7 @@ function canonicalDigestInput(
       ...(manifest.counts.attachments === undefined ? {} : { attachments: manifest.counts.attachments }),
       ...(manifest.counts.propertyCatalog === undefined ? {} : { propertyCatalog: manifest.counts.propertyCatalog }),
       ...(manifest.counts.automationFiles === undefined ? {} : { automationFiles: manifest.counts.automationFiles }),
+      ...(manifest.counts.templateFiles === undefined ? {} : { templateFiles: manifest.counts.templateFiles }),
     };
   }
   if (manifest.propertyCatalog !== undefined) {

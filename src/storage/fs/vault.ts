@@ -22,7 +22,10 @@ import type {
   PropertyCatalogFile,
   NotePropertyWrite,
   VaultStorage,
+  TemplateStore,
 } from '../contracts.js';
+import type { NodusTemplate } from '../../database/templates.js';
+import { parseTemplates, serializeTemplates } from '../../database/templates.js';
 import type { AutomationExecution, DatabaseAutomation } from '../../database/automations.js';
 import { AUTOMATION_HISTORY_LIMIT, parseAutomationHistory, parseAutomations, serializeAutomations, validateAutomationReferences } from '../../database/automations.js';
 import type { DatabaseDefinition } from '../../database/schema.js';
@@ -50,7 +53,7 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, isReservedNotePath } from './layout.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_PATH, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
@@ -576,6 +579,38 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       try { return { automations: parseAutomations(file.text), hash: sha256Hex(file.bytes) }; }
       catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation definitions are invalid.', { path: DATABASE_AUTOMATIONS_PATH, cause: error }); }
     });
+  }
+
+  async readTemplates(): Promise<{ templates: NodusTemplate[]; hash: string | null }> {
+    return withVaultRootLock(this.root, async () => {
+      const file = await this.readAutomationFileUnlocked(TEMPLATE_CATALOG_PATH);
+      if (!file) return { templates: [], hash: null };
+      try { return { templates: parseTemplates(file.text), hash: sha256Hex(file.bytes) }; }
+      catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Template catalog is invalid.', { path: TEMPLATE_CATALOG_PATH, cause: error }); }
+    });
+  }
+
+  async writeTemplates(templates: NodusTemplate[], expectedHash: string | null): Promise<{ templates: NodusTemplate[]; hash: string }> {
+    return withVaultRootLock(this.root, async () => {
+      let text: string;
+      try { text = serializeTemplates(templates); } catch (error) { throw wrapInputError(error, 'Invalid template catalog'); }
+      const current = await this.readAutomationFileUnlocked(TEMPLATE_CATALOG_PATH);
+      const hash = current ? sha256Hex(current.bytes) : null;
+      if (hash !== expectedHash) throw staleWrite(TEMPLATE_CATALOG_PATH, hash ?? undefined);
+      await this.writeDocument(TEMPLATE_CATALOG_PATH, text, true);
+      return { templates: parseTemplates(text), hash: sha256Hex(text) };
+    });
+  }
+
+  async listTemplateFiles(): Promise<VaultEntry[]> {
+    return withVaultRootLock(this.root, () => this.listTemplateFilesUnlocked());
+  }
+
+  private async listTemplateFilesUnlocked(): Promise<VaultEntry[]> {
+    const file = await this.readAutomationFileUnlocked(TEMPLATE_CATALOG_PATH);
+    if (!file) return [];
+    try { parseTemplates(file.text); } catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Template catalog is invalid.', { path: TEMPLATE_CATALOG_PATH, cause: error }); }
+    return [{ kind: 'template-catalog', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', path: TEMPLATE_CATALOG_PATH, text: file.text, rawBytes: Buffer.from(file.bytes) }];
   }
 
   async writeDatabaseAutomations(automations: DatabaseAutomation[], expectedHash: string | null): Promise<{ automations: DatabaseAutomation[]; hash: string }> {
@@ -1368,6 +1403,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateInternalPath(expected.path);
     }
     if (new Set(automationEntries.map((entry) => entry.kind)).size !== automationEntries.length) throw new StorageError('CONFLICT', 'Import contains duplicate automation files.');
+    const templateEntries = plan.entries.filter((entry) => entry.kind === 'template-catalog');
+    if (templateEntries.length > 1) throw new StorageError('CONFLICT', 'Import contains duplicate template catalogs.');
+    for (const entry of templateEntries) {
+      const bytes = entry.rawBytes ?? Buffer.from(entry.text, 'utf8');
+      const text = decodeVaultText(bytes, TEMPLATE_CATALOG_PATH);
+      if (entry.path !== TEMPLATE_CATALOG_PATH || entry.id !== 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3' || text !== entry.text) throw new StorageError('INVALID_CONTENT', 'Import template catalog does not match its managed path and ID', { path: entry.path });
+      try { parseTemplates(text); } catch (error) { throw wrapContentError(error, TEMPLATE_CATALOG_PATH); }
+      await this.validateInternalPath(TEMPLATE_CATALOG_PATH);
+    }
 
     const incomingOrders = plan.databaseViewOrders ?? [];
     const plannedOrderPaths = new Set<string>();
@@ -1463,6 +1507,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const existingOrderHashes = new Map(existingOrderFiles.map((file) => [file.path, file.hash] as const));
     for (const file of existingOrderFiles) expectedHashes.set(file.path, file.hash);
     for (const entry of await this.listDatabaseAutomationFilesUnlocked()) expectedHashes.set(entry.path, sha256Hex(entry.rawBytes ?? entry.text));
+    for (const entry of await this.listTemplateFilesUnlocked()) expectedHashes.set(entry.path, sha256Hex(entry.rawBytes ?? entry.text));
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -1551,6 +1596,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       const currentHash = expectedHashes.get(entry.path);
       if (currentHash !== undefined && currentHash !== sha256Hex(entry.rawBytes ?? entry.text)) pathConflicts.add(entry.path);
     }
+    for (const entry of templateEntries) if (expectedHashes.has(entry.path) && expectedHashes.get(entry.path) !== sha256Hex(entry.rawBytes ?? entry.text)) pathConflicts.add(entry.path);
 
     if (options.overwrite !== true && (idConflicts.size > 0 || pathConflicts.size > 0)) {
       throw new StorageError('CONFLICT', 'Import would overwrite existing data; pass { overwrite: true }', {
@@ -1607,6 +1653,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let propertyCatalog = 0;
     let databaseViewOrders = 0;
     let automationFiles = 0;
+    let templateFiles = 0;
 
     try {
       if (incomingCatalog !== undefined) {
@@ -1684,6 +1731,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         written.push(path);
       }
 
+      for (const entry of templateEntries) {
+        if (expectedHashes.get(entry.path) === sha256Hex(entry.rawBytes ?? entry.text)) continue;
+        failedPath = entry.path;
+        await this.writeDocument(entry.path, entry.rawBytes ?? entry.text, true, () => this.assertImportTargetUnchanged(entry.path, expectedHashes.get(entry.path)));
+        templateFiles += 1;
+        written.push(entry.path);
+      }
+
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
@@ -1704,7 +1759,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }), ...(automationFiles === 0 ? {} : { automationFiles }) };
+    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }), ...(automationFiles === 0 ? {} : { automationFiles }), ...(templateFiles === 0 ? {} : { templateFiles }) };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {

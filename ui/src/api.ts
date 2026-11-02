@@ -304,6 +304,18 @@ export const api = {
     return request<{ databases: UiDatabase[] }>('/api/databases');
   },
 
+  templates(): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string | null }> {
+    return request('/api/templates');
+  },
+
+  saveTemplates(templates: import('../../src/database/templates.js').NodusTemplate[], baseHash: string | null): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string }> {
+    return request('/api/templates', { method: 'PUT', body: jsonBody({ templates, baseHash }) });
+  },
+
+  templateAction(id: string, action: 'preview' | 'apply', variables: Record<string, unknown> = {}): Promise<unknown> {
+    return request(`/api/templates/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: jsonBody({ variables }) });
+  },
+
   createDatabase(database: UiDatabaseDefinition): Promise<{ database: UiDatabase }> {
     return request<{ database: UiDatabase }>('/api/databases', {
       method: 'POST',

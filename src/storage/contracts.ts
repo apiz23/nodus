@@ -4,6 +4,7 @@ import type { DatabaseAutomation, AutomationExecution } from '../database/automa
 import type { Note } from '../domain/note.js';
 import type { TagOperation } from '../domain/tags.js';
 import type { PropertyCatalog, PropertyCatalogMutation, NotePropertyValue } from '../properties/catalog.js';
+import type { NodusTemplate } from '../database/templates.js';
 
 export interface NoteSummary {
   id: string;
@@ -76,7 +77,7 @@ export interface StorageHealth {
 
 /** One managed vault entry. Attachments carry original binary bytes and an empty text field. */
 export interface VaultEntry {
-  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'automation-definitions' | 'automation-history';
+  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'automation-definitions' | 'automation-history' | 'template-catalog';
   id: string;
   path: string;
   text: string;
@@ -212,6 +213,7 @@ export interface ImportReport {
   /** Present and equal to 1 when the plan carried a property catalog. */
   propertyCatalog?: number;
   automationFiles?: number;
+  templateFiles?: number;
 }
 
 /** A validated property catalog file and the exact bytes read from disk. */
@@ -235,6 +237,12 @@ export interface ImportPlan {
   propertyCatalog?: PropertyCatalogFile;
 }
 
+export interface TemplateStore {
+  readTemplates(): Promise<{ templates: NodusTemplate[]; hash: string | null }>;
+  writeTemplates(templates: NodusTemplate[], expectedHash: string | null): Promise<{ templates: NodusTemplate[]; hash: string }>;
+  listTemplateFiles(): Promise<VaultEntry[]>;
+}
+
 export interface ExportReport {
   targetDir: string;
   notes: number;
@@ -244,10 +252,11 @@ export interface ExportReport {
   databaseViewOrders?: number;
   propertyCatalog?: number;
   automationFiles?: number;
+  templateFiles?: number;
 }
 
 export interface BackupManifestFile {
-  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'database-view-order' | 'automation-definitions' | 'automation-history';
+  kind: 'note' | 'database' | 'database-view' | 'attachment' | 'database-view-order' | 'automation-definitions' | 'automation-history' | 'template-catalog';
   id: string;
   path: string;
   sha256: string;
@@ -270,6 +279,7 @@ export interface BackupManifestFormats {
   databaseViewOrder?: number;
   propertyCatalog?: number;
   automations?: number;
+  templates?: number;
 }
 
 /** File counts by kind; optional on legacy v1 manifests, cross-checked when present. */
@@ -282,6 +292,7 @@ export interface BackupManifestCounts {
   /** Number of property catalog files; 0 or 1. */
   propertyCatalog?: number;
   automationFiles?: number;
+  templateFiles?: number;
 }
 
 /** Integrity metadata for the optional vault-wide property catalog. */
@@ -297,7 +308,7 @@ export interface BackupManifestPropertyCatalog {
 
 export interface BackupManifest {
   format: 'nodus-backup';
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   createdAt: string;
   app?: BackupManifestApp;
   formats?: BackupManifestFormats;
@@ -316,7 +327,7 @@ export interface BackupManifest {
 /** Read-only result of comparing a validated backup against a live vault. */
 export interface RestorePreview {
   manifest: BackupManifest;
-  counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number };
+  counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number; templateFiles?: number };
   /** Catalog presence and target hash conflict; absent for legacy backups. */
   propertyCatalog?: { path: string; version: number; properties: number; hash: string; conflict: boolean };
   /** ID and path conflicts a restore would hit without `overwrite: true`. */
@@ -332,6 +343,7 @@ export interface BackupReport {
   attachments?: number;
   propertyCatalog?: number;
   automationFiles?: number;
+  templateFiles?: number;
 }
 
 export interface BackupValidation {
@@ -354,7 +366,7 @@ export interface BackupOptions {
  *
  * Implementations must not change the Phase 1 note or database formats.
  */
-export interface VaultStorage extends NoteStore, DatabaseStore, AutomationStore, DatabaseViewStore, DatabaseViewOrderStore, FolderStore, AttachmentStore, PropertyStore, TagStore {
+export interface VaultStorage extends NoteStore, DatabaseStore, AutomationStore, DatabaseViewStore, DatabaseViewOrderStore, FolderStore, AttachmentStore, PropertyStore, TagStore, TemplateStore {
   readonly root: string;
   /** All valid managed entries. Markdown/schema documents carry text; attachments carry raw bytes. */
   snapshot(): Promise<VaultEntry[]>;

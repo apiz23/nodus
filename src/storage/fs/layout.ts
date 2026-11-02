@@ -7,9 +7,11 @@ export const DATABASE_VIEW_ORDER_DIR = '.nodus-orders';
 export const DATABASE_AUTOMATIONS_DIR = '.nodus-automations';
 export const DATABASE_AUTOMATIONS_PATH = `${DATABASE_AUTOMATIONS_DIR}/automations.json`;
 export const DATABASE_AUTOMATION_HISTORY_PATH = `${DATABASE_AUTOMATIONS_DIR}/history.json`;
+export const TEMPLATE_CATALOG_DIR = '.nodus-templates';
+export const TEMPLATE_CATALOG_PATH = `${TEMPLATE_CATALOG_DIR}/templates.json`;
 export const BACKUP_MANIFEST = 'nodus-backup.json';
 export const BACKUP_FORMAT = 'nodus-backup';
-export const BACKUP_VERSION = 6;
+export const BACKUP_VERSION = 7;
 export const TEMP_PREFIX = '.nodus-tmp-';
 
 /** Workspace-relative path of a database definition, always POSIX-separated. */

@@ -18,6 +18,7 @@ import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters'
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { DatabasesView } from './DatabasesView';
+import { TemplatesView } from './TemplatesView';
 import { Editor } from './Editor';
 import { DraftRecoveryDialog } from './editor/DraftRecoveryDialog';
 import { ConflictResolutionDialog, type NoteConflict } from './editor/ConflictResolutionDialog';
@@ -1792,6 +1793,10 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
+        ) : null}
+
+        {view === 'templates' ? (
+          <TemplatesView databases={databases} onApplied={() => { void Promise.all([refreshNotes(true), refreshDatabases()]); }} />
         ) : null}
 
         {view === 'settings' ? (

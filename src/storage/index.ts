@@ -35,9 +35,12 @@ export type {
   StorageHealth,
   StorageIssue,
   StorageIssueCode,
+  TemplateStore,
   VaultEntry,
   VaultStorage,
 } from './contracts.js';
+
+export { TEMPLATE_FORMAT, TEMPLATE_VERSION, parseTemplate, parseTemplates, resolveNoteTemplate, serializeTemplates, type DatabaseTemplate, type NoteTemplate, type NodusTemplate, type TemplateVariable } from '../database/templates.js';
 
 export { FileSystemVault } from './fs/vault.js';
 export { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, parseDatabaseView, serializeDatabaseView, diagnoseDatabaseView, validateViewReferences, type DatabaseView, type ViewFilter, type ViewFilterOperator, type ViewSort, type DatabaseViewDiagnostic } from '../database/database-view.js';

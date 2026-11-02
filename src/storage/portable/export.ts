@@ -26,6 +26,7 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
   const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
   const databaseViewOrders = await vault.listDatabaseViewOrderFiles();
   const automationFiles = await vault.listDatabaseAutomationFiles();
+  const templateFiles = await vault.listTemplateFiles();
 
   try {
     await mkdir(target, { recursive: true });
@@ -48,6 +49,7 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
   let databaseViews = 0;
   let attachments = 0;
   let automationFileCount = 0;
+  let templateFileCount = 0;
 
   try {
     for (const entry of entries) {
@@ -67,9 +69,13 @@ export async function exportVault(vault: VaultStorage, targetDir: string): Promi
       await writeFileAtomic(resolveInsideRoot(target, entry.path), entry.rawBytes ?? entry.text);
       automationFileCount += 1;
     }
+    for (const entry of templateFiles) {
+      await writeFileAtomic(resolveInsideRoot(target, entry.path), entry.rawBytes ?? entry.text);
+      templateFileCount += 1;
+    }
   } catch (error) {
     throw storageFailure(error, 'Write export', targetDir);
   }
 
-  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders.length === 0 ? {} : { databaseViewOrders: databaseViewOrders.length }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }), ...(automationFileCount === 0 ? {} : { automationFiles: automationFileCount }) };
+  return { targetDir: target, notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders.length === 0 ? {} : { databaseViewOrders: databaseViewOrders.length }), ...(propertyCatalog === null ? {} : { propertyCatalog: 1 }), ...(automationFileCount === 0 ? {} : { automationFiles: automationFileCount }), ...(templateFileCount === 0 ? {} : { templateFiles: templateFileCount }) };
 }
