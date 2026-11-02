@@ -32,7 +32,7 @@ import { cn } from '@/lib/utils';
 import { NoteFiltersPopover } from './NoteFiltersPopover';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.js';
 import { PageTree } from './PageTree';
-import { modShortcut } from './format';
+import { detectPlatform, shortcutById, shortcutLabel } from './shortcuts';
 import type { View } from './types';
 
 interface SidebarProps {
@@ -81,8 +81,9 @@ interface SidebarProps {
   catalogIssue?: string;
 }
 
-const navItems = [
-  { id: 'notes' as const, label: 'All notes', icon: FileText },
+const paletteShortcut = shortcutLabel(shortcutById('command-palette').binding, detectPlatform());
+
+const navItems = [  { id: 'notes' as const, label: 'All notes', icon: FileText },
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'databases' as const, label: 'Databases', icon: Database },
@@ -272,7 +273,7 @@ export function Sidebar({
                 <Search />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">Search notes ({modShortcut('k')})</TooltipContent>
+            <TooltipContent side="right">Search notes ({paletteShortcut})</TooltipContent>
           </Tooltip>
         ) : (
           <div className="flex w-full items-center gap-1">
@@ -316,7 +317,7 @@ export function Sidebar({
                 className="pointer-events-none absolute top-1/2 right-1.5 hidden -translate-y-1/2 rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground select-none md:inline-block"
                 aria-hidden="true"
               >
-                {modShortcut('k')}
+                {paletteShortcut}
               </kbd>
             ) : null}
           </div>

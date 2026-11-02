@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-02
-**Latest verified implementation commit:** `4f1ed22` (`feat/phase-16-markdown-editor`, *feat: enhance markdown editing experience*). The roadmap records final verification on the feature branch.
+**Latest verified implementation commit:** `4f1ed22` — Phase 16 editor implementation; combined Phase 15/16 verification is recorded below.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -67,6 +67,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 11C — Relation-Aware Formulas](#phase-11c--relation-aware-formulas)
    - [Phase 12 — Database Automations](#phase-12--database-automations)
    - [Phase 13 — Templates and Database Templates](#phase-13--templates-and-database-templates)
+   - [Phase 15P — Productivity and Command Experience](#phase-15p--productivity-and-command-experience-delivered-track)
    - [Phase 14 — Template Reliability and Vault Health Integration](#phase-14--template-reliability-and-vault-health-integration)
    - [Phase 16 — Markdown Editor Enhancements](#phase-16--markdown-editor-enhancements)
 4. [Proposed Future Milestones (Phases 15 and 17–34)](#4-proposed-future-milestones-phases-15-and-17-34)
@@ -149,19 +150,23 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Formula engine | **Implemented** | `src/database/formula-*.ts`, `ui/src/database/FormulaEditor*.tsx` |
 | Database automations | **Implemented with documented limits** | `src/database/automations.ts`, `ui/src/DatabaseAutomations.tsx`, `docs/database-automations.md` |
 | Note and database templates | **Implemented with documented limits** | `src/database/templates.ts`, `ui/src/TemplatesView.tsx`, `docs/templates.md` |
+| Command palette, shortcuts, recent notes | **Implemented with documented limits** | `ui/src/CommandPalette.tsx`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `docs/shortcuts.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **96 files / 1,101 executed tests** | `test/` |
+| Test suite | **97 files / 1,123 executed tests** (Phase 15 + 16 integration branch) | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
-**Current working tree caveat:** separate typography/landing-page/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content remain outside the Phase 13 commits. The pre-existing roadmap edits were retained and updated for Phase 13.
+**Current working tree caveat:** verify `git status` before starting work. Uncommitted typography/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content have existed outside earlier Phase 13 commits and must be preserved.
 
 **Verified verification state for this document:**
 
 - `pnpm exec vitest run --no-cache --maxWorkers=1` — passed: 96/96 files, 1,101 tests (Phase 16 verification).
+- Combined Phase 15/16 branch: `pnpm exec vitest run --no-cache --maxWorkers=1` — passed: 97/97 files, 1,123 tests; focused editor/productivity tests — 6 files / 168 tests passed.
+- Combined branch: `pnpm typecheck`, `pnpm test:browser`, `pnpm test:database-views`, `pnpm test:vault-onboarding`, editor Markdown/shortcut browser smokes, and `git diff --check` passed. Browser and smoke scripts required loopback permission; sandbox-only attempts were denied.
+- Combined branch: `pnpm build` passed with the App chunk at 790.77 kB, above the existing 500 kB advisory (the Phase 16 branch baseline was 778.45 kB; Phase 15 command/shortcut integration increased the combined chunk). No bundle refactor was made.
 - `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` — passed for Phase 13. The build reports the advisory that the App chunk is above 500 kB.
-- Focused template and automation tests — passed: 14 tests across four model/API files. Browser smoke covers template create/edit/preview/apply/delete.
+- Phase 15P verification: focused command/editor shortcut tests passed; `pnpm typecheck`, `pnpm build`, `pnpm test:browser`, and `git diff --check` passed. Browser smoke covers command search/execution, recent-note switching, shortcut labels, and the shortcut reference dialog.
 - The default parallel full-suite run exceeded test timeouts under load; the authoritative serial full-suite run passed.
 
 ---
@@ -193,6 +198,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | 13 | Templates and Database Templates | COMPLETE WITH LIMITATIONS | `18539bb` |
 | 14 | Template reliability and vault health integration | COMPLETE WITH LIMITATIONS | `feat: improve template reliability and vault health` |
 | 16 | Markdown editor enhancements | COMPLETE WITH LIMITATIONS | `4f1ed22` |
+| 15P | Productivity and command experience | COMPLETE WITH LIMITATIONS | `2f8e41e` |
 
 ---
 
@@ -1123,6 +1129,61 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 
 ---
 
+### Phase 15P — Productivity and Command Experience (Delivered Track)
+
+**Numbering note:** the task brief calls this Phase 15. This roadmap reserves Phase 15 for **Database Protection and Safeguards** (still planned), so this delivered work is recorded as **15P** to avoid renumbering future milestones.
+
+**Objective:** Improve command discovery, keyboard ergonomics, recent-note navigation, and accessibility without replacing the existing application architecture or duplicating command implementations.
+
+**Implemented functionality**
+
+- Command palette grouped as Recent notes, Notes, Navigation, Databases, Folders, Appearance, and Help.
+- Command search by title, keywords, and category with deterministic ranking; duplicate command IDs are deduplicated first-wins.
+- Keyboard shortcut labels beside commands, generated from the central shortcut registry and platform detection.
+- Keyboard-only selection through the shared shadcn Command primitive, focused input on open, visible platform labels, and separate loading, empty, search-error, and command-execution-error states.
+- Command failures keep the palette open, show `role="alert"`, and offer **Try again**.
+- Central shortcut registry for command palette, new note, save, recent notes, and shortcut reference; conflict detection and an editor-binding collision audit.
+- Focus policy that blocks app shortcuts in text fields, respects editor-specific allowances, IME composition, already-handled events, app modals, Sheets, and dialogs.
+- Recent-notes quick switcher (`Mod+Shift+H`) and a shortcut reference dialog (`Mod+/`).
+- Recent notes persist per vault in versioned localStorage, reconcile moved/renamed notes by stable ID, omit deleted notes, and recover from corrupt/full/unavailable storage.
+- Command entries for databases (stable IDs) and folders (current paths); database selection reuses the existing Databases view state.
+- Command palette, recent-notes, and shortcut-reference accessibility labels, dialogs, focus behavior, and keyboard paths.
+
+**Important source files**
+
+- `ui/src/shortcuts.ts`, `ui/src/commands.ts`, `ui/src/recentNavigation.ts`
+- `ui/src/CommandPalette.tsx`, `ui/src/RecentNotesDialog.tsx`, `ui/src/ShortcutReferenceDialog.tsx`
+- `ui/src/App.tsx`, `ui/src/Sidebar.tsx`
+- `docs/shortcuts.md`, `docs/global-search.md`, `docs/editor.md`, `README.md`
+- `test/ui-command-palette.test.ts`, `scripts/browser-smoke.mjs`
+
+**Tests and verification**
+
+- `test/ui-command-palette.test.ts` — 22 tests covering command registration/deduplication, search and ranking, grouping, execution failures, shortcut conflicts, platform labels, editor collision audit, focus policy, text-entry classification, recent-note persistence, moved/deleted destinations, and corrupt-preference recovery.
+- `test/ui-editor-reliability.test.ts` — existing shortcut tests passed against the new handler (80 tests in the focused pair).
+- Full serial suite: `pnpm test --maxWorkers=1` — **92 files / 1,089 tests passed**.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; existing App chunk advisory above 500 kB remains.
+- `pnpm test:browser` — passed with real keyboard navigation, palette command search/execution, recent-note switching, shortcut labels, and the shortcut reference dialog.
+- `git diff --check` — passed.
+
+**Commit**
+
+- `feat: improve productivity and command experience` (this delivery; use `git log -1` for the hash).
+
+**Known limitations**
+
+- Recent-note history is local to the browser profile and vault path; there is no cross-device or server-side recent list.
+- The registry owns application/workspace shortcuts. Editor formatting shortcuts remain registered by CodeMirror and are audited for collisions rather than reimplemented.
+- Folder commands route through the existing note search path (view All notes with the folder path as query) rather than adding folder-selection state to the tree.
+- Command execution errors are surfaced by the palette, but existing domain handlers may also report errors in their own surfaces.
+- Command items are not virtualized; the list is bounded to current databases, all folders, five recent notes, and notes returned by the existing 50-result search limit.
+- Previous shortcut behavior accepted either Meta or Ctrl; that cross-platform tolerance is retained while display labels remain platform-specific.
+
+**Status:** **COMPLETE WITH LIMITATIONS**
+
+---
+
 ### Phase 14 — Template Reliability and Vault Health Integration
 
 **Objective:** Make template catalogs visible to vault health diagnostics and make database template application recoverable after multi-file failures.
@@ -1832,7 +1893,9 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Relation backlinks | `ui/src/RelationBacklinksPanel.tsx` | Implemented |
 | Local graph view | `ui/src/GraphView.tsx`, `src/links/graph.ts` | Implemented (basic, 200 nodes) |
 | Discovery view | `ui/src/DiscoveryView.tsx` | Implemented |
-| Command palette | `ui/src/CommandPalette.tsx` | Implemented |
+| Command palette | `ui/src/CommandPalette.tsx`, `ui/src/commands.ts` | Implemented — categories, keyword search, shortcut labels, deduplication, errors |
+| Shortcut registry and reference | `ui/src/shortcuts.ts`, `ui/src/ShortcutReferenceDialog.tsx` | Implemented |
+| Recent-note quick switcher | `ui/src/recentNavigation.ts`, `ui/src/RecentNotesDialog.tsx` | Implemented, local per-vault history |
 | Saved navigation state (expanded folders, sidebar width) | `ui/src/PageTree.tsx`, localStorage | Implemented |
 
 ### 5.4 Search
@@ -1982,7 +2045,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 | Feature | Implementation | Status |
 |---|---|---|
-| Unit/integration test suite | `test/` | 96 files / 1,101 executed tests |
+| Unit/integration test suite | `test/` | 97 files / 1,123 executed tests |
 | Browser smoke | `scripts/browser-smoke.mjs` | Implemented |
 | Database-view smoke | `scripts/database-views-smoke.mjs` | Implemented |
 | Vault onboarding smoke | `scripts/vault-onboarding-smoke.mjs` | Implemented |
@@ -2232,7 +2295,7 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 
 ### Test suite shape
 
-- **96 test files, 1,101 executed tests** in the verified Phase 16 repository state.
+- **97 test files, 1,123 executed tests** in the combined Phase 15/16 integration verification.
 - Unit tests use Node; UI component tests use `react-dom/server` SSR rather than a DOM emulator.
 - Real browser coverage is Playwright-based and requires Chromium.
 - Relay/sync tests use loopback HTTP and isolated SQLite databases.
@@ -2342,6 +2405,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Commit:** `18539bb` — `feat: add note and database templates` (implementation); roadmap follow-up records final verification and synchronization.
 - **Remaining work:** Database template application uses the existing per-file atomic import path, not a multi-file transaction; hidden template files are not yet covered by `checkHealth`.
 - **Notes / decisions:** Reused `applyImport`, existing note path allocation, schema/view/property validation, vault-root locking, and shadcn primitives. Templates contain data only and execute no user code. Template catalogs are optional; invalid catalogs fail reads/portability without rewriting source bytes. Backup v7 is backward compatible with v1–v6. Browser smoke had one transient database-view fixture 404, then passed on rerun; this is reported rather than hidden. The implementation and roadmap commits are pushed to `origin/main`.
+
+### 2026-11-02 — Phase 15P — Productivity and Command Experience
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added categorized/keyword-searchable command palette commands with shortcut labels and inline execution errors; centralized the application shortcut registry with conflict and editor-collision audits; added recent-note persistence and quick switching; added database and folder destinations; added the shortcut reference dialog; and documented focus/accessibility behavior.
+- **Files changed:** `ui/src/commands.ts`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `ui/src/CommandPalette.tsx`, `ui/src/RecentNotesDialog.tsx`, `ui/src/ShortcutReferenceDialog.tsx`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/format.ts`, `test/ui-command-palette.test.ts`, `scripts/browser-smoke.mjs`, `docs/shortcuts.md`, `docs/global-search.md`, `docs/editor.md`, `README.md`, and this roadmap.
+- **Tests executed:** `pnpm test --maxWorkers=1` — 92 files / 1,089 tests passed; focused command/editor shortcut tests — 102 passed; `pnpm typecheck`; `pnpm build`; `pnpm test:browser`; `git diff --check` — passed. Build retains the existing App chunk advisory above 500 kB.
+- **Commit:** `feat: improve productivity and command experience` (this delivery; use `git log -1` for the hash). Pushed to `origin/feat/phase-15-productivity`.
+- **Remaining work:** Recent history is local per browser/vault; folder commands use note search rather than tree selection state; command items are not virtualized.
+- **Notes / decisions:** This delivery is recorded as 15P because the roadmap reserves Phase 15 for Database Protection and Safeguards. Existing Meta/Ctrl tolerance was preserved for compatibility while display labels remain platform-specific. No new dependency or persistence system was introduced; recent notes reuse the existing localStorage preference pattern.
 
 ### 2026-11-02 — Phase 14 — Template Reliability and Vault Health Integration
 

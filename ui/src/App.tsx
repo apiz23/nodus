@@ -17,6 +17,8 @@ import type { NotePropertyValue } from '../../src/properties/catalog';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters';
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
+import { RecentNotesDialog } from './RecentNotesDialog';
+import { ShortcutReferenceDialog } from './ShortcutReferenceDialog';
 import { DatabasesView } from './DatabasesView';
 import { TemplatesView } from './TemplatesView';
 import { Editor } from './Editor';
@@ -35,6 +37,18 @@ import { scheduleAutosave } from './scheduleAutosave';
 import { saveResultDisposition } from './saveResultDisposition';
 import { IndexedDbDraftJournal, type DraftRecoveryEntry, type DraftJournal } from './draftRecoveryJournal';
 import type { SaveState, View } from './types';
+import {
+  detectPlatform,
+  isTextEntryDescriptor,
+  matchShortcut,
+  shouldHandleShortcut,
+} from './shortcuts';
+import {
+  readRecentNotes,
+  recordRecentNote,
+  resolveRecentNotes,
+  type RecentNote,
+} from './recentNavigation';
 
 type ModalState =
   | { type: 'delete'; note: UiNote }
@@ -44,6 +58,14 @@ type ModalState =
 const THEME_KEY = 'nodus-ui-theme';
 const EDITOR_WIDTH_KEY = 'nodus-editor-width';
 const SIDEBAR_WIDTH_KEY = 'nodus-sidebar-width';
+
+function uiStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 function initialSidebarWidth(): number {
   try {
@@ -127,6 +149,9 @@ export default function App() {
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [recentNotesOpen, setRecentNotesOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [recentEntries, setRecentEntries] = useState<RecentNote[]>([]);
   const [recoveryEntries, setRecoveryEntries] = useState<DraftRecoveryEntry[]>([]);
   const [recoveryDiskHash, setRecoveryDiskHash] = useState('');
   const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -552,6 +577,7 @@ export default function App() {
       setSaveState('idle');
       setRecoveryDiskHash(note.contentHash);
       setRecoveryEntries(recovered);
+      rememberRecentNote(note);
     } catch (error) {
       if (request !== noteRequestRef.current) return;
       setActiveNote(null);
@@ -642,6 +668,7 @@ export default function App() {
               setSaveState('idle');
               setRecoveryDiskHash(result.note.contentHash);
               setRecoveryEntries(recovered);
+              rememberRecentNote(result.note);
             }
           } catch (error) {
             if (!cancelled && vaultRequest === vaultRequestRef.current && request === noteRequestRef.current) {
@@ -691,6 +718,26 @@ export default function App() {
     filterVaultRef.current = identity;
   }, [status?.vault.path]);
 
+  const resolvedRecentNotes = resolveRecentNotes(recentEntries, notes);
+
+  useEffect(() => {
+    const vaultKey = status?.vault.path ?? '';
+    const storage = uiStorage();
+    if (vaultKey === '' || storage === null) {
+      setRecentEntries([]);
+      return;
+    }
+    setRecentEntries(resolveRecentNotes(readRecentNotes(storage, vaultKey), notes));
+  }, [status?.vault.path, notes]);
+
+  function rememberRecentNote(note: UiNote): void {
+    const vaultKey = status?.vault.path ?? '';
+    const storage = uiStorage();
+    if (vaultKey === '' || storage === null) return;
+    const next = recordRecentNote(storage, vaultKey, { id: note.id, title: note.title, path: note.path });
+    setRecentEntries(resolveRecentNotes(next, notes));
+  }
+
   useEffect(() => {
     if (databases.length === 0) {
       setSelectedDatabaseId(null);
@@ -737,6 +784,7 @@ export default function App() {
       setEditorError(null);
       setRecoveryEntries([]);
       setRecoveryDiskHash(note.contentHash);
+      rememberRecentNote(note);
     } catch (error) {
       setNotesError(messageOf(error));
     } finally {
@@ -1455,44 +1503,66 @@ export default function App() {
     const handler = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return;
       if (vaultSwitching || vaultWorkInFlight) return;
-      const modifier = event.metaKey || event.ctrlKey;
-      if (!modifier) return;
-      if (modal !== null) return;
       const target = event.target instanceof Element ? event.target : null;
-      const key = event.key.toLowerCase();
-      const togglePalette = commandOpen && key === 'k' && target !== null && target.closest('[data-slot="command"]') !== null;
-      if (event.defaultPrevented && !togglePalette) return;
-      const insideDialog = target !== null && target.closest('[role="dialog"], [role="alertdialog"], [data-slot="sheet-content"]') !== null;
-      if (insideDialog && !togglePalette) return;
+      const shortcut = matchShortcut(event, detectPlatform());
+      if (shortcut === null) return;
+
       const textEntry = isTextEntryTarget(target);
       const inEditor = target !== null && target.closest('[aria-label="Editor"]') !== null;
-      if (key === 'k') {
+      const insidePalette = target !== null && target.closest('[data-slot="command"]') !== null;
+      const insideForeignOverlay = target !== null && !insidePalette
+        && target.closest('[role="dialog"], [role="alertdialog"], [data-slot="sheet-content"]') !== null;
+      const modalOpen = modal !== null || recentNotesOpen || shortcutsOpen
+        || noteConflict !== null || recoveryEntries.length > 0 || externalCompareOpen || insideForeignOverlay;
+      if (!shouldHandleShortcut(shortcut, {
+        composing: false,
+        defaultPrevented: event.defaultPrevented,
+        busy: vaultSwitching || vaultWorkInFlight,
+        modalOpen,
+        paletteOpen: commandOpen,
+        insidePalette,
+        searchInput: target === searchRef.current,
+        textEntry,
+        inEditor,
+      })) return;
+
+      event.preventDefault();
+      if (shortcut === 'command-palette') {
         // Keep form and CodeMirror shortcuts intact. The sidebar search remains
         // an intentional launch point for the command palette.
-        if (textEntry && target !== searchRef.current && !inEditor && !togglePalette) return;
-        event.preventDefault();
         if (!commandOpen && document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
         }
         setCommandOpen((open) => !open);
         return;
       }
-      if (commandOpen) return;
-      if (key === 'n') {
-        if (textEntry) return;
-        event.preventDefault();
+      if (shortcut === 'new-note') {
         void shortcutActionsRef.current.createNote();
         return;
       }
-      if (key === 's') {
-        if (textEntry && !inEditor) return;
-        event.preventDefault();
+      if (shortcut === 'save-note') {
         void shortcutActionsRef.current.saveNote();
+        return;
       }
+      if (shortcut === 'recent-notes') {
+        setRecentNotesOpen(true);
+        return;
+      }
+      setShortcutsOpen(true);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [vaultSwitching, vaultWorkInFlight, modal, commandOpen]);
+  }, [
+    commandOpen,
+    externalCompareOpen,
+    modal,
+    noteConflict,
+    recentNotesOpen,
+    recoveryEntries.length,
+    shortcutsOpen,
+    vaultSwitching,
+    vaultWorkInFlight,
+  ]);
 
   if (vaultSetup !== null) {
     return (
@@ -1832,14 +1902,41 @@ export default function App() {
         revision={searchRevision}
         open={commandOpen && !vaultSwitching && !vaultWorkInFlight}
         onOpenChange={setCommandOpen}
-        onCreateNote={() => void createNote()}
-        onOpenNote={(id) => void openNoteById(id)}
+        onCreateNote={() => createNote()}
+        onSaveNote={() => saveNote()}
+        canSaveNote={activeNote !== null && dirty && saveState !== 'saving' && !vaultSwitching && !vaultWorkInFlight}
+        onOpenNote={(id) => openNoteById(id)}
         onView={(next) => {
           setView(next);
           if (next === 'notes') setQuery('');
         }}
+        onOpenDatabase={(id) => {
+          setSelectedDatabaseId(id);
+          setView('databases');
+        }}
+        onOpenFolder={(path) => {
+          setView('notes');
+          setQuery(path);
+        }}
+        onOpenRecent={() => setRecentNotesOpen(true)}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
+        databases={databases}
+        folders={folders}
+        recentNotes={resolvedRecentNotes.slice(0, 5)}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+      />
+
+      <RecentNotesDialog
+        open={recentNotesOpen && !vaultSwitching && !vaultWorkInFlight}
+        onOpenChange={setRecentNotesOpen}
+        notes={resolvedRecentNotes}
+        onOpenNote={(id) => openNoteById(id)}
+      />
+
+      <ShortcutReferenceDialog
+        open={shortcutsOpen}
+        onOpenChange={setShortcutsOpen}
       />
 
       <RenameDialog
@@ -1904,10 +2001,19 @@ export default function App() {
 }
 
 function isTextEntryTarget(target: Element | null): boolean {
-  return target !== null && (
-    target instanceof HTMLElement && target.isContentEditable
-    || target.closest('input, textarea, select, [role="textbox"], [contenteditable="true"]') !== null
-  );
+  if (target === null) return false;
+  const candidate = target as Element & { type?: unknown; isContentEditable?: unknown };
+  if (typeof target.tagName === 'string' && target.tagName !== '') {
+    return isTextEntryDescriptor({
+      tagName: target.tagName,
+      type: typeof candidate.type === 'string' ? candidate.type : null,
+      role: typeof target.getAttribute === 'function' ? target.getAttribute('role') : null,
+      isContentEditable: candidate.isContentEditable === true,
+    });
+  }
+  // Synthetic DOM targets used by the installed-listener tests do not expose
+  // tagName. Fall back to the same selector contract they model.
+  return target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]') !== null;
 }
 
 function recoveryNoteIds(notes: readonly UiNoteSummary[], activeNote: UiNote | null, dirty: boolean): Set<string> {

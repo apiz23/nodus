@@ -14,8 +14,3 @@ export function wordCount(value: string): number {
   const trimmed = value.trim();
   return trimmed === '' ? 0 : trimmed.split(/\s+/).length;
 }
-
-export function modShortcut(key: string): string {
-  const mac = /mac/i.test(navigator.userAgent);
-  return mac ? `⌘${key.toUpperCase()}` : `Ctrl+${key.toUpperCase()}`;
-}
