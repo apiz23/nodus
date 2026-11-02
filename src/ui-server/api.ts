@@ -754,7 +754,7 @@ export function createLocalApiMiddleware(
         return note;
       }));
       const entries = views.map((view) => ({ kind: 'database-view' as const, id: view.id, path: databaseViewPath(newDatabaseId, view.id), text: serializeDatabaseView(view) }));
-      const report = await applyImport(vault, { entries, notes, databases: [database], databaseViews: views });
+      const report = await applyImport(vault, { entries, notes, databases: [database], databaseViews: views }, { atomicNewFiles: true, sourceTemplateId: template.id });
       backlinkIndex.markDirty();
       return sendJson(res, 201, { databaseId: newDatabaseId, report });
     }

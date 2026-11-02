@@ -201,6 +201,13 @@ export interface DatabaseViewOrderFileSnapshot {
 export interface ImportOptions {
   /** Required to replace existing notes or databases. Defaults to false. */
   overwrite?: boolean;
+  /**
+   * Publish a validated group of new notes, databases, and saved views through
+   * a staged rollback journal. Overwrite and other import file kinds are rejected.
+   */
+  atomicNewFiles?: boolean;
+  /** Stable source template ID recorded in the recoverable transaction journal. */
+  sourceTemplateId?: string;
 }
 
 export interface ImportReport {
@@ -214,6 +221,8 @@ export interface ImportReport {
   propertyCatalog?: number;
   automationFiles?: number;
   templateFiles?: number;
+  /** True if all files were committed but the now-unneeded staging journal remains. */
+  transactionCleanupPending?: boolean;
 }
 
 /** A validated property catalog file and the exact bytes read from disk. */

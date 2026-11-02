@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import type { DatabaseTemplate, NoteTemplate } from '../src/database/templates.js';
@@ -38,6 +38,7 @@ describe('template management API', () => {
       expect(invalid.status).toBe(422);
       const preview = await json<{ resolved: { title: string } }>(base, `/api/templates/${TID}/preview`, 'POST', { variables: { day: '2026-11-02' } });
       expect(preview.body.resolved.title).toBe('Daily 2026-11-02');
+      expect(await vault.listNotes()).toHaveLength(0);
       const first = await json<{ note: { id: string; title: string } }>(base, `/api/templates/${TID}/apply`, 'POST', { variables: { day: '2026-11-02' } });
       const second = await json<{ note: { id: string; path: string } }>(base, `/api/templates/${TID}/apply`, 'POST', { variables: { day: '2026-11-02' } });
       expect(first.status).toBe(201); expect(second.status).toBe(201);
@@ -50,18 +51,55 @@ describe('template management API', () => {
   it('clones database schemas, saved views, and valid starter rows with fresh database identity', async () => {
     await withApi(async (base, vault) => {
       const database = { id: DB, name: 'Tasks', properties: [{ id: PROP, name: 'Priority', type: 'number' as const }] };
-      const template: DatabaseTemplate = { id: TID, type: 'database', name: 'Task starter', database, views: [], starterRows: [{ title: 'Example task', values: { [PROP]: 2 } }], createdAt: NOW, updatedAt: NOW };
+      const view = { id: '77777777-7777-4777-8777-777777777777', databaseId: DB, name: 'All tasks', sort: { propertyId: 'title' as const, direction: 'asc' as const }, filters: [], visiblePropertyIds: [PROP] };
+      const template: DatabaseTemplate = { id: TID, type: 'database', name: 'Task starter', database, views: [view], starterRows: [{ title: 'Example task', values: { [PROP]: 2 } }], createdAt: NOW, updatedAt: NOW };
       const saved = await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null });
       expect(saved.status).toBe(200);
+      const preview = await json(base, `/api/templates/${TID}/preview`, 'POST', {});
+      expect(preview.status).toBe(200);
+      expect(await vault.listDatabases()).toHaveLength(0);
+      expect(await vault.listNotes()).toHaveLength(0);
       const applied = await json<{ databaseId: string; report: { databases: number; notes: number } }>(base, `/api/templates/${TID}/apply`, 'POST', {});
       expect(applied.status).toBe(201);
       expect(applied.body.databaseId).not.toBe(DB);
       expect(applied.body.report).toMatchObject({ databases: 1, notes: 1 });
       expect(await vault.listDatabases()).toHaveLength(1);
       expect(await vault.listNotes()).toHaveLength(1);
+      expect(await vault.listDatabaseViews(applied.body.databaseId)).toHaveLength(1);
       const invalid = { ...template, id: '44444444-4444-4444-8444-444444444444', starterRows: [{ title: 'Bad', values: { [PROP]: 'high' } }] };
       const invalidSave = await json<{ error: { code: string } }>(base, '/api/templates', 'PUT', { templates: [invalid], baseHash: (saved.body as { hash: string }).hash });
       expect(invalidSave.status).toBe(422);
+    });
+  });
+
+  it('rolls back a failed database template apply so an explicit retry creates one complete database', async () => {
+    await withApi(async (base, vault) => {
+      const database = { id: DB, name: 'Tasks', properties: [{ id: PROP, name: 'Priority', type: 'number' as const }] };
+      const template: DatabaseTemplate = { id: TID, type: 'database', name: 'Task starter', database, views: [], starterRows: [{ title: 'Example task', values: { [PROP]: 2 } }], createdAt: NOW, updatedAt: NOW };
+      expect((await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null })).status).toBe(200);
+
+      const prototype = FileSystemVault.prototype as unknown as {
+        publishTemplateTransactionFile(this: FileSystemVault, staged: string, target: string, relativePath: string): Promise<void>;
+      };
+      const original = prototype.publishTemplateTransactionFile;
+      let calls = 0;
+      const spy = vi.spyOn(prototype, 'publishTemplateTransactionFile').mockImplementation(async function (this: FileSystemVault, staged: string, target: string, relativePath: string) {
+        calls += 1;
+        if (calls === 2) throw Object.assign(new Error('injected second file failure'), { code: 'EIO' });
+        return original.call(this, staged, target, relativePath);
+      });
+      try {
+        const failed = await json<{ error: { code: string } }>(base, `/api/templates/${TID}/apply`, 'POST', {});
+        expect(failed.status).toBe(500);
+        expect(await vault.listDatabases()).toEqual([]);
+        expect(await vault.listNotes()).toEqual([]);
+        expect((await vault.checkHealth()).issues).toEqual([]);
+      } finally { spy.mockRestore(); }
+
+      const retry = await json<{ databaseId: string }>(base, `/api/templates/${TID}/apply`, 'POST', {});
+      expect(retry.status).toBe(201);
+      expect(await vault.listDatabases()).toHaveLength(1);
+      expect(await vault.listNotes()).toHaveLength(1);
     });
   });
 });

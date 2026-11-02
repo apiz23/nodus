@@ -95,8 +95,13 @@ export function TemplatesView({ databases, onApplied }: { databases: UiDatabase[
     if (!active || preview === null) return;
     try {
       const variables = JSON.parse(variableText) as Record<string, unknown>;
-      await api.templateAction(active.id, 'apply', variables);
-      setNotice(active.type === 'note' ? 'Note created from template.' : 'Database created from template.'); setError(null); onApplied();
+      const result = await api.templateAction(active.id, 'apply', variables) as { report?: { transactionCleanupPending?: boolean } };
+      setNotice(active.type === 'note'
+        ? 'Note created from template.'
+        : result.report?.transactionCleanupPending
+          ? 'Database created. Transaction cleanup is pending; check Storage health before another apply.'
+          : 'Database created from template.');
+      setError(null); onApplied();
     } catch (failure) { setError(message(failure)); }
   };
   const remove = async () => { if (!active) return; const next = templates.filter((item) => item.id !== active.id); setSelected(null); await save(next); };

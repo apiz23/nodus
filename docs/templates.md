@@ -41,3 +41,47 @@ catalog before applying it.
 
 Templates contain declarative data only. Applying them executes no user code
 and has no cloud dependency.
+
+## Health diagnostics
+
+`checkHealth()` reads the optional catalog without changing it. A missing
+`.nodus-templates` directory or missing `templates.json` is valid and means the
+vault has no templates. An existing catalog is checked with the same strict
+parser used by template management. Health issues identify the catalog path and
+use the vault's standard issue codes for malformed content, unsupported
+versions, duplicate IDs, unsafe paths, and incomplete writes. Messages include
+preservation or recovery guidance. An unreadable directory, catalog, or
+transaction journal is reported as an issue; health checks do not repair,
+rewrite, or remove anything.
+
+The health check also reports an interrupted database-template staging journal
+under `.nodus-tmp-template-apply-<uuid>`. A prepared transaction can be recovered
+only when the user next explicitly applies a database template. If the journal
+is invalid or recovery cannot prove which files belong to the transaction, it
+stops and preserves the journal and target files for manual inspection.
+
+## Database application and recovery
+
+Database template application validates and serializes every generated note,
+view, and database definition before writing. It then writes all bytes into a
+unique hidden staging directory with a manifest, publishes each destination
+with exclusive hard links, and publishes the database definition last as the
+completion marker. Existing files are never replaced. If a write or publish
+fails, rollback removes only destination files whose device and inode still
+match the staged file and whose content hash still matches the journal; files
+that cannot be proven transaction-owned are left untouched and keep the journal
+available for inspection. A later explicit database-template apply retries
+recovery from a prepared journal before starting the new application. A
+committed journal only needs staging cleanup, which can also be completed on a
+later apply.
+
+This is a recoverable staged-write protocol, not a filesystem-wide transaction.
+The vault lock coordinates Nodus processes, but external programs do not honor
+it, and other readers may observe files while they are being published. A crash
+can leave a prepared journal; health reports it and backup/export refuse to
+snapshot until it is recovered. A committed application may leave a cleanup
+journal, but its complete data remains available and the next explicit apply
+can remove the staging files. Ordinary backup, export, and import continue to
+carry template catalogs using the version 7 manifest and backward-compatible
+versions 1 through 6. Note template creation continues to use the existing
+single-file atomic note write.
