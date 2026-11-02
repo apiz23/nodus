@@ -2,21 +2,28 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Network, Plus, RefreshCw, RotateCcw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { GraphEdge } from '../../src/links/graph.js';
 import type { UiNoteGraph } from '../../src/ui-server/dto.js';
 import { api } from './api';
-import { graphConnections, positionGraph, visibleGraph } from './graph-model';
+import { graphConnections, graphFolders, positionGraph, visibleGraph } from './graph-model';
+import { cn } from '@/lib/utils';
 
 interface Props { revision: number; initialNoteId: string | null; onOpenNote: (id: string) => void }
 interface Viewport { x: number; y: number; scale: number }
 const GRAPH_NODE_LIMIT = 200;
+const ALL_FOLDERS = '__all__';
 
 export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
   const [graph, setGraph] = useState<UiNoteGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [folder, setFolder] = useState<string | null>(null);
+  const [showIsolated, setShowIsolated] = useState(true);
+  const [showUnresolved, setShowUnresolved] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(initialNoteId);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
@@ -48,22 +55,45 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
     return () => { mounted.current = false; request.current++; drag.current = null; };
   }, [revision]);
 
-  const visible = useMemo(() => graph ? visibleGraph(graph, query, focusId, GRAPH_NODE_LIMIT) : null, [graph, query, focusId]);
+  const folders = useMemo(() => graphFolders(graph?.nodes ?? []), [graph]);
+  const visible = useMemo(
+    () => graph ? visibleGraph(graph, query, focusId, GRAPH_NODE_LIMIT, { folder, showIsolated, showUnresolved }) : null,
+    [graph, query, focusId, folder, showIsolated, showUnresolved],
+  );
   const positions = useMemo(() => visible ? positionGraph(visible.nodes, focusId) : [], [visible, focusId]);
   const positionsById = useMemo(() => new Map(positions.map((node) => [node.id, node])), [positions]);
-  const selected = graph?.nodes.find((node) => node.id === selectedId) ?? null;
-  const connections = useMemo(() => graph && selected ? graphConnections(graph.edges, selected.id) : { incoming: [], outgoing: [] }, [graph, selected]);
-  const nodeById = useMemo(() => new Map(graph?.nodes.map((node) => [node.id, node]) ?? []), [graph]);
+  const selected = visible?.nodes.find((node) => node.id === selectedId) ?? null;
+  const connections = useMemo(
+    () => visible && selected ? graphConnections(visible.edges, selected.id) : { incoming: [], outgoing: [] },
+    [visible, selected],
+  );
+  const neighborIds = useMemo(() => new Set([
+    ...(selected ? [selected.id] : []),
+    ...connections.incoming.map((edge) => edge.sourceId),
+    ...connections.outgoing.map((edge) => edge.targetId),
+  ]), [selected, connections]);
+  const nodeById = useMemo(() => new Map(visible?.nodes.map((node) => [node.id, node]) ?? []), [visible]);
 
   function selectNode(id: string) { setSelectedId(id); }
   function zoom(factor: number) { setViewport((current) => ({ ...current, scale: Math.max(0.5, Math.min(2.5, current.scale * factor)) })); }
   function resetViewport() { setViewport({ x: 0, y: 0, scale: 1 }); }
+  function resetFilters() {
+    setQuery('');
+    setFolder(null);
+    setShowIsolated(true);
+    setShowUnresolved(true);
+    setFocusId(null);
+    setSelectedId(null);
+    resetViewport();
+  }
   function edgePath(edge: GraphEdge) {
     const source = positionsById.get(edge.sourceId), target = positionsById.get(edge.targetId);
     if (!source || !target) return '';
     if (source.id === target.id) return `M ${source.x - 8} ${source.y - 17} C ${source.x - 65} ${source.y - 88}, ${source.x + 65} ${source.y - 88}, ${source.x + 8} ${source.y - 17}`;
     return `M ${source.x} ${source.y} L ${target.x} ${target.y}`;
   }
+
+  const selectedIsUnresolved = selected?.unresolved === true;
 
   return <section className="flex min-h-0 flex-1 flex-col" aria-label="Local note graph">
     <header className="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
@@ -74,23 +104,43 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3 md:p-5">
       <div className="flex flex-wrap items-center gap-2">
         <label className="sr-only" htmlFor="graph-filter">Filter notes by title or path</label>
-        <Input id="graph-filter" type="search" className="min-w-48 flex-1 sm:max-w-sm" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Filter notes by title or path" />
+        <Input id="graph-filter" type="search" className="min-w-48 flex-1 sm:max-w-xs" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Filter notes by title or path" />
+        <Select value={folder ?? ALL_FOLDERS} onValueChange={(value) => setFolder(value === ALL_FOLDERS ? null : value)}>
+          <SelectTrigger className="w-44" aria-label="Filter by folder">
+            <SelectValue placeholder="All folders" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_FOLDERS}>All folders</SelectItem>
+            {folders.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Checkbox checked={showIsolated} onCheckedChange={(checked) => setShowIsolated(checked === true)} aria-label="Show isolated notes" />
+          Isolated notes
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Checkbox checked={showUnresolved} onCheckedChange={(checked) => setShowUnresolved(checked === true)} aria-label="Show unresolved links" />
+          Unresolved links
+        </label>
         <Button variant="outline" size="sm" onClick={() => zoom(1.2)} aria-label="Zoom in"><Plus /></Button>
         <Button variant="outline" size="sm" onClick={() => zoom(1 / 1.2)} aria-label="Zoom out"><Minus /></Button>
         <Button variant="outline" size="sm" onClick={resetViewport}><RotateCcw data-icon="inline-start" />Reset viewport</Button>
+        <Button variant="ghost" size="sm" onClick={resetFilters}>Reset filters</Button>
         {focusId ? <Button variant="ghost" size="sm" onClick={() => setFocusId(null)}>Show full graph</Button> : null}
       </div>
 
       {error ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive"><span>{error}</span><Button variant="outline" size="sm" onClick={() => void load(true)}>Retry</Button></div> : null}
       {loading && graph === null ? <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading note graph…</p> : null}
       {!loading && !error && graph?.nodes.length === 0 ? <div className="rounded-md border border-dashed px-4 py-12 text-center"><h2 className="font-medium">No notes to map yet</h2><p className="mt-1 text-sm text-muted-foreground">Create Markdown notes and connect them with wiki links such as [[Note title]].</p></div> : null}
-      {graph && graph.nodes.length > 0 && visible?.nodes.length === 0 ? <div className="rounded-md border border-dashed px-4 py-10 text-center"><h2 className="font-medium">No matching notes</h2><p className="mt-1 text-sm text-muted-foreground">Try another title or path.</p></div> : null}
+      {graph && graph.nodes.length > 0 && visible?.nodes.length === 0 ? <div className="rounded-md border border-dashed px-4 py-10 text-center"><h2 className="font-medium">No matching notes</h2><p className="mt-1 text-sm text-muted-foreground">Try another title, folder, or filter.</p></div> : null}
 
       {graph && visible && visible.nodes.length > 0 ? <>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground" aria-live="polite">
-          <span>{visible.nodes.length} of {graph.nodes.length} notes shown</span><span>{visible.edges.length} links shown · {graph.edges.length} confirmed links total</span>
+          <span>{visible.noteCount} of {graph.nodes.length} notes shown</span>
+          <span>{visible.edges.filter((edge) => edge.unresolved !== true).length} confirmed links shown · {graph.edges.length} total</span>
+          {visible.unresolvedCount > 0 ? <Badge variant="secondary">{visible.unresolvedCount} unresolved targets shown</Badge> : null}
           {graph.unresolvedCount ? <Badge variant="secondary">{graph.unresolvedCount} unresolved excluded</Badge> : null}
-          {graph.ambiguousCount ? <Badge variant="secondary">{graph.ambiguousCount} ambiguous excluded</Badge> : null}
+          {graph.ambiguousCount ? <Badge variant="secondary">{graph.ambiguousCount} ambiguous occurrences excluded</Badge> : null}
           {visible.truncated ? <span>Showing the first {GRAPH_NODE_LIMIT}; filter or focus a note to explore more.</span> : null}
         </div>
         <div className="grid min-h-[26rem] flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
@@ -103,22 +153,69 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
               onPointerCancel={() => { drag.current = null; }}>
               <defs><marker id="graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,7 L7,3.5 z" className="fill-muted-foreground" /></marker></defs>
               <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
-                {visible.edges.map((edge) => <path key={`${edge.sourceId}:${edge.targetId}`} d={edgePath(edge)} fill="none" className="stroke-muted-foreground/45" strokeWidth={Math.min(4, 1 + Math.log2(edge.linkCount))} markerEnd="url(#graph-arrow)"><title>{nodeById.get(edge.sourceId)?.title} links to {nodeById.get(edge.targetId)?.title}{edge.linkCount > 1 ? ` (${edge.linkCount} wiki links)` : ''}{edge.snippets[0] ? `: ${edge.snippets[0]}` : ''}</title></path>)}
-                {positions.map((node) => <g key={node.id} data-graph-node="true" role="button" tabIndex={0} aria-label={`Select ${node.title}`} aria-pressed={selectedId === node.id} onClick={() => selectNode(node.id)} onFocus={() => setFocusedId(node.id)} onBlur={() => setFocusedId(null)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); } }} className="cursor-pointer outline-none">
-                  <circle cx={node.x} cy={node.y} r={node.id === focusId ? 12 : 9} className={node.id === selectedId ? 'fill-primary stroke-ring' : node.id === focusedId ? 'fill-secondary stroke-ring' : 'fill-secondary stroke-border'} strokeWidth={node.id === focusedId ? 4 : 2} />
-                  <text x={node.x} y={node.y + 25} textAnchor="middle" className="fill-foreground text-[12px]">{labelFor(node.title)}</text>
-                  <title>{node.title} · {node.path}</title>
-                </g>)}
+                {visible.edges.map((edge) => {
+                  const active = selectedId !== null && (edge.sourceId === selectedId || edge.targetId === selectedId);
+                  return <path
+                    key={`${edge.sourceId}:${edge.targetId}`}
+                    d={edgePath(edge)}
+                    fill="none"
+                    className={cn(
+                      edge.unresolved ? 'stroke-muted-foreground/50 [stroke-dasharray:5_4]' : 'stroke-muted-foreground/45',
+                      active ? 'stroke-success' : selectedId !== null ? 'opacity-20' : undefined,
+                    )}
+                    strokeWidth={Math.min(4, 1 + Math.log2(edge.linkCount))}
+                    markerEnd={edge.unresolved ? undefined : 'url(#graph-arrow)'}
+                  >
+                    <title>{nodeById.get(edge.sourceId)?.title} links to {nodeById.get(edge.targetId)?.title}{edge.linkCount > 1 ? ` (${edge.linkCount} wiki links)` : ''}{edge.snippets[0] ? `: ${edge.snippets[0]}` : ''}</title>
+                  </path>;
+                })}
+                {positions.map((node) => {
+                  const nodeSelected = selectedId === node.id;
+                  const neighbor = neighborIds.has(node.id);
+                  return <g
+                    key={node.id}
+                    data-graph-node="true"
+                    data-unresolved={node.unresolved === true ? 'true' : undefined}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={node.unresolved === true ? `Select unresolved target ${node.title}` : `Select ${node.title}`}
+                    aria-pressed={nodeSelected}
+                    onClick={() => selectNode(node.id)}
+                    onDoubleClick={() => { if (node.unresolved !== true) onOpenNote(node.id); }}
+                    onFocus={() => setFocusedId(node.id)}
+                    onBlur={() => setFocusedId(null)}
+                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); } }}
+                    className="cursor-pointer outline-none"
+                  >
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={node.id === focusId ? 12 : node.unresolved === true ? 7 : 9}
+                      strokeDasharray={node.unresolved === true ? '3 3' : undefined}
+                      className={nodeSelected ? 'fill-primary stroke-ring' : neighbor && selectedId !== null ? 'fill-secondary stroke-success' : node.id === focusedId ? 'fill-secondary stroke-ring' : 'fill-secondary stroke-border'}
+                      strokeWidth={node.id === focusedId ? 4 : 2}
+                    />
+                    <text x={node.x} y={node.y + 25} textAnchor="middle" className={cn('fill-foreground text-[12px]', selectedId !== null && !neighbor && 'opacity-40')}>{labelFor(node.title)}</text>
+                    <title>{node.unresolved === true ? `Unresolved target: ${node.title}` : `${node.title} · ${node.path} (double-click to open)`}</title>
+                  </g>;
+                })}
               </g>
             </svg>
           </div>
           <aside className="flex min-h-0 flex-col gap-3 rounded-md border p-3" aria-label="Selected note connections">
             {selected ? <>
-              <div className="min-w-0"><h2 className="truncate text-sm font-semibold" title={selected.title}>{selected.title}</h2><p className="mt-1 break-all text-xs text-muted-foreground">{selected.path}</p></div>
-              <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => onOpenNote(selected.id)}>Open note</Button><Button size="sm" variant="outline" onClick={() => { setFocusId(selected.id); resetViewport(); }}>Explore neighbors</Button></div>
-              <ConnectionList title="Incoming links" edges={connections.incoming} endpoint="sourceId" nodeById={nodeById} onSelect={selectNode} />
-              <ConnectionList title="Outgoing links" edges={connections.outgoing} endpoint="targetId" nodeById={nodeById} onSelect={selectNode} />
-            </> : <p className="text-sm text-muted-foreground">Select a note node to inspect its incoming and outgoing links.</p>}
+              <div className="min-w-0">
+                {selectedIsUnresolved ? <Badge variant="outline" className="mb-1">Unresolved target</Badge> : null}
+                <h2 className="truncate text-sm font-semibold" title={selected.title}>{selected.title}</h2>
+                <p className="mt-1 break-all text-xs text-muted-foreground">{selected.path}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {!selectedIsUnresolved ? <Button size="sm" onClick={() => onOpenNote(selected.id)}>Open note</Button> : null}
+                <Button size="sm" variant="outline" onClick={() => { setFocusId(selected.id); resetViewport(); }}>Explore neighbors</Button>
+              </div>
+              <ConnectionList title={selectedIsUnresolved ? 'Referenced by' : 'Incoming links'} edges={connections.incoming} endpoint="sourceId" nodeById={nodeById} onSelect={selectNode} />
+              {selectedIsUnresolved ? null : <ConnectionList title="Outgoing links" edges={connections.outgoing} endpoint="targetId" nodeById={nodeById} onSelect={selectNode} />}
+            </> : <p className="text-sm text-muted-foreground">Select a note node to inspect its incoming and outgoing links. Unresolved targets are shown as dashed nodes.</p>}
           </aside>
         </div>
       </> : null}

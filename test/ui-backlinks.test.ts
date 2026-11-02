@@ -78,6 +78,17 @@ describe('backlinks API', () => {
         expect(result.body.backlinks).toEqual([
           { sourceId: SOURCE, sourceTitle: 'Source', snippet: 'See [[Target]] and again [[Target]].', count: 2, ambiguous: false },
         ]);
+        expect(result.body.outgoing).toEqual([]);
+        const source = await json<UiBacklinksResponse>(started.base, `/api/notes/${SOURCE}/backlinks`);
+        expect(source.body.outgoing).toHaveLength(2);
+        expect(source.body.outgoing[0]).toMatchObject({
+          target: 'Target',
+          targetId: TARGET,
+          targetTitle: 'Target',
+          targetPath: `notes/${TARGET.slice(0, 8)}.md`,
+          selfReference: false,
+          resolution: { status: 'resolved', noteId: TARGET },
+        });
       } finally {
         await stopApi(started);
       }

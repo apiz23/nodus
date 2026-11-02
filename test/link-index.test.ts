@@ -32,7 +32,7 @@ describe('discovery link index', () => {
     expect(changed.links[1]?.resolution).toEqual({ status: 'resolved', noteId: B });
     expect(buildLinkIndex([source]).links.every((link) => link.resolution.status === 'unresolved')).toBe(true);
     expect(buildLinkIndex([note(B, 'Self', '[[Self]]')]).orphanNotes).toHaveLength(1);
-    expect(buildLinkIndex([])).toEqual({ notes: [], links: [], orphanNotes: [] });
+    expect(buildLinkIndex([])).toEqual({ notes: [], links: [], orphanNotes: [], isolatedNotes: [] });
   });
 
   it('shares rebuilds, bounds external staleness, refreshes explicitly and retries failed reads', async () => {

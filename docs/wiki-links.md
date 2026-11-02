@@ -10,6 +10,7 @@ Nodus notes link to each other with wiki-link syntax. Links stay readable as pla
 | `[[Target\|Display]]` | Link by title or alias, shown as `Display`. |
 | `[[<uuid>]]` | Link by note ID (ID-pinned). |
 | `[[<uuid>\|Display]]` | ID-pinned link, shown as `Display`. |
+| `[[folder/note]]` | Link by workspace-relative path. |
 
 Rules:
 - The target cannot contain `[`, `]`, `|`, or a line break.
@@ -38,12 +39,14 @@ Scanning never changes the body. `raw` is never rewritten.
 | Target | Result |
 |---|---|
 | Lowercase UUID v4 | `resolved` if a note has that `id`, otherwise `unresolved`. Titles are not checked. |
-| Anything else | Compared against every note's title and aliases after Unicode NFC normalization, trimming, and lowercasing. |
+| Anything else | Compared against every note's title and aliases after Unicode NFC normalization, trimming, and lowercasing, then by workspace-relative path without a trailing `.md`. |
 
 For title and alias matching:
 - one matching note: `resolved`;
 - no matching note: `unresolved`;
 - two or more matching notes (for example two notes with the same title, or a title that equals another note's alias): `ambiguous`, with every candidate ID.
+
+Title and alias take precedence over path. Path links are a fallback, accept `folder/note` and `folder/note.md`, normalize `\` to `/`, and are lowercase/NFC-insensitive. External schemes such as `https:` and `mailto:` are ignored as internal relationships.
 
 Nodus never picks one of the candidates automatically.
 
@@ -51,11 +54,10 @@ Nodus never picks one of the candidates automatically.
 
 - **Duplicate titles** are allowed. Title links to them are `ambiguous`. The ID-pinned form avoids the ambiguity.
 - **Missing targets** are `unresolved`. The link text stays in the body unchanged.
-- **Renamed notes:** title and alias links break after a rename, because they are matched by text. ID-pinned links keep working, because they match on `id`. Phase 1 does not rewrite links when a note is renamed, so a rename can leave title links unresolved. Use the ID-pinned form for links that must survive renames.
+- **Renamed notes:** title and alias links break after a rename, because they are matched by text. ID-pinned links keep working, because they match on `id`. Path links also break when a note moves. Nodus does not rewrite links when a note is renamed or moved, so a rename/move can leave text links unresolved. Use the ID-pinned form for links that must survive renames and moves.
 
 ## Not implemented in Phase 1
 
-- Graph visualization.
 - Automatic link rewriting on rename.
 - Heading or block targets (`[[Note#Heading]]`). The `#` is treated as part of the title.
 - Link extraction from frontmatter fields.
@@ -63,9 +65,11 @@ Nodus never picks one of the candidates automatically.
 ## Knowledge discovery
 
 Discovery in the sidebar and command palette lists unresolved wiki links, ambiguous references,
-and orphan notes. A note is an orphan when no other note has a confirmed incoming wiki link;
-self-links and ambiguous mentions do not count. Orphans are valid notes, not errors. The scanner
-already excludes hidden/system metadata; there is no separate template-note convention to exclude.
+and isolated notes. `orphans` remains available for API compatibility and means no confirmed
+incoming link. The UI uses the stricter **isolated** definition: no confirmed incoming and no
+confirmed outgoing internal link. Self-links, unresolved links, and ambiguous mentions do not
+count. Isolated notes are valid notes, not errors. The scanner already excludes hidden/system
+metadata; there is no separate template-note convention to exclude.
 
 Create target preserves the original Markdown and rechecks resolution under the vault write lock.
 If a title or alias now resolves, the existing note opens. Ambiguous references require an explicit
@@ -76,13 +80,17 @@ ID links survive moves and title changes. Title/alias links follow the existing 
 no link text is rewritten on rename.
 
 The reusable `buildLinkIndex` snapshot contains notes, link occurrences (raw text, target, display,
-body offsets, line, source ID/path, context, and resolution), and orphan notes. Markdown is the
+body offsets, line, source ID/path, context, and resolution), plus orphan and isolated notes. Markdown is the
 source of truth. The local API shares an in-memory snapshot for up to five seconds, coalesces
 concurrent rebuilds, and invalidates after note writes and restore. External changes appear on the
 next request after expiry or immediately with Refresh from disk / Refresh backlinks. Nothing
 parses while typing; discovery reflects saved notes. No persistent index or new dependencies are used.
 
-- `GET /api/discovery` returns `unresolved`, `ambiguous`, and `orphans`.
+- `GET /api/discovery` returns `unresolved`, `ambiguous`, `isolated`, and compatibility `orphans`.
 - `POST /api/discovery/create` accepts `{ "target": "Title or UUID" }` and returns the destination note.
-- `GET /api/notes/:id/backlinks` returns source titles, snippets, counts, and ambiguity flags.
+- `GET /api/notes/:id/backlinks` returns incoming source titles, snippets, counts, and ambiguity
+  flags, plus outgoing link occurrences with resolved target IDs, titles, paths, and status.
 - Both GET endpoints accept `?refresh=true` to rebuild from disk.
+
+See [knowledge graph](knowledge-graph.md) for graph projection, filters, virtual unresolved targets,
+complexity, and limits.

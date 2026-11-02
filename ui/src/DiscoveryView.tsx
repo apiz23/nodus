@@ -93,9 +93,9 @@ export function DiscoveryView({ revision, onOpenNote, onCreated, sidebarCollapse
               </li>)}</ul>
             </section> : null}
             <section aria-labelledby="orphans-heading" className="flex flex-col gap-3">
-              <h2 id="orphans-heading" className="text-base font-semibold">Orphan notes ({data.orphans.length})</h2>
-              <p className="text-sm text-muted-foreground">No other note has a confirmed wiki link to these notes. Self-links and ambiguous mentions do not count. These notes are valid; this is a way to discover and connect them.</p>
-              {data.orphans.length === 0 ? <p className="text-sm text-muted-foreground">Every note has an incoming link.</p> : <ul className="flex flex-col divide-y">{data.orphans.map((note) => <li key={note.id} className="flex flex-col items-start gap-1 py-2">
+              <h2 id="orphans-heading" className="text-base font-semibold">Isolated notes ({data.isolated.length})</h2>
+              <p className="text-sm text-muted-foreground">No other note links to these notes, and they link to no other note. Self-links and ambiguous mentions do not count. These notes are valid; this is a way to discover and connect them.</p>
+              {data.isolated.length === 0 ? <p className="text-sm text-muted-foreground">Every note has an incoming or outgoing link.</p> : <ul className="flex flex-col divide-y">{data.isolated.map((note) => <li key={note.id} className="flex flex-col items-start gap-1 py-2">
                 <Button variant="link" className="h-auto max-w-full whitespace-normal text-left" onClick={() => onOpenNote(note.id)}>{note.title}</Button>
                 <span className="break-all px-2.5 text-xs text-muted-foreground">{note.path}</span>
               </li>)}</ul>}

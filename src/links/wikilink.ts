@@ -9,7 +9,7 @@ export interface WikiLink {
   end: number;
 }
 
-export type LinkableNote = Pick<Note, 'id' | 'title' | 'aliases'>;
+export type LinkableNote = Pick<Note, 'id' | 'title' | 'aliases'> & { path?: string };
 
 export type LinkResolution =
   | { status: 'resolved'; noteId: string }
@@ -46,15 +46,21 @@ export function resolveLink(target: string, notes: readonly LinkableNote[]): Lin
   return createLinkResolver(notes)(target);
 }
 
-/** Precompute title/alias candidates once for a whole vault snapshot. */
+/** Precompute title/alias/path candidates once for a whole vault snapshot. */
 export function createLinkResolver(notes: readonly LinkableNote[]): (target: string) => LinkResolution {
   const ids = new Set(notes.map((note) => note.id));
   const keys = new Map<string, Set<string>>();
+  const paths = new Map<string, Set<string>>();
   for (const note of notes) {
     for (const value of [note.title, ...note.aliases]) {
       const key = normalizeKey(value);
       if (!keys.has(key)) keys.set(key, new Set());
       keys.get(key)!.add(note.id);
+    }
+    if (note.path !== undefined && note.path.trim() !== '') {
+      const key = normalizePathKey(note.path);
+      if (!paths.has(key)) paths.set(key, new Set());
+      paths.get(key)!.add(note.id);
     }
   }
   return (target) => {
@@ -62,13 +68,38 @@ export function createLinkResolver(notes: readonly LinkableNote[]): (target: str
     if (isUuidV4(trimmed)) return ids.has(trimmed) ? { status: 'resolved', noteId: trimmed } : { status: 'unresolved' };
     const matches = [...(keys.get(normalizeKey(trimmed)) ?? [])];
     const first = matches[0];
-    if (first === undefined) return { status: 'unresolved' };
-    return matches.length === 1 ? { status: 'resolved', noteId: first } : { status: 'ambiguous', noteIds: matches };
+    if (first !== undefined) return matches.length === 1 ? { status: 'resolved', noteId: first } : { status: 'ambiguous', noteIds: matches };
+    // Path resolution is a fallback after title/alias/ID. It accepts the
+    // workspace-relative path with or without a trailing .md, and is unique
+    // per vault because duplicate note paths are rejected by storage.
+    const pathMatches = [...(paths.get(normalizePathKey(trimmed)) ?? [])];
+    if (pathMatches.length === 0) return { status: 'unresolved' };
+    const pathFirst = pathMatches[0];
+    if (pathFirst === undefined) return { status: 'unresolved' };
+    return pathMatches.length === 1
+      ? { status: 'resolved', noteId: pathFirst }
+      : { status: 'ambiguous', noteIds: pathMatches };
   };
 }
 
 function normalizeKey(value: string): string {
   return value.normalize('NFC').trim().toLowerCase();
+}
+
+/** Normalize a workspace-relative note path for wiki-link path matching. */
+function normalizePathKey(value: string): string {
+  return value
+    .normalize('NFC')
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/^\.\//, '')
+    .replace(/\.md$/i, '')
+    .toLowerCase();
+}
+
+/** External schemes are not internal note targets even when written in wiki syntax. */
+export function isExternalTarget(target: string): boolean {
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target.trim());
 }
 
 function maskCode(body: string): string {

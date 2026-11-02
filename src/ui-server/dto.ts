@@ -366,7 +366,11 @@ export interface UiBacklink {
 
 export interface UiBacklinksResponse {
   backlinks: UiBacklink[];
+  outgoing: UiOutgoingLink[];
 }
+
+/** Outgoing wiki-link occurrence with current target metadata where resolved. */
+export type UiOutgoingLink = import('../links/backlinks.js').OutgoingLink;
 
 /** Incoming database relations are derived from forward note metadata. */
 export interface UiRelationBacklink {
@@ -391,6 +395,8 @@ export interface UiDiscoveryResponse {
   unresolved: import('../links/link-index.js').IndexedLink[];
   ambiguous: import('../links/link-index.js').IndexedLink[];
   orphans: import('../links/link-index.js').IndexedNote[];
+  /** Notes with no confirmed incoming or outgoing internal links (self-links excluded). */
+  isolated: import('../links/link-index.js').IndexedNote[];
 }
 
 export type UiNoteGraph = import('../links/graph.js').NoteGraph;

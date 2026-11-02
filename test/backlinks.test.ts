@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createNote, type Note } from '../src/domain/note.js';
-import { createBacklinkIndex, snippetAround } from '../src/links/backlinks.js';
+import { createBacklinkIndex, outgoingLinksForNote, snippetAround } from '../src/links/backlinks.js';
+import { buildLinkIndex } from '../src/links/link-index.js';
 
 const NOW = '2026-01-01T00:00:00Z';
 const A = '11111111-1111-4111-8111-111111111111';
@@ -133,6 +134,31 @@ describe('backlink index', () => {
     const index = createBacklinkIndex();
     index.rebuild([]);
     expect(index.getBacklinks(A, [])).toEqual([]);
+  });
+
+  it('projects outgoing occurrences with current target metadata and status', () => {
+    const notes = [
+      note(A, 'Source', '[[Target]] [[Missing]] [[Source]] [[Shared]]'),
+      note(B, 'Target', ''),
+      note(C, 'Shared', ''),
+      note(D, 'Shared', ''),
+    ];
+    const index = createBacklinkIndex();
+    index.rebuild(notes);
+    const outgoing = outgoingLinksForNote(buildLinkIndex(notes), A);
+    expect(outgoing).toHaveLength(4);
+    expect(outgoing[0]).toMatchObject({
+      target: 'Target', targetId: B, targetTitle: 'Target', targetPath: 'notes/target.md', selfReference: false,
+      resolution: { status: 'resolved', noteId: B },
+    });
+    expect(outgoing[1]).toMatchObject({ target: 'Missing', resolution: { status: 'unresolved' }, selfReference: false });
+    expect(outgoing[2]).toMatchObject({ target: 'Source', targetId: A, selfReference: true });
+    expect(outgoing[3]).toMatchObject({
+      target: 'Shared',
+      resolution: { status: 'ambiguous', noteIds: [C, D] },
+      candidateIds: [C, D],
+    });
+    expect(index.getBacklinks(A, notes)).toEqual([]);
   });
 });
 

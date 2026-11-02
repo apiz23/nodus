@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link2, RefreshCw } from 'lucide-react';
-import type { UiBacklink } from '../../src/ui-server/dto';
+import { Link2, RefreshCw, Signpost } from 'lucide-react';
+import type { UiBacklink, UiOutgoingLink } from '../../src/ui-server/dto';
 import { api, ApiError } from './api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,7 +17,7 @@ interface BacklinksPanelProps {
 type PanelState =
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
-  | { phase: 'ready'; backlinks: UiBacklink[] };
+  | { phase: 'ready'; backlinks: UiBacklink[]; outgoing: UiOutgoingLink[] };
 
 /**
  * Compact linked-mentions section below the editor body. Lists notes that
@@ -34,7 +34,7 @@ export function BacklinksPanel({ noteId, revision, onOpenNote }: BacklinksPanelP
     api
       .backlinks(noteId, refresh > 0)
       .then((result) => {
-        if (!cancelled) setState({ phase: 'ready', backlinks: result.backlinks });
+        if (!cancelled) setState({ phase: 'ready', backlinks: result.backlinks, outgoing: result.outgoing });
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -90,51 +90,100 @@ export function BacklinksPanel({ noteId, revision, onOpenNote }: BacklinksPanelP
   const ambiguous = state.backlinks.length - confirmed;
 
   return (
-    <section className="mt-10 min-w-0 max-w-full border-t pt-5" aria-label="Linked mentions">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <BacklinksHeading count={confirmed} ambiguous={ambiguous} />
-        <Button variant="ghost" size="xs" className="shrink-0" onClick={() => setRefresh((value) => value + 1)} aria-label="Refresh backlinks from disk"><RefreshCw />Refresh</Button>
-      </div>
-      {state.backlinks.length === 0 ? (
-        <p className="mt-3 text-xs text-muted-foreground">
-          No notes link here yet. Add a wiki link like{' '}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-            [[Note title]]
-          </code>{' '}
-          from another page.
-        </p>
+    <>
+      <section className="mt-10 min-w-0 max-w-full border-t pt-5" aria-label="Linked mentions">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <BacklinksHeading count={confirmed} ambiguous={ambiguous} />
+          <Button variant="ghost" size="xs" className="shrink-0" onClick={() => setRefresh((value) => value + 1)} aria-label="Refresh backlinks from disk"><RefreshCw />Refresh</Button>
+        </div>
+        {state.backlinks.length === 0 ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            No notes link here yet. Add a wiki link like{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+              [[Note title]]
+            </code>{' '}
+            from another page.
+          </p>
+        ) : (
+          <ul className="mt-3 min-w-0 space-y-1.5">
+            {state.backlinks.map((backlink) => (
+              <li key={backlink.sourceId} className="min-w-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => onOpenNote(backlink.sourceId)}
+                  className="flex h-auto w-full min-w-0 max-w-full flex-col items-start justify-start gap-0 overflow-hidden whitespace-normal rounded-md px-2.5 py-2 text-left font-normal hover:bg-muted/60"
+                  aria-label={`Open ${backlink.sourceTitle}${backlink.ambiguous ? ' (ambiguous mention)' : ''}`}
+                >
+                  <span className="flex w-full min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                      {backlink.sourceTitle}
+                    </span>
+                    {backlink.count > 1 ? (
+                      <Badge variant="secondary" className="shrink-0 font-normal">
+                        {backlink.count} links
+                      </Badge>
+                    ) : null}
+                    {backlink.ambiguous ? (
+                      <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">
+                        ambiguous mention
+                      </Badge>
+                    ) : null}
+                  </span>
+                  <span className="mt-0.5 block w-full min-w-0 truncate text-xs text-muted-foreground">
+                    {backlink.snippet}
+                  </span>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <OutgoingLinks links={state.outgoing} onOpenNote={onOpenNote} />
+    </>
+  );
+}
+
+function OutgoingLinks({ links, onOpenNote }: { links: UiOutgoingLink[]; onOpenNote: (id: string) => void }) {
+  return (
+    <section className="mt-6 min-w-0 max-w-full border-t pt-5" aria-label="Outgoing links">
+      <h2 className="flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+        <Signpost className="size-3.5" aria-hidden="true" />
+        Outgoing links ({links.length})
+      </h2>
+      {links.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">This note does not link to another note yet. Use a wiki link such as <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">[[Note title]]</code>.</p>
       ) : (
         <ul className="mt-3 min-w-0 space-y-1.5">
-          {state.backlinks.map((backlink) => (
-            <li key={backlink.sourceId} className="min-w-0">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => onOpenNote(backlink.sourceId)}
-                className="flex h-auto w-full min-w-0 max-w-full flex-col items-start justify-start gap-0 overflow-hidden whitespace-normal rounded-md px-2.5 py-2 text-left font-normal hover:bg-muted/60"
-                aria-label={`Open ${backlink.sourceTitle}${backlink.ambiguous ? ' (ambiguous mention)' : ''}`}
-              >
-                <span className="flex w-full min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
-                    {backlink.sourceTitle}
-                  </span>
-                  {backlink.count > 1 ? (
-                    <Badge variant="secondary" className="shrink-0 font-normal">
-                      {backlink.count} links
-                    </Badge>
-                  ) : null}
-                  {backlink.ambiguous ? (
-                    <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">
-                      ambiguous mention
-                    </Badge>
-                  ) : null}
-                </span>
-                <span className="mt-0.5 block w-full min-w-0 truncate text-xs text-muted-foreground">
-                  {backlink.snippet}
-                </span>
-              </Button>
-            </li>
-          ))}
+          {links.map((link) => {
+            const resolved = link.resolution.status === 'resolved';
+            const label = link.targetTitle ?? link.target;
+            const content = <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
+                {link.selfReference ? <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">self-reference</Badge> : null}
+                {link.resolution.status === 'unresolved' ? <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">unresolved</Badge> : null}
+                {link.resolution.status === 'ambiguous' ? <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">ambiguous</Badge> : null}
+              </span>
+              <span className="block w-full min-w-0 truncate text-xs text-muted-foreground">{link.snippet}</span>
+              {link.targetPath === undefined ? null : <span className="block w-full break-all text-[11px] text-muted-foreground">{link.targetPath}</span>}
+            </span>;
+            return <li key={`${link.start}:${link.end}`} className="min-w-0">
+              {resolved && link.targetId !== undefined && !link.selfReference ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => onOpenNote(link.targetId!)}
+                  className="flex h-auto w-full min-w-0 max-w-full items-start justify-start overflow-hidden whitespace-normal rounded-md px-2.5 py-2 text-left font-normal hover:bg-muted/60"
+                  aria-label={`Open ${label}`}
+                >
+                  {content}
+                </Button>
+              ) : (
+                <div className="px-2.5 py-2">{content}</div>
+              )}
+            </li>;
+          })}
         </ul>
       )}
     </section>

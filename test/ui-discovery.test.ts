@@ -55,7 +55,7 @@ describe('knowledge discovery API', () => {
         expect(await vault.listNotes()).toHaveLength(2);
         // An externally added note can open before the shared snapshot expires.
         const externalId = '33333333-3333-4333-8333-333333333333';
-        await vault.createNote(createNote({ id: externalId, title: 'External arrival', path: 'external.md', body: '', now }));
+        await vault.createNote(createNote({ id: externalId, title: 'External arrival', path: 'arrival.md', body: '', now }));
         expect((await request<UiBacklinksResponse>(`/notes/${externalId}/backlinks`)).backlinks).toEqual([]);
       } finally {
         server.closeAllConnections();

@@ -1,5 +1,6 @@
 import type { Note } from '../domain/note.js';
 import { buildLinkIndex, type LinkIndex } from './link-index.js';
+import type { LinkResolution } from './wikilink.js';
 
 export interface BacklinkSource {
   sourceId: string;
@@ -7,6 +8,22 @@ export interface BacklinkSource {
   snippet: string;
   count: number;
   ambiguous: boolean;
+}
+
+export interface OutgoingLink {
+  raw: string;
+  target: string;
+  display?: string;
+  start: number;
+  end: number;
+  line: number;
+  snippet: string;
+  resolution: LinkResolution;
+  targetId?: string;
+  targetTitle?: string;
+  targetPath?: string;
+  candidateIds?: string[];
+  selfReference: boolean;
 }
 
 /**
@@ -67,8 +84,7 @@ function buildIndex(notes: readonly Note[]): Map<string, MutableEntry[]> {
   return backlinksByTarget(buildLinkIndex(notes));
 }
 
-export function backlinksByTarget(index: LinkIndex): Map<string, BacklinkSource[]> {
-  const byTarget = new Map<string, MutableEntry[]>();
+export function backlinksByTarget(index: LinkIndex): Map<string, BacklinkSource[]> {  const byTarget = new Map<string, MutableEntry[]>();
 
 
   const add = (
@@ -105,6 +121,58 @@ export function backlinksByTarget(index: LinkIndex): Map<string, BacklinkSource[
   }
 
   return byTarget;
+}
+
+/** Outgoing occurrences for one note, with current target metadata where resolved. */
+export function outgoingLinksForNote(index: LinkIndex, noteId: string): OutgoingLink[] {
+  const byId = new Map(index.notes.map((note) => [note.id, note]));
+  return index.links
+    .filter((link) => link.sourceId === noteId)
+    .sort((left, right) => left.start - right.start)
+    .map((link): OutgoingLink => {
+      const resolution = link.resolution;
+      if (resolution.status === 'resolved') {
+        const target = byId.get(resolution.noteId);
+        return {
+          raw: link.raw,
+          target: link.target,
+          ...(link.display === undefined ? {} : { display: link.display }),
+          start: link.start,
+          end: link.end,
+          line: link.line,
+          snippet: link.snippet,
+          resolution,
+          targetId: resolution.noteId,
+          ...(target === undefined ? {} : { targetTitle: target.title, targetPath: target.path }),
+          selfReference: resolution.noteId === noteId,
+        };
+      }
+      if (resolution.status === 'ambiguous') {
+        return {
+          raw: link.raw,
+          target: link.target,
+          ...(link.display === undefined ? {} : { display: link.display }),
+          start: link.start,
+          end: link.end,
+          line: link.line,
+          snippet: link.snippet,
+          resolution,
+          candidateIds: [...resolution.noteIds],
+          selfReference: resolution.noteIds.includes(noteId),
+        };
+      }
+      return {
+        raw: link.raw,
+        target: link.target,
+        ...(link.display === undefined ? {} : { display: link.display }),
+        start: link.start,
+        end: link.end,
+        line: link.line,
+        snippet: link.snippet,
+        resolution,
+        selfReference: false,
+      };
+    });
 }
 
 export { snippetAround } from './link-index.js';

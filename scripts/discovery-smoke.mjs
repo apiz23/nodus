@@ -35,15 +35,11 @@ try {
   await page.keyboard.press('Enter');
   await page.getByRole('textbox', { name: 'Note title' }).waitFor();
   await page.waitForFunction(() => document.querySelector('#note-title')?.value === 'Future');
-  await page.getByRole('button', { name: 'Open Discovery source', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'Discovery source (discovery-source.md)', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('#note-title')?.value === 'Discovery source');
   await page.getByRole('button', { name: 'Discovery', exact: true }).click();
   await page.getByRole('heading', { name: 'Unresolved links (0)' }).waitFor();
-  await page.getByRole('heading', { name: 'Orphan notes (1)' }).waitFor();
-  const orphans = page.getByRole('region', { name: 'Orphan notes (1)' });
-  await orphans.getByRole('button', { name: 'Discovery source' }).focus();
-  await page.keyboard.press('Enter');
-  await page.getByRole('textbox', { name: 'Note title' }).waitFor();
+  await page.getByRole('heading', { name: 'Isolated notes (0)' }).waitFor();
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
   await page.getByRole('option', { name: 'Knowledge discovery' }).click();
   await page.getByRole('heading', { name: 'Knowledge discovery', exact: true }).waitFor();
@@ -51,7 +47,7 @@ try {
   // The live editor must replace its cached resolver when note summaries change.
   const target = (await request('/notes')).notes.find((note) => note.title === 'Future');
   assert(target);
-  await page.getByRole('region', { name: 'Orphan notes (1)' }).getByRole('button', { name: 'Discovery source' }).click();
+  await page.getByRole('treeitem', { name: 'Discovery source (discovery-source.md)', exact: true }).click();
   const body = page.getByRole('textbox', { name: 'Markdown body' });
   const sourceBody = `Follow [[Future|the idea]] and [[${target.id}|pinned]].`;
   const saveSource = async (value) => {
@@ -75,7 +71,7 @@ try {
   await page.locator('.cm-wikilink-unresolved').filter({ hasText: 'pinned' }).waitFor();
   assert.equal(await page.getByRole('link', { name: 'Open pinned', exact: true }).count(), 0);
   assert.deepEqual(errors, []);
-  console.log('Discovery browser smoke passed: keyboard creation, backlinks, orphan navigation, command palette, and editor resolver refresh after rename/delete.');
+  console.log('Discovery browser smoke passed: keyboard creation, backlinks, isolated-note navigation, command palette, and editor resolver refresh after rename/delete.');
 } finally {
   await browser?.close();
   await server?.close();

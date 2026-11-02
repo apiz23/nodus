@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-02
-**Latest verified implementation commit:** `18539bb` (`main`, *feat: add note and database templates*). Roadmap history includes a documentation-only follow-up commit.
+**Latest verified implementation commit:** `feat: add knowledge graph exploration` (this delivery; use `git log -1` for the hash).
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -68,6 +68,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 12 — Database Automations](#phase-12--database-automations)
    - [Phase 13 — Templates and Database Templates](#phase-13--templates-and-database-templates)
    - [Phase 14 — Template Reliability and Vault Health Integration](#phase-14--template-reliability-and-vault-health-integration)
+   - [Phase 17G — Knowledge Graph and Relationship Exploration](#phase-17g--knowledge-graph-and-relationship-exploration)
 4. [Proposed Future Milestones (Phases 15–33)](#4-proposed-future-milestones-phases-1533)
    - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
@@ -150,18 +151,17 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Note and database templates | **Implemented with documented limits** | `src/database/templates.ts`, `ui/src/TemplatesView.tsx`, `docs/templates.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **91 files / 1,067 executed tests** | `test/` |
+| Test suite | **95 files / 1,101 executed tests** | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
-**Current working tree caveat:** separate typography/landing-page/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content remain outside the Phase 13 commits. The pre-existing roadmap edits were retained and updated for Phase 13.
+**Current working tree caveat:** verify `git status` before starting work. Uncommitted typography/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content have existed outside earlier phase commits and must be preserved.
 
 **Verified verification state for this document:**
 
-- `pnpm test --maxWorkers=1` — passed: 91/91 files, 1,067 tests.
-- `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` — passed for Phase 13. The build reports the advisory that the App chunk is above 500 kB.
-- Focused template and automation tests — passed: 14 tests across four model/API files. Browser smoke covers template create/edit/preview/apply/delete.
-- The default parallel full-suite run exceeded test timeouts under load; the authoritative serial full-suite run passed.
+- `pnpm test --maxWorkers=1` — passed: 95/95 files, 1,101 tests.
+- `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, and `git diff --check` — passed for Phase 17G. The build reports the advisory that the App chunk is above 500 kB.
+- Focused relationship/graph/backlink suite — 7 files / 48 tests passed. Graph benchmark and graph/discovery browser smokes also passed.
 
 ---
 
@@ -191,6 +191,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | 12 | Database automations | COMPLETE WITH LIMITATIONS | `a1466ae` |
 | 13 | Templates and Database Templates | COMPLETE WITH LIMITATIONS | `18539bb` |
 | 14 | Template reliability and vault health integration | COMPLETE WITH LIMITATIONS | `feat: improve template reliability and vault health` |
+| 17G | Knowledge graph and relationship exploration | COMPLETE WITH LIMITATIONS | this delivery |
 
 ---
 
@@ -399,7 +400,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 - Note create, rename path, move, delete with stale-write protection.
 - Sidebar resize/collapse, mobile drawer with focus trap, breadcrumb, focus mode.
 - Local wiki-link graph with pan/zoom, filtering, neighbor focus, and node lists.
-- Discovery view for unresolved links, ambiguous links, and orphan notes.
+- Discovery view for unresolved links, ambiguous links, and isolated notes.
 - Command palette with fixed workspace commands and note search.
 
 **Important source files**
@@ -1139,6 +1140,68 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 
 ---
 
+### Phase 17G — Knowledge Graph and Relationship Exploration
+
+**Numbering note:** the task brief calls this Phase 17. This roadmap reserves Phase 17 for **Tasks and Project Management** (still planned), so the delivered graph work is recorded as **17G** to avoid renumbering future milestones.
+
+**Objective:** Extend the existing wiki-link graph into a reliable, filterable relationship explorer with outgoing links, unresolved-target exploration, isolated-note discovery, stable IDs, and bounded performance.
+
+**Implemented functionality**
+
+- Path fallback in the existing wiki-link resolver: workspace-relative path with or without `.md`, normalized separators/NFC/lowercase; title/alias/ID still take precedence.
+- External URL schemes ignored as internal relationships; unresolved, ambiguous, duplicate, and self-reference occurrences remain explicit.
+- Link index now exposes `isolatedNotes` (no confirmed incoming or outgoing links; self-links excluded) alongside the legacy incoming-only `orphanNotes`.
+- Graph projection adds aggregated `unresolvedLinks`, `unresolvedCount`, `ambiguousCount`, and `isolatedNodeIds`; graph projection is cached with the shared knowledge snapshot.
+- Backlinks API response now includes `outgoing` occurrences with target ID/title/path, resolution status, candidate IDs, and self-reference flags.
+- Discovery API adds `isolated`; the UI now presents isolated notes with the stricter two-way definition while retaining the compatibility `orphans` field.
+- Interactive graph: search, folder filter, isolated-note toggle, unresolved-link toggle, reset filters, neighborhood focus, selection/neighbor edge highlighting, dashed unresolved virtual nodes, double-click open, and accessible node controls.
+- Backlinks panel: incoming linked mentions plus outgoing link occurrences, status badges, snippets, paths, navigation, and self-reference handling.
+- No new dependency or storage format; graph remains derived from Markdown and rebuilds from the existing five-second vault snapshot.
+
+**Important source files**
+
+- `src/links/wikilink.ts`, `src/links/link-index.ts`, `src/links/backlinks.ts`, `src/links/graph.ts`
+- `src/ui-server/dto.ts`, `src/ui-server/api.ts`
+- `ui/src/graph-model.ts`, `ui/src/GraphView.tsx`, `ui/src/BacklinksPanel.tsx`, `ui/src/DiscoveryView.tsx`
+- `docs/knowledge-graph.md`, `docs/wiki-links.md`
+- `test/graph-exploration.test.ts`, `test/graph-api.test.ts`, `test/backlinks.test.ts`, `test/ui-backlinks.test.ts`, `test/ui-discovery.test.ts`
+- `scripts/graph-smoke.mjs`, `scripts/discovery-smoke.mjs`, `benchmark/graph.benchmark.ts`
+
+**Tests and verification**
+
+- Focused relationship/graph/backlink suite: 7 files / 48 tests passed.
+- Full serial suite: `pnpm test --maxWorkers=1` — **95 files / 1,101 tests passed**.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; existing App chunk advisory remains above 500 kB.
+- `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm test:database-views` — passed.
+- `scripts/graph-smoke.mjs` and updated `scripts/discovery-smoke.mjs` — passed in Chromium.
+- `pnpm bench:graph` — passed; local measurements recorded below.
+- `git diff --check` — passed.
+
+**Performance measurements**
+
+- 1,000 notes / 3,000 link occurrences: 16.27 ms total (12.52 ms index, 3.72 ms graph projection).
+- 5,000 notes / 15,000 link occurrences: 78.45 ms total (55.88 ms index, 21.11 ms graph projection).
+- Five-run median after one warm-up on Node 24.18.1; local development observation, no filesystem or UI rendering.
+
+**Commit**
+
+- `feat: add knowledge graph exploration` (this delivery; use `git log -1` for the hash).
+
+**Known limitations**
+
+- Radial deterministic layout only; no force simulation or persisted node positions.
+- 200-node display bound; larger vaults need search, folder, or focus filtering.
+- Unresolved targets are virtual text nodes and cannot be opened as notes.
+- Path links intentionally break when a note moves; ID-pinned links remain stable.
+- No heading/block targets, frontmatter link extraction, or automatic link rewriting.
+- No persistent relationship index; external edits appear after the snapshot TTL or explicit refresh.
+- Ambiguous targets remain excluded from confirmed edges until source Markdown is edited.
+
+**Status:** **COMPLETE WITH LIMITATIONS**
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15–33)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -1387,14 +1450,13 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 **Objective:** Advance the existing basic wiki-link graph into a scalable knowledge-graph surface.
 
-**Important:** A basic graph view already exists (`ui/src/GraphView.tsx`, `src/links/graph.ts`). This phase is **not** the first graph implementation and must not reimplement it.
+**Important:** The basic graph and Phase 17G exploration features already exist (`ui/src/GraphView.tsx`, `src/links/graph.ts`, `src/links/backlinks.ts`). This phase is **not** the first graph implementation and must not reimplement search, folder filtering, focus, unresolved-target display, or isolated-note discovery delivered in Phase 17G.
 
 **Expected features**
 
-- Larger-node support with clustering/LOD and persisted layout.
-- Filters by tag, folder, database membership, date, and link state.
-- Graph search/focus, shortest-path or neighborhood exploration.
-- Local graph scoping and saved graph views.
+- Larger-node support with clustering/LOD and persisted layout beyond the 200-node bound.
+- Additional filters by tag, database membership, and date.
+- Shortest-path exploration and saved graph views.
 - Accessibility-friendly alternative list view.
 
 **Dependencies:** Phase 6 (link index), Phase 9 review (performance), Phase 22 (discovery), Phase 25 (search).
@@ -1820,10 +1882,10 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Move note/folder | `ui/src/NoteDialogs.tsx`, folder dialogs | Implemented via dialogs |
 | Drag-and-drop moves | — | Not implemented |
 | Breadcrumb | `ui/src/Editor.tsx` | Display only |
-| Backlinks panel | `ui/src/BacklinksPanel.tsx` | Implemented |
+| Backlinks panel | `ui/src/BacklinksPanel.tsx` | Implemented — incoming and outgoing wiki links |
 | Relation backlinks | `ui/src/RelationBacklinksPanel.tsx` | Implemented |
-| Local graph view | `ui/src/GraphView.tsx`, `src/links/graph.ts` | Implemented (basic, 200 nodes) |
-| Discovery view | `ui/src/DiscoveryView.tsx` | Implemented |
+| Local graph view | `ui/src/GraphView.tsx`, `src/links/graph.ts`, `ui/src/graph-model.ts` | Implemented — interactive graph, filters, unresolved targets, 200-node display bound |
+| Discovery view | `ui/src/DiscoveryView.tsx` | Implemented — unresolved, ambiguous, isolated notes |
 | Command palette | `ui/src/CommandPalette.tsx` | Implemented |
 | Saved navigation state (expanded folders, sidebar width) | `ui/src/PageTree.tsx`, localStorage | Implemented |
 
@@ -1974,13 +2036,14 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 | Feature | Implementation | Status |
 |---|---|---|
-| Unit/integration test suite | `test/` | 91 files / 1,067 executed tests |
+| Unit/integration test suite | `test/` | 95 files / 1,101 executed tests |
 | Browser smoke | `scripts/browser-smoke.mjs` | Implemented |
 | Database-view smoke | `scripts/database-views-smoke.mjs` | Implemented |
 | Vault onboarding smoke | `scripts/vault-onboarding-smoke.mjs` | Implemented |
 | Editor/draft/conflict/attachment smokes | `scripts/editor-*-smoke.mjs`, etc. | Implemented (manual commands) |
 | Search benchmark | `pnpm bench:search` | Implemented |
 | Database benchmarks | `pnpm bench:databases` | Implemented |
+| Graph relationship benchmark | `pnpm bench:graph` | Implemented |
 | Browser database performance smoke | `pnpm bench:database-ui` | Implemented |
 | Bundle analysis | `pnpm analyze:bundle` | Implemented |
 | CI pipeline | `.github/` | Not present |
@@ -2217,6 +2280,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | `pnpm test:vault-onboarding` | First-run/recovery vault flow |
 | `pnpm bench:search` | Search performance benchmark |
 | `pnpm bench:databases` | Database rows/query/relation/formula benchmarks |
+| `pnpm bench:graph` | Relationship indexing and graph projection benchmark |
 | `pnpm bench:database-ui` | Chromium 5,000-row layout performance |
 | `pnpm analyze:bundle` | Build chunk attribution |
 
@@ -2224,7 +2288,7 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 
 ### Test suite shape
 
-- **89 test files, 912 declared tests** at the time of writing (parameterized tests expand at runtime; the executed test count is higher).
+- **95 test files, 943 declared tests** at the time of writing (parameterized tests expand at runtime; the executed test count is higher).
 - Unit tests use Node; UI component tests use `react-dom/server` SSR rather than a DOM emulator.
 - Real browser coverage is Playwright-based and requires Chromium.
 - Relay/sync tests use loopback HTTP and isolated SQLite databases.
@@ -2344,6 +2408,18 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Commit:** `feat: improve template reliability and vault health` (this change set).
 - **Remaining work:** None within Phase 14. Generic import and restore remain without multi-file transactionality; see L-02.
 - **Notes / decisions:** Staging is recoverable and protects unrelated or unverified files; it is not a filesystem-wide transaction. The cooperating Nodus root lock does not serialize external writers, and external readers may observe the publication sequence. Rollback verifies both inode identity and staged content hash, preserving an in-place edit and its journal for inspection. Missing optional template storage remains healthy. User typography/editor/landing-page and local-file changes were preserved outside the Phase 14 scope.
+
+
+### 2026-11-02 — Phase 17G — Knowledge Graph and Relationship Exploration
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Extended the existing wiki-link graph with path resolution, outgoing links, unresolved-target virtual nodes, two-way isolated-note discovery, folder/search/isolation/unresolved filters, neighbor edge highlighting, and cached graph projection. Reused the existing Markdown scanner, resolver, snapshot cache, SVG graph, backlinks panel, Discovery view, and shadcn primitives; no new dependency or storage format.
+- **Files changed:** `src/links/wikilink.ts`, `src/links/link-index.ts`, `src/links/backlinks.ts`, `src/links/graph.ts`, `src/ui-server/dto.ts`, `src/ui-server/api.ts`, `ui/src/graph-model.ts`, `ui/src/GraphView.tsx`, `ui/src/BacklinksPanel.tsx`, `ui/src/DiscoveryView.tsx`, `docs/knowledge-graph.md`, `docs/wiki-links.md`, `README.md`, `package.json`, `vitest.graph-benchmark.config.ts`, `benchmark/graph.benchmark.ts`, graph/backlink/discovery tests, `scripts/graph-smoke.mjs`, `scripts/discovery-smoke.mjs`, and this roadmap.
+- **Tests executed:** Focused relationship/graph/backlink suite 7 files / 48 tests; full `pnpm test --maxWorkers=1` 95 files / 1,101 tests; `pnpm typecheck`; `pnpm build`; `pnpm test:browser`; `pnpm test:vault-onboarding`; `pnpm test:database-views`; graph and discovery browser smokes; `pnpm bench:graph`; `git diff --check` — all passed.
+- **Performance:** 1,000 notes / 3,000 occurrences: 16.27 ms total; 5,000 / 15,000: 78.45 ms total (local Node 24.18.1 median). No thresholds are enforced.
+- **Commit:** `feat: add knowledge graph exploration` (this delivery; use `git log -1` for the hash). Pushed to `origin/feat/phase-17-knowledge-graph`.
+- **Remaining work:** Radial layout and 200-node display bound remain; no persisted positions, heading/block targets, automatic link rewriting, or persistent relationship index.
+- **Notes / decisions:** This delivery is recorded as 17G because the roadmap reserves Phase 17 for Tasks and Project Management. Path resolution is a fallback after title/alias/ID; external URL schemes are ignored. `orphans` remains for API compatibility while the UI uses the stricter two-way `isolated` definition. Graph projection is cached with the shared knowledge snapshot; UI filters never refetch.
 
 ---
 

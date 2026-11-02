@@ -30,7 +30,7 @@ import {
   type ImportReport,
   type RestorePreview,
 } from '../storage/index.js';
-import { backlinksByTarget } from '../links/backlinks.js';
+import { backlinksByTarget, outgoingLinksForNote } from '../links/backlinks.js';
 import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
@@ -146,10 +146,14 @@ export function createLocalApiMiddleware(
       return { notes, catalog: { properties: [] }, catalogIssue: error instanceof Error ? error.message : 'Property catalog could not be read.' };
     }
   };
-  const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot) => ({
-    links: buildLinkIndex(snapshot.notes),
-    search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue),
-  });
+  const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot) => {
+    const links = buildLinkIndex(snapshot.notes);
+    return {
+      links,
+      graph: graphFromLinkIndex(links),
+      search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue),
+    };
+  };
   const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<KnowledgeSnapshot, ReturnType<typeof buildKnowledgeIndex>>>>();
   const indexFor = (vault: FileSystemVault) => {
     let index = indexes.get(vault);
@@ -509,11 +513,12 @@ export function createLocalApiMiddleware(
         unresolved: index.links.filter((link) => link.resolution.status === 'unresolved'),
         ambiguous: index.links.filter((link) => link.resolution.status === 'ambiguous'),
         orphans: index.orphanNotes,
+        isolated: index.isolatedNotes,
       });
     }
     if (method === 'GET' && path === '/api/graph') {
-      const { links } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
-      return sendJson(res, 200, graphFromLinkIndex(links));
+      const { graph } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, graph);
     }
     if (method === 'POST' && path === '/api/discovery/create') {
       const body = await readJson(req);
@@ -1290,7 +1295,10 @@ function toStaleApiError(error: unknown, verb: string): unknown {
 async function backlinksForNote(rawId: string, index: LinkIndex): Promise<UiBacklinksResponse> {
   if (!isUuidV4(rawId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
   if (!index.notes.some((note) => note.id === rawId)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
-  return { backlinks: backlinksByTarget(index).get(rawId) ?? [] };
+  return {
+    backlinks: backlinksByTarget(index).get(rawId) ?? [],
+    outgoing: outgoingLinksForNote(index, rawId),
+  };
 }
 
 async function relationBacklinksForNote(

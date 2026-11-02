@@ -15,6 +15,7 @@
     "preview": "vite preview --config ui/vite.config.ts",
     "bench:search": "vitest run --config vitest.search-benchmark.config.ts",
     "bench:databases": "vitest run --config vitest.database-benchmark.config.ts",
+    "bench:graph": "vitest run --config vitest.graph-benchmark.config.ts",
     "bench:database-ui": "node scripts/database-performance-smoke.mjs",
     "analyze:bundle": "node scripts/analyze-bundle.mjs",
     "test": "vitest run",
