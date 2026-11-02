@@ -32,7 +32,7 @@ The **Format** button above the body opens a compact, keyboard-accessible popove
 | Ctrl/Cmd+Alt+0 | Paragraph |
 | Ctrl/Cmd+Shift+7 / 8 | Numbered / bulleted list |
 
-Ctrl/Cmd+K remains the workspace command palette; Ctrl/Cmd+S remains the existing immediate save shortcut. Formatting shortcuts leave form inputs and other surfaces alone.
+Ctrl/Cmd+K remains the workspace command palette; Ctrl/Cmd+S remains the existing immediate save shortcut. Ctrl/Cmd+Shift+H opens recent notes and Ctrl/Cmd+/ opens the shortcut reference. Formatting shortcuts leave form inputs and other surfaces alone. See [shortcuts](shortcuts.md) for focus rules and the full registry.
 
 ### Lists, indentation, and Enter
 
