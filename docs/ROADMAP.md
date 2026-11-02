@@ -67,27 +67,28 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 11C — Relation-Aware Formulas](#phase-11c--relation-aware-formulas)
    - [Phase 12 — Database Automations](#phase-12--database-automations)
    - [Phase 13 — Templates and Database Templates](#phase-13--templates-and-database-templates)
-4. [Proposed Future Milestones (Phases 14–32)](#4-proposed-future-milestones-phases-1432)
+   - [Phase 14 — Template Reliability and Vault Health Integration](#phase-14--template-reliability-and-vault-health-integration)
+4. [Proposed Future Milestones (Phases 15–33)](#4-proposed-future-milestones-phases-1533)
    - [Future Milestone Summary](#future-milestone-summary)
-     - [Phase 14 — Advanced Database Queries](#phase-14--advanced-database-queries)
-     - [Phase 15 — Database Protection and Safeguards](#phase-15--database-protection-and-safeguards)
-     - [Phase 16 — Tasks and Project Management](#phase-16--tasks-and-project-management)
-     - [Phase 17 — Calendar and Timeline Improvements](#phase-17--calendar-and-timeline-improvements)
-     - [Phase 18 — Notifications and Reminders](#phase-18--notifications-and-reminders)
-     - [Phase 19 — Import and Migration](#phase-19--import-and-migration)
-     - [Phase 20 — Plugin and Extension Architecture](#phase-20--plugin-and-extension-architecture)
-     - [Phase 21 — Graph View](#phase-21--graph-view)
-     - [Phase 22 — Backlinks and Knowledge Discovery](#phase-22--backlinks-and-knowledge-discovery)
-     - [Phase 23 — Advanced Markdown](#phase-23--advanced-markdown)
-     - [Phase 24 — Whiteboards and Visual Workspace](#phase-24--whiteboards-and-visual-workspace)
-     - [Phase 25 — Advanced Search](#phase-25--advanced-search)
-     - [Phase 26 — AI Integration](#phase-26--ai-integration)
-     - [Phase 27 — Sync Architecture](#phase-27--sync-architecture)
-     - [Phase 28 — Conflict Resolution](#phase-28--conflict-resolution)
-     - [Phase 29 — Mobile Experience](#phase-29--mobile-experience)
-     - [Phase 30 — Security and Privacy](#phase-30--security-and-privacy)
-     - [Phase 31 — Performance and Scalability](#phase-31--performance-and-scalability)
-     - [Phase 32 — Release Preparation](#phase-32--release-preparation)
+     - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
+     - [Phase 16 — Database Protection and Safeguards](#phase-16--database-protection-and-safeguards)
+     - [Phase 17 — Tasks and Project Management](#phase-17--tasks-and-project-management)
+     - [Phase 18 — Calendar and Timeline Improvements](#phase-18--calendar-and-timeline-improvements)
+     - [Phase 19 — Notifications and Reminders](#phase-19--notifications-and-reminders)
+     - [Phase 20 — Import and Migration](#phase-20--import-and-migration)
+     - [Phase 21 — Plugin and Extension Architecture](#phase-21--plugin-and-extension-architecture)
+     - [Phase 22 — Graph View](#phase-22--graph-view)
+     - [Phase 23 — Backlinks and Knowledge Discovery](#phase-23--backlinks-and-knowledge-discovery)
+     - [Phase 24 — Advanced Markdown](#phase-24--advanced-markdown)
+     - [Phase 25 — Whiteboards and Visual Workspace](#phase-25--whiteboards-and-visual-workspace)
+     - [Phase 26 — Advanced Search](#phase-26--advanced-search)
+     - [Phase 27 — AI Integration](#phase-27--ai-integration)
+     - [Phase 28 — Sync Architecture](#phase-28--sync-architecture)
+     - [Phase 29 — Conflict Resolution](#phase-29--conflict-resolution)
+     - [Phase 30 — Mobile Experience](#phase-30--mobile-experience)
+     - [Phase 31 — Security and Privacy](#phase-31--security-and-privacy)
+     - [Phase 32 — Performance and Scalability](#phase-32--performance-and-scalability)
+     - [Phase 33 — Release Preparation](#phase-33--release-preparation)
 5. [Feature Inventory](#5-feature-inventory)
 6. [Architecture and Technical Decision Records](#6-architecture-and-technical-decision-records)
 7. [Data and Format Compatibility Matrix](#7-data-and-format-compatibility-matrix)
@@ -189,6 +190,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | 11C | Relation-aware formulas | COMPLETE WITH DOCUMENTATION DEBT | `45eab83`, `02e6215` |
 | 12 | Database automations | COMPLETE WITH LIMITATIONS | `a1466ae` |
 | 13 | Templates and Database Templates | COMPLETE WITH LIMITATIONS | `18539bb` |
+| 14 | Template reliability and vault health integration | COMPLETE WITH LIMITATIONS | `feat: improve template reliability and vault health` |
 
 ---
 
@@ -232,7 +234,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 - Note identity for plain Markdown depends on path until a Nodus-managed move adds frontmatter.
 - No migration has been required yet; the migration contract exists but no version transition is implemented.
 
-**Status:** **COMPLETE**
+**Status:** **COMPLETE WITH LIMITATIONS**
 
 ---
 
@@ -855,7 +857,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 1. Define measurable performance budgets and a CI/nightly benchmark policy.
 2. Review cache lifecycle and invalidation for all Nodus metadata, not only notes/databases.
 3. Measure and document multi-process and external-edit behavior.
-4. Decide whether an incremental/persistent index is required for Phase 14/31.
+4. Decide whether an incremental/persistent index is required for Phase 15/32.
 5. Re-run benchmarks on supported Node 24 and record environment, dataset, and variance.
 
 **Status:** **NEEDS REVIEW — do not mark complete**
@@ -1119,7 +1121,25 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 
 ---
 
-## 4. Proposed Future Milestones (Phases 14–32)
+### Phase 14 — Template Reliability and Vault Health Integration
+
+**Objective:** Make template catalogs visible to vault health diagnostics and make database template application recoverable after multi-file failures.
+
+**Completed work**
+
+- Reuse the strict template catalog parser in read-only vault health checks. Missing optional storage remains healthy; malformed data, unsupported versions, duplicate IDs, unsafe entries, and I/O failures report path-scoped standard health issues.
+- Validate saved views in their persisted internal representation and check their references against the template database definition.
+- Stage generated database-template files and validate the complete write set before promotion. Publish with exclusive hard links, database definition last, and inode-checked rollback.
+- Recover prepared transactions on the next explicit database template apply. Preserve unverified files and journals; report incomplete recovery through health diagnostics. Refuse backup/export snapshots while an uncommitted transaction is pending.
+- Add focused storage, API, parser, and UI coverage; document recovery behavior and limits in `docs/templates.md`.
+
+**Guarantees and limitations:** This is a recoverable staged-write protocol, not filesystem-wide transactionality. Nodus root locking is cooperative. External programs may race, and readers may observe the short publication sequence. Rollback removes only files whose inode and content hash still match staged transaction files; unknown or edited files are preserved with the journal for inspection.
+
+**Status:** **COMPLETE**
+
+---
+
+## 4. Proposed Future Milestones (Phases 15–33)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
 
@@ -1127,27 +1147,27 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 | Phase | Name | Status | Primary dependencies |
 |---|---|---|---|
-| 14 | Advanced Database Queries | PLANNED | 7B, 7D, 11, 9 review |
-| 15 | Database Protection and Safeguards | PLANNED | 7A, 7B, 8, 14 |
-| 16 | Tasks and Project Management | PLANNED | 13, 14, 17 |
-| 17 | Calendar and Timeline Improvements | PLANNED | 7B, 10, 16 |
-| 18 | Notifications and Reminders | PLANNED | 12, 16, 17 |
-| 19 | Import and Migration | PLANNED | 7A, 8, 13 |
-| 20 | Plugin and Extension Architecture | PLANNED | 14, 15, 30 |
-| 21 | Graph View | PLANNED | 6, 9 review, 22, 25 |
-| 22 | Backlinks and Knowledge Discovery | PLANNED | 6, 25 |
-| 23 | Advanced Markdown | PLANNED | 2A, 6, 7A |
-| 24 | Whiteboards and Visual Workspace | PLANNED | 21, 23, 25 |
-| 25 | Advanced Search | PLANNED | 6, 9 review, 14, 22 |
-| 26 | AI Integration | PLANNED | 20, 25, 30 |
-| 27 | Sync Architecture | BLOCKED | 3, 8, 28, 30 |
-| 28 | Conflict Resolution | PLANNED | 3, 8 |
-| 29 | Mobile Experience | PLANNED | 24, 27, 28, 30 |
-| 30 | Security and Privacy | PLANNED | 8, 19, 27 |
-| 31 | Performance and Scalability | PLANNED | 9 review, 14, 21, 25 |
-| 32 | Release Preparation | PLANNED | All prior |
+| 15 | Advanced Database Queries | PLANNED | 7B, 7D, 11, 9 review |
+| 16 | Database Protection and Safeguards | PLANNED | 7A, 7B, 8, 15 |
+| 17 | Tasks and Project Management | PLANNED | 13, 15, 18 |
+| 18 | Calendar and Timeline Improvements | PLANNED | 7B, 10, 17 |
+| 19 | Notifications and Reminders | PLANNED | 12, 17, 18 |
+| 20 | Import and Migration | PLANNED | 7A, 8, 13 |
+| 21 | Plugin and Extension Architecture | PLANNED | 15, 16, 31 |
+| 22 | Graph View | PLANNED | 6, 9 review, 23, 26 |
+| 23 | Backlinks and Knowledge Discovery | PLANNED | 6, 26 |
+| 24 | Advanced Markdown | PLANNED | 2A, 6, 7A |
+| 25 | Whiteboards and Visual Workspace | PLANNED | 22, 24, 26 |
+| 26 | Advanced Search | PLANNED | 6, 9 review, 15, 23 |
+| 27 | AI Integration | PLANNED | 21, 26, 31 |
+| 28 | Sync Architecture | BLOCKED | 3, 8, 29, 31 |
+| 29 | Conflict Resolution | PLANNED | 3, 8 |
+| 30 | Mobile Experience | PLANNED | 25, 28, 29, 31 |
+| 31 | Security and Privacy | PLANNED | 8, 20, 28 |
+| 32 | Performance and Scalability | PLANNED | 9 review, 15, 22, 26 |
+| 33 | Release Preparation | PLANNED | All prior |
 
-### Phase 14 — Advanced Database Queries
+### Phase 15 — Advanced Database Queries
 
 **Objective:** Move beyond single-level saved-view filters and sorts while keeping queries portable.
 
@@ -1180,7 +1200,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 15 — Database Protection and Safeguards
+### Phase 16 — Database Protection and Safeguards
 
 **Objective:** Allow safe schema evolution, including deletion and type changes, without orphaning data or breaking relations.
 
@@ -1192,7 +1212,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Database deletion and optional saved-view cleanup.
 - Audit or recovery journal for schema changes.
 
-**Dependencies:** Phase 7A (catalog deletion patterns), 7B (schemas/views), 8 (conditional writes), 14 (query references).
+**Dependencies:** Phase 7A (catalog deletion patterns), 7B (schemas/views), 8 (conditional writes), 15 (query references).
 
 **Potential architecture impact**
 
@@ -1211,7 +1231,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 16 — Tasks and Project Management
+### Phase 17 — Tasks and Project Management
 
 **Objective:** Model tasks and projects on top of databases, not as a separate parallel system.
 
@@ -1222,7 +1242,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Recurrence rules (only if justified by real use cases).
 - Timeline and dependency visualization.
 
-**Dependencies:** Phase 13 (templates), 14 (queries), 17 (timeline).
+**Dependencies:** Phase 13 (templates), 15 (queries), 18 (timeline).
 
 **Potential architecture impact**
 
@@ -1240,7 +1260,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 17 — Calendar and Timeline Improvements
+### Phase 18 — Calendar and Timeline Improvements
 
 **Objective:** Expand the existing Calendar layout into a scheduling and timeline surface.
 
@@ -1271,7 +1291,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 18 — Notifications and Reminders
+### Phase 19 — Notifications and Reminders
 
 **Objective:** Remind the user about dates and tasks without turning Nodus into a cloud service.
 
@@ -1301,7 +1321,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 19 — Import and Migration
+### Phase 20 — Import and Migration
 
 **Objective:** Bring existing knowledge into Nodus safely from other tools.
 
@@ -1332,7 +1352,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 20 — Plugin and Extension Architecture
+### Phase 21 — Plugin and Extension Architecture
 
 **Objective:** Allow controlled extension of Nodus without granting arbitrary filesystem or network access by default.
 
@@ -1344,7 +1364,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Extension discovery, enable/disable, and failure isolation.
 - Compatibility policy for extension APIs.
 
-**Dependencies:** Phase 14 (query API), Phase 15 (safe schema mutation), Phase 30 (security model).
+**Dependencies:** Phase 15 (query API), Phase 16 (safe schema mutation), Phase 31 (security model).
 
 **Potential architecture impact**
 
@@ -1363,7 +1383,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 21 — Graph View
+### Phase 22 — Graph View
 
 **Objective:** Advance the existing basic wiki-link graph into a scalable knowledge-graph surface.
 
@@ -1396,7 +1416,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 22 — Backlinks and Knowledge Discovery
+### Phase 23 — Backlinks and Knowledge Discovery
 
 **Objective:** Extend existing backlinks and Discovery into proactive knowledge discovery.
 
@@ -1429,7 +1449,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 23 — Advanced Markdown
+### Phase 24 — Advanced Markdown
 
 **Objective:** Extend the Markdown authoring experience without breaking the plain-file contract.
 
@@ -1460,7 +1480,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 24 — Whiteboards and Visual Workspace
+### Phase 25 — Whiteboards and Visual Workspace
 
 **Objective:** Add a canvas for arranging notes, database records, and freeform visual thinking.
 
@@ -1491,7 +1511,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 25 — Advanced Search
+### Phase 26 — Advanced Search
 
 **Objective:** Evolve the in-memory search into a scalable, persistent, query-capable search system.
 
@@ -1503,7 +1523,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Search across database projections and derived values.
 - Optional semantic retrieval only with an explicit privacy decision.
 
-**Dependencies:** Phase 6 (current search), Phase 9 review, Phase 14 (query model), Phase 22 (discovery).
+**Dependencies:** Phase 6 (current search), Phase 9 review, Phase 15 (query model), Phase 23 (discovery).
 
 **Potential architecture impact**
 
@@ -1522,7 +1542,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 26 — AI Integration
+### Phase 27 — AI Integration
 
 **Objective:** Offer optional AI assistance over local knowledge with explicit privacy and provenance.
 
@@ -1555,7 +1575,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 27 — Sync Architecture
+### Phase 28 — Sync Architecture
 
 **Objective:** Turn the experimental relay/sync foundation into a production multi-device experience.
 
@@ -1588,7 +1608,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 28 — Conflict Resolution
+### Phase 29 — Conflict Resolution
 
 **Objective:** Make every sync conflict explicit, understandable, and recoverable.
 
@@ -1619,7 +1639,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 29 — Mobile Experience
+### Phase 30 — Mobile Experience
 
 **Objective:** Provide a usable mobile or responsive experience without compromising local-first storage.
 
@@ -1650,7 +1670,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 30 — Security and Privacy
+### Phase 31 — Security and Privacy
 
 **Objective:** Define and enforce the trust boundary for files, localhost APIs, extensions, sync, and AI.
 
@@ -1683,7 +1703,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 31 — Performance and Scalability
+### Phase 32 — Performance and Scalability
 
 **Objective:** Establish measured, enforced performance budgets for large vaults and databases.
 
@@ -1695,7 +1715,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Startup and memory budgets.
 - Regression detection in CI or a documented nightly job.
 
-**Dependencies:** Phase 9 review, 14 (queries), 21 (graph), 25 (search).
+**Dependencies:** Phase 9 review, 15 (queries), 22 (graph), 26 (search).
 
 **Potential architecture impact**
 
@@ -1714,7 +1734,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 32 — Release Preparation
+### Phase 33 — Release Preparation
 
 **Objective:** Make releases reproducible, documented, migratable, and recoverable.
 
@@ -1900,10 +1920,12 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 | Feature | Implementation | Status |
 |---|---|---|
-| Versioned note/database template catalog | `src/database/templates.ts`, `.nodus-templates/templates.json` | Working-tree only (format v1) |
+| Versioned note/database template catalog | `src/database/templates.ts`, `.nodus-templates/templates.json` | Implemented (format v1) |
 | Note template metadata and typed variables | `src/database/templates.ts`, `ui/src/TemplatesView.tsx` | Implemented |
 | Database template schema, views, starter rows | `src/database/templates.ts`, `src/ui-server/api.ts` | Implemented; schema designer reuses capture from an existing database |
 | Preview and explicit safe apply | `ui/src/TemplatesView.tsx`, `src/storage/fs/vault.ts` | Implemented |
+| Read-only catalog and interrupted-apply health diagnostics | `src/storage/fs/vault.ts`, `ui/src/SettingsView.tsx` | Implemented; optional catalog absence is healthy |
+| Staged database-template apply and inode-checked rollback | `src/storage/fs/vault.ts`, `src/storage/fs/atomic.ts` | Implemented; cooperative-lock and crash-recovery limits documented |
 | Template portability | `src/storage/portable/`, `src/storage/backup/backup.ts` | Implemented (backup manifest v7) |
 
 ### 5.11 Backup and restore
@@ -2159,6 +2181,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Automation definitions | `nodus-database-automations` | 1 | `.nodus-automations/automations.json` | Implemented in Phase 12 |
 | Automation history | `nodus-automation-history` | 1 | `.nodus-automations/history.json` | Implemented in Phase 12; append-only |
 | Template catalog | `nodus-templates` | 1 | `.nodus-templates/templates.json` | Implemented in Phase 13; portable |
+| Template-application journal | `nodus-template-apply-transaction` | 1 | `.nodus-tmp-template-apply-<uuid>/manifest.json` | Ephemeral recovery journal; never part of backup/export |
 | Backup manifest | `nodus-backup` | 1–7 | Backup root `nodus-backup.json` | Written last; v7 includes the template catalog |
 | App preferences | versioned JSON | 1 | Per-user config directory | Outside vault |
 | Sync state | SQLite | internal | `.nodus/sync.sqlite` | Experimental, outside vault content |
@@ -2222,10 +2245,10 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | ID | Area | Limitation | Impact | Mitigation / next step |
 |---|---|---|---|---|
 | L-01 | Storage | Cooperative lock only; external editors can race | Possible stale overwrite outside Nodus | Keep `expectedHash`; document external-editor behavior |
-| L-02 | Storage | No multi-file transaction or rollback | Partial imports/restores | Report `PARTIAL_WRITE`; design a journal in Phase 19/31 |
+| L-02 | Storage | Generic imports/restores still lack multi-file transactionality | Partial imports/restores | Report `PARTIAL_WRITE`; consider a journal in Phase 20/32 |
 | L-03 | Storage | Every ID lookup scans all notes | Slow large vaults | Persistent index (Phase 25/31) |
 | L-04 | Storage | One malformed note blocks strict operations | Backup/export unavailable | Health diagnostics; fix or move the file |
-| L-05 | Storage | `checkHealth` ignores hidden metadata | Corrupt catalog/order/automation files undetected | Extend health checks |
+| L-05 | Storage | Health checks cover supported hidden metadata, but not every future managed file | Future hidden formats may be missed | Add diagnostics with each new storage contract |
 | L-06 | Storage | Hidden dirs and symlinks unsupported | Some user layouts excluded | Documented limitation |
 | L-07 | Storage | Atomic rename does not preserve mode/ACL/xattrs | Metadata loss on replace | Evaluate preserving metadata |
 | L-08 | Backup | No encryption or authentication | Backup confidentiality/integrity limits | Phase 30 |
@@ -2239,8 +2262,8 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-16 | Database | Row reads scan all notes | ~4.5 s at 5,000 notes historical | Phase 9 review / 31 |
 | L-17 | Database | View filter/validator mismatch for rollup/formula empty filters | Some valid-looking UI filters cannot be saved | Align `filterOperators` and `diagnoseDatabaseView` |
 | L-18 | Relations | No persistent relation index | Whole-vault projection cost | Phase 9/31 |
-| L-19 | Relations | Candidate search truncated at 50, no pagination | Large target sets hard to browse | Add pagination in Phase 14/31 |
-| L-20 | Formulas | Direct relation/select/multi-select inputs unsupported | Formula expressiveness limited | Document; design in Phase 14 |
+| L-19 | Relations | Candidate search truncated at 50, no pagination | Large target sets hard to browse | Add pagination in Phase 15/32 |
+| L-20 | Formulas | Direct relation/select/multi-select inputs unsupported | Formula expressiveness limited | Document; design in Phase 15 |
 | L-21 | Formulas | Docs omit `related*` functions | Agents may duplicate or avoid them | Update `docs/database-formulas.md` |
 | L-22 | Views | Gallery has no image preview | Feature appears incomplete | Phase 10 follow-up |
 | L-23 | Views | Kanban/Calendar/Gallery not virtualized | Large-view performance risk | Phase 31 |
@@ -2259,8 +2282,8 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-36 | Performance | No CI budgets; measurements historical | Optimization claims unproven | Phase 31 |
 | L-37 | Testing | Default parallel full-suite run timed out 17 tests at 5 s on the current machine (Node 24.18.1); the same 8 files passed sequentially (82 tests) | Verification can look red for environmental reasons | Add per-area timeout/config review and record authoritative runs; do not treat isolated timeouts as product regressions without a targeted rerun |
 | L-38 | Automations | Execution history is append-only and has no retention limit | Long-lived vaults can accumulate a large history file and slower claim checks | Design bounded retention without weakening duplicate-event protection |
-| L-39 | Templates | Hidden template catalog is not included in `checkHealth` diagnostics | Invalid catalog is surfaced on template reads/export/backup, but not by the vault health panel | Extend hidden metadata health checks |
-| L-40 | Testing | Parallel full-suite runs are sensitive to fixed 5-second test timeouts under load | Unrelated integration tests can time out when many workers run together | Use the serial `pnpm test --maxWorkers=1` run as the verified full-suite result; review test timeout policy separately |
+| L-39 | Templates | Prepared template journals require an explicit apply to recover; automatic background repair is intentionally absent | A vault can remain blocked from backup/export until the user retries an apply or manually inspects an invalid journal | Follow health guidance; never delete journals or unverified targets automatically |
+| L-40 | Testing | Parallel full-suite runs are sensitive to fixed 5-second test timeouts under load | Unrelated integration tests can time out when many workers run together | Use `pnpm test --maxWorkers=2` as the verified full-suite invocation; review timeout policy separately |
 
 ---
 
@@ -2311,6 +2334,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Commit:** `18539bb` — `feat: add note and database templates` (implementation); roadmap follow-up records final verification and synchronization.
 - **Remaining work:** Database template application uses the existing per-file atomic import path, not a multi-file transaction; hidden template files are not yet covered by `checkHealth`.
 - **Notes / decisions:** Reused `applyImport`, existing note path allocation, schema/view/property validation, vault-root locking, and shadcn primitives. Templates contain data only and execute no user code. Template catalogs are optional; invalid catalogs fail reads/portability without rewriting source bytes. Backup v7 is backward compatible with v1–v6. Browser smoke had one transient database-view fixture 404, then passed on rerun; this is reported rather than hidden. The implementation and roadmap commits are pushed to `origin/main`.
+
+### 2026-11-02 — Phase 14 — Template Reliability and Vault Health Integration
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added read-only health diagnostics for the optional template catalog and interrupted application journals; fixed strict parsing of captured internal saved views; staged database-template writes after complete validation; promoted files exclusively with the database definition last; added inode-and-content-checked rollback and safe retry recovery. Backup/export snapshots stop while an uncommitted or invalid transaction journal prevents a consistent snapshot. Documented the cooperative-lock and non-filesystem-transaction guarantees.
+- **Files changed:** `src/database/templates.ts`, domain/storage errors and contracts, `src/storage/fs/atomic.ts`, `src/storage/fs/layout.ts`, `src/storage/fs/vault.ts`, `src/ui-server/api.ts`, `ui/src/SettingsView.tsx`, `ui/src/TemplatesView.tsx`, template/health/API/UI tests, `docs/templates.md`, and `docs/ROADMAP.md`.
+- **Tests executed:** Focused template/health/rollback/UI suite: 4 files / 22 tests passed; focused loopback template/health API tests: 2 files / 4 tests passed. Final `pnpm test --maxWorkers=2`: 94 files / 1,087 tests passed. `pnpm typecheck`, `pnpm build`, `pnpm test:database-views`, `pnpm test:browser`, `pnpm test:vault-onboarding`, `pnpm bench:databases`, and `git diff --check` passed. A malformed full-suite invocation (`pnpm test -- --maxWorkers=1`) spawned 94 workers and had 12 five-second timeout failures; the corrected two-worker invocation passed. Build emits the App chunk advisory at 517.94 kB.
+- **Commit:** `feat: improve template reliability and vault health` (this change set).
+- **Remaining work:** None within Phase 14. Generic import and restore remain without multi-file transactionality; see L-02.
+- **Notes / decisions:** Staging is recoverable and protects unrelated or unverified files; it is not a filesystem-wide transaction. The cooperating Nodus root lock does not serialize external writers, and external readers may observe the publication sequence. Rollback verifies both inode identity and staged content hash, preserving an in-place edit and its journal for inspection. Missing optional template storage remains healthy. User typography/editor/landing-page and local-file changes were preserved outside the Phase 14 scope.
 
 ---
 

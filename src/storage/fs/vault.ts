@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, realpath, unlink } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import type {
   AutomationStore,
@@ -52,8 +53,8 @@ import { validateNotePath } from '../../domain/paths.js';
 import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
-import { writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_PATH, isReservedNotePath } from './layout.js';
+import { linkFileAtomicExclusive, writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, TEMP_PREFIX, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
@@ -75,6 +76,21 @@ interface ParsedDatabase {
 }
 
 interface ParsedDatabaseView { view: DatabaseView; text: string; bytes: Buffer; path: string }
+
+interface TemplateApplyTransactionFile {
+  path: string;
+  stagedName: string;
+  sha256: string;
+}
+
+interface TemplateApplyTransactionManifest {
+  format: 'nodus-template-apply-transaction';
+  version: 1;
+  state: 'prepared' | 'committed';
+  sourceTemplateId: string;
+  databaseId: string;
+  files: TemplateApplyTransactionFile[];
+}
 
 export interface DatabaseRowsVaultSnapshot {
   notes: Array<{ note: Note; hash: string }>;
@@ -1217,6 +1233,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   private async snapshotUnlocked(): Promise<VaultEntry[]> {
+    await this.assertTemplateTransactionsSnapshotSafe();
     const notes = await this.parseNotesStrict();
     const databases = await this.parseDatabasesStrict();
     const views = await this.parseDatabaseViewsStrict();
@@ -1251,6 +1268,27 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     ];
   }
 
+  private async assertTemplateTransactionsSnapshotSafe(): Promise<void> {
+    let children: Dirent[];
+    try { children = await readdir(this.root, { withFileTypes: true }); }
+    catch (error) { throw storageFailure(error, 'Inspect template-application transactions before snapshot', '.'); }
+    for (const child of children.filter((entry) => entry.name.startsWith(TEMPLATE_APPLY_TRANSACTION_PREFIX))) {
+      const transactionPath = child.name;
+      const transactionId = transactionPath.slice(TEMPLATE_APPLY_TRANSACTION_PREFIX.length);
+      if (!isUuidV4(transactionId) || child.isSymbolicLink() || !child.isDirectory()) {
+        throw new StorageError('PARTIAL_WRITE', 'An unrecognized template-application transaction entry prevents a consistent backup or export. Preserve it for inspection.', { details: { paths: [transactionPath] } });
+      }
+      let manifest: TemplateApplyTransactionManifest | null;
+      try { manifest = await this.readTemplateApplyTransaction(transactionPath); }
+      catch (error) {
+        throw new StorageError('PARTIAL_WRITE', `Template-application recovery journal is unreadable; a consistent backup or export cannot be guaranteed: ${describe(error)}`, { cause: error, details: { paths: [transactionPath] } });
+      }
+      if (manifest === null || manifest.state !== 'committed') {
+        throw new StorageError('PARTIAL_WRITE', 'An interrupted database template application prevents a consistent backup or export. Retry an explicit database template apply to attempt recovery, then try again.', { details: { paths: [transactionPath] } });
+      }
+    }
+  }
+
   async checkHealth(): Promise<StorageHealth> {
     const { entries, issues } = await walkVault(this.root);
     const notes: NoteSummary[] = [];
@@ -1260,11 +1298,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
     for (const entry of entries) {
       if (entry.kind === 'temp') {
-        issues.push({
-          code: 'INCOMPLETE_WRITE',
-          path: entry.path,
-          message: 'Temporary file from an active or interrupted write; stop vault writers and preserve and inspect it before cleanup',
-        });
+        issues.push(await this.templateTransactionHealthIssue(entry.path, entry.absolute));
         continue;
       }
 
@@ -1327,6 +1361,8 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       }
     }
 
+    await this.inspectTemplateHealth(issues);
+
     return {
       notes: sortByPath(notes),
       databases: sortByPath(databases),
@@ -1337,9 +1373,99 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     };
   }
 
+  private async inspectTemplateHealth(issues: StorageIssue[]): Promise<void> {
+    const directoryPath = TEMPLATE_CATALOG_DIR;
+    const directory = resolveInsideRoot(this.root, directoryPath);
+    let info;
+    try {
+      await assertInsideRoot(this.root, directory, directoryPath);
+      info = await lstat(directory);
+    } catch (error) {
+      if (isMissing(error)) return; // The catalog is optional; no directory is normal.
+      issues.push(templateHealthIssue(error, directoryPath));
+      return;
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      issues.push({
+        code: 'UNSAFE_PATH',
+        path: directoryPath,
+        message: `Template storage must be a regular directory. Move or preserve the current entry, then restore a real "${directoryPath}" directory; health checks never replace it.`,
+      });
+      return;
+    }
+
+    let children: Dirent[];
+    try { children = await this.readTemplateStorageChildren(directory); }
+    catch (error) {
+      issues.push(templateHealthIssue(error, directoryPath));
+      return;
+    }
+    children.sort((left, right) => left.name.localeCompare(right.name));
+    let catalog: Dirent | undefined;
+    for (const child of children) {
+      const path = `${directoryPath}/${child.name}`;
+      if (child.name === 'templates.json') { catalog = child; continue; }
+      if (child.name.startsWith(TEMP_PREFIX)) {
+        issues.push({ code: 'INCOMPLETE_WRITE', path, message: 'Interrupted temporary file in template storage. Preserve it while checking for an active writer; do not delete it until its contents and purpose are understood.' });
+      } else {
+        issues.push({ code: 'INVALID_CONTENT', path, message: `Unexpected entry in template storage. Move it outside "${directoryPath}" or restore a recognized template catalog; health checks do not change files.` });
+      }
+    }
+    // Empty directories and missing catalogs are valid because the catalog is optional.
+    if (catalog === undefined) return;
+    const catalogPath = `${directoryPath}/templates.json`;
+    if (catalog.isSymbolicLink() || !catalog.isFile()) {
+      issues.push({ code: 'UNSAFE_PATH', path: catalogPath, message: 'Template catalog must be a regular file. Preserve its current target and replace the catalog entry with a regular file or restore it from backup.' });
+      return;
+    }
+    try {
+      const absolute = resolveInsideRoot(this.root, catalogPath);
+      await assertInsideRoot(this.root, absolute, catalogPath);
+      const bytes = await this.readBytesAt(absolute, catalogPath);
+      parseTemplates(decodeVaultText(bytes, catalogPath));
+    } catch (error) {
+      issues.push(templateHealthIssue(error, catalogPath));
+    }
+  }
+
+  private async readTemplateStorageChildren(directory: string): Promise<Dirent[]> {
+    return readdir(directory, { withFileTypes: true });
+  }
+
+  private async templateTransactionHealthIssue(path: string, absolute: string): Promise<StorageIssue> {
+    const generic: StorageIssue = {
+      code: 'INCOMPLETE_WRITE', path,
+      message: 'Temporary file from an active or interrupted write; stop vault writers and preserve and inspect it before cleanup',
+    };
+    if (!path.startsWith(TEMPLATE_APPLY_TRANSACTION_PREFIX)) return generic;
+    try {
+      const transactionId = path.slice(TEMPLATE_APPLY_TRANSACTION_PREFIX.length);
+      if (!isUuidV4(transactionId)) return { ...generic, message: 'Unrecognized template-application staging path. Preserve it and inspect it before cleanup.' };
+      const directoryInfo = await lstat(absolute);
+      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return { ...generic, message: 'Template-application staging path is not a regular directory. Preserve it and inspect it before cleanup.' };
+      const manifestPath = join(path, 'manifest.json');
+      const manifestAbsolute = await this.validateInternalPath(manifestPath);
+      const manifestBytes = await this.readBytesAt(manifestAbsolute, manifestPath);
+      const manifest = parseTemplateApplyTransactionManifest(decodeVaultText(manifestBytes, manifestPath));
+      const source = ` for template ${manifest.sourceTemplateId}`;
+      return {
+        code: 'INCOMPLETE_WRITE', path,
+        message: manifest.state === 'committed'
+          ? `Database template application${source} completed, but its staging journal could not be cleaned up. A later explicit database template apply will finish journal cleanup; preserve this directory until then.`
+          : `Database template application${source} was interrupted. A later explicit database template apply attempts to roll back using staged-file identity checks before retrying. Preserve this directory; if recovery reports a conflict, inspect the listed files and restore or move them manually.`,
+      };
+    } catch (error) {
+      return {
+        ...generic,
+        message: `Template-application recovery journal is unreadable or invalid (${describe(error)}). Preserve this directory and its listed target files; do not delete or retry blindly.`,
+      };
+    }
+  }
+
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
     return withVaultRootLock(this.root, async () => {
       try {
+        if (options.atomicNewFiles) await this.recoverTemplateApplyTransactionsUnlocked();
         return await this.applyImportLocked(plan, options);
       } finally {
         this.noteSnapshot.clear();
@@ -1348,6 +1474,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   private async applyImportLocked(plan: ImportPlan, options: ImportOptions): Promise<ImportReport> {
+    if (options.sourceTemplateId !== undefined && (!options.atomicNewFiles || !isUuidV4(options.sourceTemplateId))) {
+      throw new StorageError('INVALID_INPUT', 'sourceTemplateId requires atomicNewFiles and must be a lowercase UUID v4.');
+    }
     for (const note of plan.notes) {
       try {
         validateNote(note);
@@ -1381,6 +1510,23 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     const attachmentEntries = plan.entries.filter((entry) => entry.kind === 'attachment');
+    const automationEntries = plan.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history');
+    const templateEntries = plan.entries.filter((entry) => entry.kind === 'template-catalog');
+    if (options.atomicNewFiles && (
+      options.overwrite === true ||
+      plan.databases.length !== 1 ||
+      plan.notes.length > 1000 ||
+      incomingViews.length > 100 ||
+      attachmentEntries.length > 0 ||
+      automationEntries.length > 0 ||
+      templateEntries.length > 0 ||
+      plan.propertyCatalog !== undefined ||
+      (plan.databaseViewOrders?.length ?? 0) > 0 ||
+      plan.entries.some((entry) => entry.kind !== 'database-view') ||
+      options.sourceTemplateId === undefined
+    )) {
+      throw new StorageError('INVALID_INPUT', 'Atomic template application accepts one new database, up to 100 saved views and 1000 starter rows, and no overwrite or unrelated file kinds.');
+    }
     for (const entry of attachmentEntries) {
       const bytes = entry.rawBytes;
       const valid = bytes === undefined ? undefined : validateAttachmentBytes(entry.path, bytes);
@@ -1388,7 +1534,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateAttachmentPath(entry.path);
     }
 
-    const automationEntries = plan.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history');
     const expectedAutomationFiles = new Map([
       ['automation-definitions', { path: DATABASE_AUTOMATIONS_PATH, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1' }],
       ['automation-history', { path: DATABASE_AUTOMATION_HISTORY_PATH, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2' }],
@@ -1403,7 +1548,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateInternalPath(expected.path);
     }
     if (new Set(automationEntries.map((entry) => entry.kind)).size !== automationEntries.length) throw new StorageError('CONFLICT', 'Import contains duplicate automation files.');
-    const templateEntries = plan.entries.filter((entry) => entry.kind === 'template-catalog');
     if (templateEntries.length > 1) throw new StorageError('CONFLICT', 'Import contains duplicate template catalogs.');
     for (const entry of templateEntries) {
       const bytes = entry.rawBytes ?? Buffer.from(entry.text, 'utf8');
@@ -1643,6 +1787,11 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       ),
     ].filter((path) => !plannedPaths.has(foldPath(path)));
 
+    if (options.atomicNewFiles) {
+      if (stalePaths.length > 0) throw new StorageError('INVALID_INPUT', 'Atomic template application cannot move or replace existing notes.');
+      return this.applyNewFilesAtomically(plan, noteText, databaseText, incomingViews, options.sourceTemplateId!);
+    }
+
     const written: string[] = [];
     const deleted: string[] = [];
     let failedPath: string | undefined;
@@ -1760,6 +1909,223 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }), ...(automationFiles === 0 ? {} : { automationFiles }), ...(templateFiles === 0 ? {} : { templateFiles }) };
+  }
+
+  private async applyNewFilesAtomically(
+    plan: ImportPlan,
+    noteText: Map<string, string>,
+    databaseText: Map<string, string>,
+    views: DatabaseView[],
+    sourceTemplateId: string,
+  ): Promise<ImportReport> {
+    if (plan.databases.length !== 1) throw new StorageError('INVALID_INPUT', 'Atomic template application requires one database definition.');
+    const database = plan.databases[0]!;
+    const files: Array<{ path: string; bytes: Buffer }> = [];
+
+    // Build and validate every byte sequence before the transaction directory or
+    // any final vault path is changed. The database definition is the commit marker.
+    for (const note of plan.notes) files.push({ path: note.path, bytes: Buffer.from(noteText.get(note.id) ?? this.serializeNoteInput(note), 'utf8') });
+    for (const view of views) {
+      const path = databaseViewPath(view.databaseId, view.id);
+      const entry = plan.entries.find((item) => item.kind === 'database-view' && item.id === view.id && item.path === path);
+      files.push({ path, bytes: Buffer.from(entry?.text ?? this.serializeDatabaseViewInput(view), 'utf8') });
+    }
+    for (const item of plan.databases) files.push({ path: databasePath(item.id), bytes: Buffer.from(databaseText.get(item.id) ?? serializeDatabase(item), 'utf8') });
+
+    for (const file of files) {
+      await this.templateTransactionTarget(file.path, database.id);
+      await this.assertImportTargetUnchanged(file.path, undefined);
+    }
+
+    const transactionId = randomUUID();
+    const transactionPath = `${TEMPLATE_APPLY_TRANSACTION_PREFIX}${transactionId}`;
+    const transactionDirectory = resolveInsideRoot(this.root, transactionPath);
+    await assertInsideRoot(this.root, transactionDirectory, transactionPath);
+    let transactionCreated = false;
+    let manifest: TemplateApplyTransactionManifest = {
+      format: 'nodus-template-apply-transaction',
+      version: 1,
+      state: 'prepared',
+      sourceTemplateId,
+      databaseId: database.id,
+      files: files.map((file, index) => ({
+        path: file.path,
+        stagedName: `file-${String(index).padStart(6, '0')}.stage`,
+        sha256: sha256Hex(file.bytes),
+      })),
+    };
+    const manifestAbsolute = join(transactionDirectory, 'manifest.json');
+    try {
+      await mkdir(transactionDirectory, { mode: 0o700 });
+      transactionCreated = true;
+      await writeFileAtomic(manifestAbsolute, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+      for (let index = 0; index < files.length; index += 1) {
+        const staged = join(transactionDirectory, manifest.files[index]!.stagedName);
+        await writeFileAtomic(staged, files[index]!.bytes, { mode: 0o600 });
+      }
+      for (const file of manifest.files) {
+        const staged = join(transactionDirectory, file.stagedName);
+        const target = await this.templateTransactionTarget(file.path, database.id);
+        await this.publishTemplateTransactionFile(staged, target, file.path);
+      }
+      manifest = { ...manifest, state: 'committed' };
+      await writeFileAtomic(manifestAbsolute, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    } catch (error) {
+      try {
+        if (transactionCreated) {
+          const current = await this.readTemplateApplyTransaction(transactionPath);
+          if (current !== null) await this.rollbackTemplateApplyTransaction(transactionPath, current);
+          else await this.removeUnpreparedTemplateTransaction(transactionPath);
+        }
+      } catch (rollbackError) {
+        const paths = [...new Set([
+          transactionPath,
+          ...manifest.files.map((file) => file.path),
+          ...(rollbackError instanceof StorageError ? rollbackError.details?.paths ?? [] : []),
+        ])];
+        throw new StorageError(
+          'PARTIAL_WRITE',
+          `Database template application stopped and rollback is incomplete. Preserve the transaction directory and reported paths; retrying an explicit database template apply will attempt safe recovery: ${describe(rollbackError)}`,
+          { cause: new AggregateError([error, rollbackError], 'Template application and rollback failed'), details: { paths } },
+        );
+      }
+      throw error;
+    }
+
+    let transactionCleanupPending = false;
+    try { await this.cleanupTemplateApplyTransaction(transactionPath, manifest); }
+    catch { transactionCleanupPending = true; }
+    return {
+      notes: plan.notes.length,
+      databases: 1,
+      databaseViews: views.length,
+      ...(transactionCleanupPending ? { transactionCleanupPending: true } : {}),
+    };
+  }
+
+  private async templateTransactionTarget(path: string, databaseId: string): Promise<string> {
+    if (path === databasePath(databaseId)) return this.validateInternalPath(path);
+    const viewPattern = /^database-views\/([0-9a-f-]+)\/([0-9a-f-]+)\.json$/.exec(path);
+    const viewId = viewPattern?.[2] ?? '';
+    if (viewPattern !== null && viewPattern[1] === databaseId && isUuidV4(viewId) && path === databaseViewPath(databaseId, viewId)) {
+      return this.validateInternalPath(path);
+    }
+    if (path.startsWith('notes/') && path.endsWith('.md')) return this.validateNoteTarget(path);
+    throw new StorageError('UNSAFE_PATH', `Template transaction target "${path}" is outside its allowed database, view, or starter-note paths`, { path });
+  }
+
+  private async publishTemplateTransactionFile(staged: string, target: string, relativePath: string): Promise<void> {
+    try { await linkFileAtomicExclusive(staged, target); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') throw new StorageError('CONFLICT', `Template target "${relativePath}" appeared after validation; no existing file was replaced.`, { path: relativePath });
+      throw storageFailure(error, 'Publish template file', relativePath);
+    }
+  }
+
+  private async recoverTemplateApplyTransactionsUnlocked(): Promise<void> {
+    let children: Dirent[];
+    try { children = await readdir(this.root, { withFileTypes: true }); }
+    catch (error) { throw storageFailure(error, 'Inspect template-application transactions', '.'); }
+    for (const child of children.filter((entry) => entry.name.startsWith(TEMPLATE_APPLY_TRANSACTION_PREFIX)).sort((a, b) => a.name.localeCompare(b.name))) {
+      const transactionPath = child.name;
+      const transactionId = transactionPath.slice(TEMPLATE_APPLY_TRANSACTION_PREFIX.length);
+      if (!isUuidV4(transactionId) || child.isSymbolicLink() || !child.isDirectory()) {
+        throw new StorageError('PARTIAL_WRITE', 'An unrecognized template-application transaction entry blocks safe retry. Preserve it for manual inspection.', { details: { paths: [transactionPath] } });
+      }
+      const manifest = await this.readTemplateApplyTransaction(transactionPath);
+      if (manifest === null) {
+        try { await this.removeUnpreparedTemplateTransaction(transactionPath); }
+        catch (error) { throw new StorageError('PARTIAL_WRITE', `An incomplete template-application staging directory could not be safely cleaned: ${describe(error)}`, { cause: error, details: { paths: [transactionPath] } }); }
+        continue;
+      }
+      try {
+        if (manifest.state === 'prepared') await this.rollbackTemplateApplyTransaction(transactionPath, manifest);
+        else await this.cleanupTemplateApplyTransaction(transactionPath, manifest);
+      } catch (error) {
+        throw new StorageError('PARTIAL_WRITE', `Template-application recovery stopped without changing unverified target files: ${describe(error)}`, {
+          cause: error,
+          details: { paths: [...new Set([transactionPath, ...manifest.files.map((file) => file.path)])] },
+        });
+      }
+    }
+  }
+
+  private async readTemplateApplyTransaction(transactionPath: string): Promise<TemplateApplyTransactionManifest | null> {
+    const manifestPath = `${transactionPath}/manifest.json`;
+    try {
+      const absolute = await this.validateInternalPath(manifestPath);
+      const bytes = await this.readBytesAt(absolute, manifestPath);
+      return parseTemplateApplyTransactionManifest(decodeVaultText(bytes, manifestPath));
+    } catch (error) {
+      if (isMissing(error) || (error instanceof StorageError && error.code === 'NOT_FOUND')) return null;
+      throw error;
+    }
+  }
+
+  private async rollbackTemplateApplyTransaction(transactionPath: string, manifest: TemplateApplyTransactionManifest): Promise<void> {
+    const transactionDirectory = resolveInsideRoot(this.root, transactionPath);
+    const unresolved: string[] = [];
+    for (const file of [...manifest.files].reverse()) {
+      const stagedAbsolute = join(transactionDirectory, file.stagedName);
+      const targetAbsolute = await this.templateTransactionTarget(file.path, manifest.databaseId);
+      let stagedInfo;
+      let targetInfo;
+      try { targetInfo = await lstat(targetAbsolute, { bigint: true }); }
+      catch (error) { if (isMissing(error)) continue; throw error; }
+      try { stagedInfo = await lstat(stagedAbsolute, { bigint: true }); }
+      catch (error) { if (isMissing(error)) continue; throw error; }
+      if (!stagedInfo.isFile() || stagedInfo.isSymbolicLink() || !targetInfo.isFile() || targetInfo.isSymbolicLink() || stagedInfo.dev !== targetInfo.dev || stagedInfo.ino !== targetInfo.ino) {
+        // A different inode is not ours to remove (it may be an external user's
+        // file created after preflight). Preserve it while rolling back our links.
+        continue;
+      }
+      try {
+        if (sha256Hex(await readFile(targetAbsolute)) !== file.sha256) {
+          unresolved.push(file.path);
+          continue;
+        }
+      } catch {
+        unresolved.push(file.path);
+        continue;
+      }
+      try { await unlink(targetAbsolute); }
+      catch { unresolved.push(file.path); }
+    }
+    if (unresolved.length > 0) throw new StorageError('PARTIAL_WRITE', 'Rollback preserved target files whose staged-file identity could not be proven.', { details: { paths: [...new Set(unresolved)] } });
+    await this.cleanupTemplateApplyTransaction(transactionPath, manifest);
+  }
+
+  private async cleanupTemplateApplyTransaction(transactionPath: string, manifest: TemplateApplyTransactionManifest): Promise<void> {
+    const transactionDirectory = resolveInsideRoot(this.root, transactionPath);
+    const absoluteDirectory = await this.validateInternalPath(transactionPath);
+    const directoryInfo = await lstat(absoluteDirectory);
+    if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) throw new StorageError('UNSAFE_PATH', 'Template transaction must be a regular directory', { path: transactionPath });
+    const allowed = new Set(['manifest.json', ...manifest.files.map((file) => file.stagedName)]);
+    const children = await readdir(absoluteDirectory, { withFileTypes: true });
+    for (const child of children) {
+      const temporaryAtomicWrite = child.name.startsWith(TEMP_PREFIX) && isUuidV4(child.name.slice(TEMP_PREFIX.length));
+      if (!allowed.has(child.name) && !temporaryAtomicWrite) throw new StorageError('CONFLICT', `Unexpected entry in template transaction; preserve it: "${child.name}"`, { path: `${transactionPath}/${child.name}` });
+      if (child.isSymbolicLink() || !child.isFile()) throw new StorageError('UNSAFE_PATH', 'Template transaction children must be regular files', { path: `${transactionPath}/${child.name}` });
+    }
+    const removalOrder = [...children.filter((child) => child.name !== 'manifest.json'), ...children.filter((child) => child.name === 'manifest.json')];
+    for (const child of removalOrder) {
+      try { await unlink(join(transactionDirectory, child.name)); }
+      catch (error) { if (!isMissing(error)) throw storageFailure(error, 'Clean template-application staging file', `${transactionPath}/${child.name}`); }
+    }
+    try { await rmdir(absoluteDirectory); }
+    catch (error) { throw storageFailure(error, 'Remove template-application staging directory', transactionPath); }
+  }
+
+  private async removeUnpreparedTemplateTransaction(transactionPath: string): Promise<void> {
+    const absoluteDirectory = await this.validateInternalPath(transactionPath);
+    const directoryInfo = await lstat(absoluteDirectory);
+    if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) throw new StorageError('UNSAFE_PATH', 'Template transaction must be a regular directory', { path: transactionPath });
+    const children = await readdir(absoluteDirectory, { withFileTypes: true });
+    if (children.some((child) => !child.name.startsWith(TEMP_PREFIX) || !isUuidV4(child.name.slice(TEMP_PREFIX.length)) || child.isSymbolicLink() || !child.isFile())) {
+      throw new StorageError('CONFLICT', 'An unprepared template transaction contains unknown files; preserve it for manual inspection.', { path: transactionPath });
+    }
+    for (const child of children) await unlink(join(absoluteDirectory, child.name));
+    await rmdir(absoluteDirectory);
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {
@@ -2128,10 +2494,71 @@ function summaryOf(note: Note): NoteSummary {
 function contentIssue(error: unknown, path: string): StorageIssue {
   const wrapped = wrapContentError(error, path);
   return {
-    code: wrapped.code === 'UNSUPPORTED_VERSION' ? 'UNSUPPORTED_VERSION' : 'INVALID_CONTENT',
+    code: wrapped.code === 'UNSUPPORTED_VERSION' || wrapped.code === 'DUPLICATE_ID' || wrapped.code === 'UNSAFE_PATH'
+      ? wrapped.code
+      : 'INVALID_CONTENT',
     path,
     message: wrapped.message,
   };
+}
+
+function templateHealthIssue(error: unknown, path: string): StorageIssue {
+  const issue = contentIssue(error, path);
+  const recovery = issue.code === 'UNSUPPORTED_VERSION'
+    ? ' Preserve the catalog and open it with a Nodus version that supports this format; no automatic downgrade was attempted.'
+    : issue.code === 'DUPLICATE_ID'
+      ? ' Give each template a unique stable ID, then save the catalog again.'
+      : issue.code === 'UNSAFE_PATH'
+        ? ' Preserve the current target and replace symlinks or non-regular entries with regular files inside the vault.'
+        : ' Check file permissions and JSON/template fields, or restore the catalog from a known-good backup. No files were changed.';
+  return { ...issue, message: `${issue.message}${recovery}` };
+}
+
+function parseTemplateApplyTransactionManifest(text: string): TemplateApplyTransactionManifest {
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch (error) { throw new StorageError('INVALID_CONTENT', `Template transaction journal is not valid JSON: ${describe(error)}`); }
+  if (!isPlainObject(value) || Object.keys(value).some((key) => !['format', 'version', 'state', 'sourceTemplateId', 'databaseId', 'files'].includes(key)) ||
+    value.format !== 'nodus-template-apply-transaction' || value.version !== 1 || !['prepared', 'committed'].includes(String(value.state)) ||
+    !isUuidV4(value.sourceTemplateId) || !isUuidV4(value.databaseId) || !Array.isArray(value.files) || value.files.length < 1 || value.files.length > 1101) {
+    throw new StorageError('INVALID_CONTENT', 'Template transaction journal has an unsupported format or invalid metadata.');
+  }
+  const files: TemplateApplyTransactionFile[] = [];
+  const foldedPaths = new Set<string>();
+  let databaseFileCount = 0;
+  for (let index = 0; index < value.files.length; index += 1) {
+    const item: unknown = value.files[index];
+    if (!isPlainObject(item) || Object.keys(item).some((key) => !['path', 'stagedName', 'sha256'].includes(key)) ||
+      typeof item.path !== 'string' || typeof item.stagedName !== 'string' || typeof item.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(item.sha256) ||
+      item.stagedName !== `file-${String(index).padStart(6, '0')}.stage`) {
+      throw new StorageError('INVALID_CONTENT', `Template transaction journal file ${index} is invalid.`);
+    }
+    if (item.path === databasePath(value.databaseId)) databaseFileCount += 1;
+    else if (item.path.startsWith('notes/')) {
+      try {
+        if (validateNotePath(item.path) !== item.path || item.path.endsWith('/')) throw new Error('not a canonical note path');
+      } catch (error) { throw new StorageError('UNSAFE_PATH', `Template transaction note path is unsafe: ${describe(error)}`, { path: item.path }); }
+    } else {
+      const match = /^database-views\/([0-9a-f-]+)\/([0-9a-f-]+)\.json$/.exec(item.path);
+      const viewId = match?.[2] ?? '';
+      if (match === null || match[1] !== value.databaseId || !isUuidV4(viewId) || item.path !== databaseViewPath(value.databaseId, viewId)) {
+        throw new StorageError('UNSAFE_PATH', 'Template transaction journal contains a path outside its database, views, or starter notes.', { path: item.path });
+      }
+    }
+    const folded = foldPath(item.path);
+    if (foldedPaths.has(folded)) throw new StorageError('CONFLICT', 'Template transaction journal contains duplicate target paths.', { path: item.path });
+    foldedPaths.add(folded);
+    files.push({ path: item.path, stagedName: item.stagedName, sha256: item.sha256 });
+  }
+  if (databaseFileCount !== 1) throw new StorageError('INVALID_CONTENT', 'Template transaction journal must include exactly one matching database definition.');
+  return {
+    format: 'nodus-template-apply-transaction', version: 1, state: value.state as 'prepared' | 'committed',
+    sourceTemplateId: value.sourceTemplateId, databaseId: value.databaseId, files,
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
 function sortByPath<T extends { path: string }>(items: T[]): T[] {

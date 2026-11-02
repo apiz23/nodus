@@ -2040,13 +2040,18 @@ describe('local UI API', () => {
         '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n',
         'utf8',
       );
+      await mkdir(join(vaultPath, '.nodus-templates'), { recursive: true });
+      await writeFile(join(vaultPath, '.nodus-templates/templates.json'), '{bad', 'utf8');
 
       const started = await startApi(vaultPath);
       try {
         const status = await json<UiVaultStatus>(started.base, '/api/status');
         expect(status.status).toBe(200);
-        expect(status.body.counts.issues).toBe(1);
-        expect(status.body.health.issues[0]?.code).toBe('INVALID_CONTENT');
+        expect(status.body.counts.issues).toBe(2);
+        expect(status.body.health.issues).toEqual(expect.arrayContaining([
+          expect.objectContaining({ code: 'INVALID_CONTENT', path: 'notes/broken.md' }),
+          expect.objectContaining({ code: 'INVALID_CONTENT', path: '.nodus-templates/templates.json', message: expect.stringMatching(/restore.*backup/i) }),
+        ]));
 
         const notes = await json<{ error: { code: string } }>(started.base, '/api/notes');
         expect(notes.status).toBe(422);

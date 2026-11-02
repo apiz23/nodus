@@ -3,7 +3,7 @@ import { isUuidV4 } from '../domain/ids.js';
 import type { DatabaseDefinition } from './schema.js';
 import { parseDatabase, serializeDatabase } from './schema.js';
 import type { DatabaseView } from './database-view.js';
-import { parseDatabaseView, validateViewReferences } from './database-view.js';
+import { parseDatabaseView, serializeDatabaseView, validateViewReferences } from './database-view.js';
 import { projectNoteProperties } from './note-properties.js';
 
 export const TEMPLATE_FORMAT = 'nodus-templates';
@@ -24,7 +24,13 @@ export type NodusTemplate = NoteTemplate | DatabaseTemplate;
 export function parseTemplates(text: string): NodusTemplate[] {
   let raw: unknown;
   try { raw = JSON.parse(text); } catch (error) { throw invalid(`Template file is not valid JSON: ${(error as Error).message}`); }
-  if (!object(raw) || raw.format !== TEMPLATE_FORMAT || raw.version !== TEMPLATE_VERSION || !Array.isArray(raw.templates)) throw invalid('Template file must use nodus-templates version 1 and contain a templates array.');
+  if (!object(raw) || raw.format !== TEMPLATE_FORMAT || !Array.isArray(raw.templates)) throw invalid('Template file must use nodus-templates version 1 and contain a templates array.');
+  if (raw.version !== TEMPLATE_VERSION) {
+    if (typeof raw.version === 'number' && Number.isInteger(raw.version) && raw.version > 0) {
+      throw new NodusError('UNSUPPORTED_VERSION', `Template catalog version ${raw.version} is not supported (current version: ${TEMPLATE_VERSION}).`);
+    }
+    throw invalid('Template catalog version must be a positive integer.');
+  }
   exact(raw, ['format', 'version', 'templates'], 'template catalog');
   const templates = raw.templates.map(parseTemplate);
   unique(templates.map((item) => item.id), 'template ID');
@@ -52,9 +58,9 @@ export function parseTemplate(value: unknown): NodusTemplate {
   if (value.type === 'database') {
     exact(value, [...common, 'database', 'views', 'starterRows'], 'database template');
     let database: DatabaseDefinition;
-    try { database = parseDatabase(serializeDatabase(value.database as DatabaseDefinition)); } catch (error) { throw invalid(`Database template schema is invalid: ${message(error)}`); }
+    try { database = parseDatabase(serializeDatabase(value.database as DatabaseDefinition)); } catch (error) { throw nestedInvalid(error, 'Database template schema is invalid'); }
     if (!Array.isArray(value.views) || value.views.length > 100 || !Array.isArray(value.starterRows) || value.starterRows.length > 1000) throw invalid('Database template supports up to 100 saved views and 1000 starter rows.');
-    const views = value.views.map((view) => { try { const parsed = parseDatabaseView(JSON.stringify(view)); validateViewReferences(parsed, database); return parsed; } catch (error) { throw invalid(`Database template view is invalid: ${message(error)}`); } });
+    const views = value.views.map((view) => { try { const parsed = parseTemplateView(view); validateViewReferences(parsed, database); return parsed; } catch (error) { throw nestedInvalid(error, 'Database template view is invalid'); } });
     if (views.some((view) => view.databaseId !== database.id)) throw invalid('Every template view must reference its template database.');
     unique(views.map((view) => view.id), 'view ID');
     const starterRows = value.starterRows.map((row, index) => {
@@ -95,13 +101,48 @@ function parseVariable(value: unknown): TemplateVariable {
   if (value.default !== undefined && !['string', 'number'].includes(typeof value.default)) throw invalid('Template variable default must be text or number.');
   return { name: value.name, type: value.type as TemplateVariable['type'], ...(value.required === undefined ? {} : { required: value.required }), ...(value.default === undefined ? {} : { default: value.default as string | number }) };
 }
+function parseTemplateView(value: unknown): DatabaseView {
+  if (!object(value)) throw invalid('Database template view must be an object.');
+  exact(value, ['id', 'databaseId', 'name', 'sort', 'sorts', 'filters', 'visiblePropertyIds', 'type', 'settings'], 'database template view');
+  if (!object(value.sort)) throw invalid('Database template view sort must be an object.');
+  exact(value.sort, ['propertyId', 'direction'], 'database template view sort');
+  if (value.sorts !== undefined) {
+    if (!Array.isArray(value.sorts)) throw invalid('Database template view sorts must be an array.');
+    for (const sort of value.sorts) {
+      if (!object(sort)) throw invalid('Database template view sort entry must be an object.');
+      exact(sort, ['propertyId', 'direction'], 'database template view sort entry');
+    }
+  }
+  if (!Array.isArray(value.filters)) throw invalid('Database template view filters must be an array.');
+  for (const filter of value.filters) {
+    if (!object(filter)) throw invalid('Database template view filter must be an object.');
+    exact(filter, ['id', 'propertyId', 'operator', 'value'], 'database template view filter');
+  }
+  if (!Array.isArray(value.visiblePropertyIds)) throw invalid('Database template visiblePropertyIds must be an array.');
+  if (value.settings !== undefined) {
+    if (!object(value.settings)) throw invalid('Database template view settings must be an object.');
+    exact(value.settings, ['groupPropertyId', 'datePropertyId'], 'database template view settings');
+  }
+  return parseDatabaseView(serializeDatabaseView(value as DatabaseView));
+}
 function object(value: unknown): value is Record<string, any> { return value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null); }
 function exact(value: Record<string, any>, keys: string[], where: string) { for (const key of Object.keys(value)) if (!keys.includes(key)) throw invalid(`${where} contains unsupported field "${key}".`); }
-function unique(items: string[], label: string) { if (new Set(items).size !== items.length) throw invalid(`Duplicate ${label}.`); }
+function unique(items: string[], label: string) {
+  if (new Set(items).size !== items.length) {
+    if (label.endsWith('ID')) throw new NodusError('DUPLICATE_ID', `Duplicate ${label}.`);
+    throw invalid(`Duplicate ${label}.`);
+  }
+}
 function uuid(value: unknown, where: string): string { if (typeof value !== 'string' || !isUuidV4(value)) throw invalid(`${where} must be a lowercase UUID v4.`); return value; }
 function string(value: unknown): value is string { return typeof value === 'string'; }
 function name(value: unknown): string { if (!string(value) || !value.trim() || value.length > 120) throw invalid('Template name must be 1–120 characters.'); return value.trim(); }
 function description(value: unknown): string { if (!string(value) || value.length > 2000) throw invalid('Template description must be up to 2000 characters.'); return value; }
 function iso(value: unknown): string { if (!string(value) || Number.isNaN(Date.parse(value))) throw invalid('Template timestamps must be valid dates.'); return value; }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function nestedInvalid(error: unknown, context: string): NodusError {
+  if (error instanceof NodusError && (error.code === 'UNSUPPORTED_VERSION' || error.code === 'DUPLICATE_ID')) {
+    return new NodusError(error.code, `${context}: ${message(error)}`, { cause: error });
+  }
+  return invalid(`${context}: ${message(error)}`);
+}
 function invalid(message: string) { return new NodusError('INVALID_FIELD', message); }

@@ -23,7 +23,7 @@ describe('database templates', () => {
     expect(() => resolveNoteTemplate(NOTE_TEMPLATE, { unknown: 'x' })).toThrow(/Unknown template variable/);
     expect(() => resolveNoteTemplate(NOTE_TEMPLATE, { date: 'tomorrow', topic: 'Planning' })).toThrow(/YYYY-MM-DD/);
     expect(() => parseTemplate({ ...NOTE_TEMPLATE, frontmatter: { nodus_data: {} } })).toThrow(/reserved/);
-    expect(() => parseTemplates(JSON.stringify({ format: 'nodus-templates', version: 2, templates: [] }))).toThrow(/version 1/);
+    expect(() => parseTemplates(JSON.stringify({ format: 'nodus-templates', version: 2, templates: [] }))).toThrow(/version 2.*current version: 1/);
     expect(() => parseTemplates(JSON.stringify({ format: 'nodus-templates', version: 1, templates: [{ ...NOTE_TEMPLATE, future: true }] }))).toThrow(/unsupported field/);
   });
 

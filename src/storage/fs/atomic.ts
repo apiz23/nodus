@@ -61,6 +61,18 @@ export async function writeFileAtomicExclusive(target: string, bytes: Uint8Array
   }
 }
 
+/**
+ * Atomically publishes an already-synced staged file without replacing a target.
+ * The hard link also lets a transaction prove ownership by comparing file identity
+ * before rollback; callers must keep the staged source until the transaction ends.
+ */
+export async function linkFileAtomicExclusive(source: string, target: string): Promise<void> {
+  const directory = dirname(target);
+  await mkdir(directory, { recursive: true });
+  await link(source, target);
+  await syncDirectory(directory);
+}
+
 /** Best-effort directory metadata flush. Unsupported on Windows; ignored. */
 async function syncDirectory(directory: string): Promise<void> {
   if (process.platform === 'win32') return;

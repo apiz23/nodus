@@ -210,7 +210,7 @@ export function SettingsView({
                       <p className="mb-3 text-[11px] text-muted-foreground">
                         {status.health.issues.length}{' '}
                         {status.health.issues.length === 1 ? 'issue' : 'issues'} found. Health checks
-                        are read-only.
+                        are read-only and validate the optional template catalog.
                       </p>
                       <ul className="space-y-2">
                         {status.health.issues.map((issue) => (

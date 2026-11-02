@@ -3,6 +3,7 @@ export type NodusErrorCode =
   | 'INVALID_FIELD'
   | 'UNSUPPORTED_VERSION'
   | 'UNSAFE_PATH'
+  | 'DUPLICATE_ID'
   | 'INVALID_DATABASE'
   | 'MIGRATION_FAILED';
 

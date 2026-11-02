@@ -95,6 +95,8 @@ function mapDomainCode(code: NodusErrorCode): StorageErrorCode {
       return 'UNSUPPORTED_VERSION';
     case 'UNSAFE_PATH':
       return 'UNSAFE_PATH';
+    case 'DUPLICATE_ID':
+      return 'DUPLICATE_ID';
     default:
       return 'INVALID_CONTENT';
   }
