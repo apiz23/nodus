@@ -160,7 +160,7 @@ describe('backlinks API', () => {
     });
   });
 
-  it('drops backlinks to a title when the target title is renamed', async () => {
+  it('keeps title backlinks when the target title is renamed by retaining an alias', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');
       await seedVault(vaultPath, [
@@ -170,12 +170,17 @@ describe('backlinks API', () => {
       const started = await startApi(vaultPath);
       try {
         const opened = await json<{ note: UiNote }>(started.base, `/api/notes/${TARGET}`);
-        await json(started.base, `/api/notes/${TARGET}`, {
+        const saved = await json<{ note: UiNote; preservedLinks?: { alias: string; linkCount: number } }>(started.base, `/api/notes/${TARGET}`, {
           method: 'PUT',
           body: { title: 'New title', body: '', baseHash: opened.body.note.contentHash },
         });
+        expect(saved.status).toBe(200);
+        expect(saved.body.preservedLinks).toEqual({ alias: 'Old title', linkCount: 1 });
+        expect(saved.body.note.aliases).toContain('Old title');
         const after = await json<UiBacklinksResponse>(started.base, `/api/notes/${TARGET}/backlinks`);
-        expect(after.body.backlinks).toEqual([]);
+        expect(after.body.backlinks).toEqual([
+          expect.objectContaining({ sourceId: SOURCE, count: 1, ambiguous: false }),
+        ]);
       } finally {
         await stopApi(started);
       }

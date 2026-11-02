@@ -229,7 +229,10 @@ describe('global search snapshot lifecycle', () => {
         const original = await (await fetch(`${started.base}/api/notes/${aliasId}`)).json() as { note: { contentHash: string } };
         const edited = await mutate(`/notes/${aliasId}`, 'PUT', { title: 'New alias destination', body: 'Fresh content', baseHash: original.note.contentHash });
         expect((await search(started.base, 'Fresh')).results[0]?.id).toBe(aliasId);
-        expect(snapshot).toHaveBeenCalledTimes(2);
+        // One snapshot builds the index; the title rename scans once to decide
+        // whether incoming title links need a preserved alias; the next search
+        // rebuilds after the write invalidation.
+        expect(snapshot).toHaveBeenCalledTimes(3);
         const moved = await mutate(`/notes/${aliasId}/move`, 'POST', { path: 'notes/moved-alias.md', baseHash: edited.note.contentHash });
         expect((await search(started.base, 'planning')).results.find((note) => note.id === aliasId)?.path).toBe('notes/moved-alias.md');
         await mutate(`/notes/${aliasId}`, 'DELETE', { baseHash: moved.note.contentHash });

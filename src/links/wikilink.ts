@@ -17,6 +17,11 @@ export type LinkResolution =
   | { status: 'ambiguous'; noteIds: string[] };
 
 const WIKI_LINK = /\[\[([^\[\]|\r\n]+)(?:\|([^\[\]\r\n]*))?\]\]/g;
+
+/** A wiki-link target must be non-empty, trimmed, and a single line. */
+export function isValidLinkTarget(target: string): boolean {
+  return target !== '' && target.trim() === target && !/[\[\]|\r\n]/.test(target);
+}
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t\r]*$/;
 

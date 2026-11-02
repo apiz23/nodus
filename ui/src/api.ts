@@ -268,9 +268,16 @@ export const api = {
     });
   },
 
-  saveNote(id: string, input: UiSaveNoteInput): Promise<{ note: UiNote }> {
-    return request<{ note: UiNote }>(`/api/notes/${encodeURIComponent(id)}`, {
+  saveNote(id: string, input: UiSaveNoteInput): Promise<import('../../src/ui-server/dto.js').UiSaveNoteResponse> {
+    return request<import('../../src/ui-server/dto.js').UiSaveNoteResponse>(`/api/notes/${encodeURIComponent(id)}`, {
       method: 'PUT',
+      body: jsonBody(input),
+    });
+  },
+
+  repairWikiLink(id: string, input: import('../../src/ui-server/dto.js').UiRepairWikiLinkInput): Promise<import('../../src/ui-server/dto.js').UiRepairWikiLinkResponse> {
+    return request<import('../../src/ui-server/dto.js').UiRepairWikiLinkResponse>(`/api/notes/${encodeURIComponent(id)}/links/repair`, {
+      method: 'POST',
       body: jsonBody(input),
     });
   },

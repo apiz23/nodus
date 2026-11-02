@@ -60,7 +60,9 @@ try {
   const originalTarget = (await request(`/notes/${target.id}`)).note;
   const renamed = (await request(`/notes/${target.id}`, 'PUT', { title: 'Renamed future', body: originalTarget.body, baseHash: originalTarget.contentHash })).note;
   await saveSource(`${sourceBody}\n`);
-  await page.locator('.cm-wikilink-unresolved').filter({ hasText: 'the idea' }).waitFor();
+  // The previous title is retained as an alias, so the title-based link still
+  // opens the renamed note. Only path links remain vulnerable to moves.
+  await page.getByRole('link', { name: 'Open the idea', exact: true }).waitFor();
   const pinned = page.getByRole('link', { name: 'Open pinned', exact: true });
   await pinned.focus();
   await page.keyboard.press('Enter');
@@ -68,10 +70,24 @@ try {
   await request(`/notes/${target.id}`, 'DELETE', { baseHash: renamed.contentHash });
   await page.getByRole('treeitem', { name: 'Discovery source (discovery-source.md)', exact: true }).click();
   await saveSource(`${sourceBody}\n\n`);
+  await page.locator('.cm-wikilink-unresolved').filter({ hasText: 'the idea' }).waitFor();
   await page.locator('.cm-wikilink-unresolved').filter({ hasText: 'pinned' }).waitFor();
   assert.equal(await page.getByRole('link', { name: 'Open pinned', exact: true }).count(), 0);
+
+  // Repair the now-broken title link from Discovery; the rewrite is pinned to
+  // the suggested note's stable ID.
+  const { note: repairTarget } = await request('/notes', 'POST', { title: 'Future plans' });
+  await page.getByRole('button', { name: 'Discovery', exact: true }).click();
+  await page.getByRole('heading', { name: 'Unresolved links (2)' }).waitFor();
+  const repairButton = page.getByRole('button', { name: 'Link Future to Future plans (similar title)' });
+  await repairButton.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('status').filter({ hasText: 'Linked Future to Future plans' }).waitFor();
+  await page.getByRole('heading', { name: 'Unresolved links (1)' }).waitFor();
+  const repairedSource = (await request(`/notes/${source.id}`)).note;
+  assert(repairedSource.body.includes(`[[${repairTarget.id}|the idea]]`), repairedSource.body);
   assert.deepEqual(errors, []);
-  console.log('Discovery browser smoke passed: keyboard creation, backlinks, isolated-note navigation, command palette, and editor resolver refresh after rename/delete.');
+  console.log('Discovery browser smoke passed: keyboard creation, rename-safe title links, backlinks, isolated-note navigation, command palette, discovery repair with stable-ID pinning, and editor resolver refresh.');
 } finally {
   await browser?.close();
   await server?.close();

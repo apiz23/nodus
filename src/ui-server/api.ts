@@ -33,6 +33,8 @@ import {
 import { backlinksByTarget, outgoingLinksForNote } from '../links/backlinks.js';
 import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
+import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
+import { chooseLinkTarget, rewriteWikiLink, sanitizeLinkDisplay } from '../links/link-edit.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
 import { buildSearchIndex, normalizeSearch, searchIndex } from '../search/search-index.js';
 import { validateFilterLogic, validateNoteFilters, type NoteFilter } from '../search/note-filters.js';
@@ -74,6 +76,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_BODY_CHARS = 1_000_000;
 const MAX_TITLE_CHARS = 200;
+const MAX_LINK_TARGET_CHARS = 2_000;
 const NOW = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 export interface LocalApiOptions {
@@ -509,9 +512,29 @@ export function createLocalApiMiddleware(
 
     if (method === 'GET' && path === '/api/discovery') {
       const { links: index } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      const suggester = createLinkSuggester(index.notes);
+      // Repeated missing targets are common (one typo referenced from many
+      // notes). Cache the ranked list per target, then apply the per-source
+      // exclusion so every occurrence still gets its own correct top three.
+      const suggestionCache = new Map<string, ReturnType<typeof suggester.suggest>>();
+      const suggestionsFor = (target: string, sourceId: string) => {
+        let ranked = suggestionCache.get(target);
+        if (ranked === undefined) {
+          ranked = suggester.suggest(target, { limit: 4 });
+          suggestionCache.set(target, ranked);
+        }
+        return ranked.filter((suggestion) => suggestion.noteId !== sourceId).slice(0, 3);
+      };
       return sendJson(res, 200, {
-        unresolved: index.links.filter((link) => link.resolution.status === 'unresolved'),
-        ambiguous: index.links.filter((link) => link.resolution.status === 'ambiguous'),
+        unresolved: index.links.flatMap((link) => link.resolution.status === 'unresolved'
+          ? [{ ...link, suggestions: suggestionsFor(link.target, link.sourceId) }]
+          : []),
+        ambiguous: index.links.flatMap((link) => link.resolution.status === 'ambiguous'
+          ? [{
+              ...link,
+              suggestions: candidateSuggestions(link.resolution.noteIds, index.notes, link.sourceId).slice(0, 5),
+            }]
+          : []),
         orphans: index.orphanNotes,
         isolated: index.isolatedNotes,
       });
@@ -531,6 +554,13 @@ export function createLocalApiMiddleware(
       const note = await vault.createNoteForLink(target, candidate);
       backlinkIndex.markDirty();
       return sendJson(res, 200, await readLocalNote(vault, note.id));
+    }
+
+    const linkRepairMatch = /^\/api\/notes\/([^/]+)\/links\/repair$/.exec(path);
+    if (method === 'POST' && linkRepairMatch !== null) {
+      const id = requireUuid(decodeURIComponent(linkRepairMatch[1] ?? ''), 'note ID');
+      const body = await readJson(req);
+      return sendJson(res, 200, await repairLocalWikiLink(await getVault(), id, body, clock, backlinkIndex));
     }
 
     const noteMatch = /^\/api\/notes\/([^/]+)$/.exec(path);
@@ -1204,7 +1234,7 @@ async function saveLocalNote(
   body: Record<string, unknown>,
   clock: () => string,
   backlinkIndex: BacklinkIndex,
-): Promise<{ note: UiNote }> {
+): Promise<import('./dto.js').UiSaveNoteResponse> {
   const title = normalizeTitle(body.title, false);
   const content = requireString(body.body, 'body');
   if (content.length > MAX_BODY_CHARS) {
@@ -1229,6 +1259,29 @@ async function saveLocalNote(
     updatedAt: clock(),
     extraFrontmatter,
   };
+
+  // A title change used to break every confirmed title-based incoming link.
+  // Retain the previous title as an alias only when such links actually exist;
+  // this is a metadata addition to the renamed note, not a rewrite of other
+  // Markdown files. A vault-wide scan failure must not block the save.
+  let preservedLinks: { alias: string; linkCount: number } | undefined;
+  const oldTitle = current.note.title;
+  if (title !== oldTitle && normalizeLinkText(title) !== normalizeLinkText(oldTitle)) {
+    const oldTitleAlias = current.note.aliases.some((alias) => normalizeLinkText(alias) === normalizeLinkText(oldTitle));
+    if (!oldTitleAlias) {
+      try {
+        const linkCount = countIncomingTitleLinks(buildLinkIndex(await vault.snapshotNotes()), id, oldTitle);
+        if (linkCount > 0) {
+          updated.aliases = [...current.note.aliases, oldTitle];
+          preservedLinks = { alias: oldTitle, linkCount };
+        }
+      } catch {
+        // Scanned link preservation is best-effort. The note save remains valid
+        // when an unrelated malformed note blocks a whole-vault snapshot.
+      }
+    }
+  }
+
   try {
     await vault.replaceNote(updated, { expectedHash: baseHash });
   } catch (error) {
@@ -1237,7 +1290,88 @@ async function saveLocalNote(
   backlinkIndex.markDirty();
 
   const stored = await vault.readNoteWithHash(id);
-  return { note: toUiNote(stored.note, stored.hash) };
+  return {
+    note: toUiNote(stored.note, stored.hash),
+    ...(preservedLinks === undefined ? {} : { preservedLinks }),
+  };
+}
+
+/**
+ * Explicitly rewrite one broken or ambiguous occurrence. Source bytes are
+ * revision-checked, the occurrence is re-verified against its target, and the
+ * replacement is pinned to a stable note ID by default so later renames keep
+ * working. Only the chosen source note is modified.
+ */
+async function repairLocalWikiLink(
+  vault: FileSystemVault,
+  id: string,
+  body: Record<string, unknown>,
+  clock: () => string,
+  backlinkIndex: BacklinkIndex,
+): Promise<import('./dto.js').UiRepairWikiLinkResponse> {
+  requireAllowedKeys(body, ['baseHash', 'start', 'end', 'target', 'replacementNoteId', 'display', 'pin'], 'link repair request');
+  const baseHash = requireHash(body.baseHash);
+  const start = requireNonNegativeInteger(body.start, 'start');
+  const end = requireNonNegativeInteger(body.end, 'end');
+  if (end <= start) throw new ApiError(400, 'INVALID_INPUT', 'end must be greater than start.');
+  const target = requireString(body.target, 'target');
+  if (target.length > MAX_LINK_TARGET_CHARS) {
+    throw new ApiError(400, 'INVALID_INPUT', `target exceeds ${MAX_LINK_TARGET_CHARS} characters`);
+  }
+  const replacementNoteId = requireUuid(body.replacementNoteId, 'replacementNoteId');
+  if (replacementNoteId === id) {
+    throw new ApiError(400, 'INVALID_INPUT', 'A note cannot be its own link repair target.');
+  }
+  if (body.pin !== undefined && typeof body.pin !== 'boolean') {
+    throw new ApiError(400, 'INVALID_INPUT', 'pin must be a boolean.');
+  }
+  const pin = body.pin !== false;
+  const display = body.display === undefined ? undefined : requireString(body.display, 'display');
+
+  const current = await vault.readNoteWithHash(id);
+  if (current.hash !== baseHash) {
+    throw new ApiError(
+      409,
+      'STALE_WRITE',
+      'This note changed on disk after the discovery scan. Reload it before repairing a link.',
+      { currentHash: current.hash },
+    );
+  }
+  const notes = await vault.snapshotNotes();
+  const replacement = notes.find((note) => note.id === replacementNoteId);
+  if (replacement === undefined) {
+    throw new ApiError(404, 'NOT_FOUND', 'The selected replacement note no longer exists.');
+  }
+
+  const chosen = chooseLinkTarget(replacement, notes, pin);
+  const displayOverride = display === undefined && chosen.pinned
+    ? sanitizeLinkDisplay(replacement.title)
+    : undefined;
+  let rewritten;
+  try {
+    rewritten = rewriteWikiLink(
+      current.note.body,
+      { start, end, target, ...(display === undefined ? {} : { display }) },
+      { target: chosen.target, ...(displayOverride === undefined ? {} : { display: displayOverride }) },
+    );
+  } catch (error) {
+    throw new ApiError(400, 'INVALID_INPUT', error instanceof Error ? error.message : 'The link occurrence could not be rewritten.');
+  }
+
+  if (rewritten.body === current.note.body) {
+    return { note: toUiNote(current.note, current.hash), changed: false, pinned: chosen.pinned };
+  }
+  try {
+    await vault.replaceNote(
+      { ...current.note, body: rewritten.body, updatedAt: clock() },
+      { expectedHash: baseHash },
+    );
+  } catch (error) {
+    throw toStaleApiError(error, 'repairing this link');
+  }
+  backlinkIndex.markDirty();
+  const stored = await vault.readNoteWithHash(id);
+  return { note: toUiNote(stored.note, stored.hash), changed: true, pinned: chosen.pinned };
 }
 
 async function moveLocalNote(
@@ -1737,6 +1871,13 @@ function normalizeTitle(value: unknown, allowDefault = true): string {
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string') {
     throw new ApiError(400, 'INVALID_INPUT', `${field} must be a string`);
+  }
+  return value;
+}
+
+function requireNonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ApiError(400, 'INVALID_INPUT', `${field} must be a non-negative integer`);
   }
   return value;
 }

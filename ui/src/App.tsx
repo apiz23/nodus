@@ -1824,6 +1824,7 @@ export default function App() {
             revision={backlinksRevision}
             onOpenNote={(id) => void openNoteById(id)}
             onCreated={async () => { await Promise.all([refreshNotes(true), refreshStatus()]); setBacklinksRevision((value) => value + 1); }}
+            onRepaired={async () => { await Promise.all([refreshNotes(true), refreshStatus()]); setBacklinksRevision((value) => value + 1); }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
