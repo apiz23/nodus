@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-02
-**Latest verified implementation commit:** Phase 18L delivery commit (see `git log -1`); prior integrated baseline was `a481276`.
+**Latest verified implementation commit:** `3952db3` — Phase 18L implementation; prior integrated baseline was `a481276`.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -2585,7 +2585,8 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Files changed:** `src/links/link-repair.ts`, `src/links/link-edit.ts`, `src/links/wikilink.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/DiscoveryView.tsx`, `ui/src/api.ts`, `ui/src/App.tsx`, `test/link-repair.test.ts`, `test/link-repair-api.test.ts`, `test/ui-backlinks.test.ts`, `test/ui-search.test.ts`, `benchmark/graph.benchmark.ts`, `scripts/discovery-smoke.mjs`, `docs/wiki-links.md`, `docs/knowledge-graph.md`, `README.md`, and this roadmap.
 - **Tests executed:** Focused relationship/repair suite: 5 files / 33 tests passed. Full serial suite: `pnpm test --maxWorkers=1` — 100 files / 1,155 tests passed. `pnpm typecheck`; `pnpm build` (App chunk 799.91 kB); `pnpm test:browser`; `pnpm test:database-views`; `pnpm test:vault-onboarding`; discovery and graph browser smokes; `pnpm bench:graph`; `git diff --check` — all passed.
 - **Performance:** 5,000 notes / 15,000 links graph projection: 81.33 ms median. Repair suggestions: 500 unique targets at 5,000 notes: 975.98 ms total (1.952 ms per target); 250 unique targets at 1,000 notes: 80.81 ms total. Local Node 24.18.1; no enforced thresholds.
-- **Commit:** Phase 18 delivery commit (use `git log -1` for the hash). Delivered directly on `main` as requested; no feature branch or PR.
+- **Commit:** `3952db3` — `feat: add link integrity and repair`.
+- **Delivery:** A direct push to `origin/main` was rejected by the repository rule requiring a pull request. The commit was pushed to `origin/feat/phase-18-link-integrity` as the only available remote path. No pull request was opened.
 - **Remaining work:** Suggestions are lexical only; path links still break on move; repair is one occurrence per request; alias preservation depends on a successful whole-vault scan. See L-41–L-44.
 - **Notes / decisions:** The previous title is retained as an alias only when confirmed incoming title links exist, avoiding metadata churn for ordinary title edits. Repairs use the stable UUID by default and add a readable display when the original link had none. The discovery API caches ranked suggestions per missing target and applies the source exclusion afterward. The whole-vault scan for rename preservation is best-effort; a malformed unrelated note cannot block the save.
 
