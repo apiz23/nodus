@@ -15,6 +15,8 @@ import { DATABASE_VIEW_ORDER_DIR, databasePath, databaseViewOrderPath, databaseV
 import { PROPERTY_CATALOG_PATH, parsePropertyCatalog } from '../../properties/catalog.js';
 import { walkVault } from '../fs/scan.js';
 import { attachmentPathId, validateAttachmentBytes, ATTACHMENT_MAX_BYTES } from '../fs/attachments.js';
+import { DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH } from '../fs/layout.js';
+import { parseAutomationHistory, parseAutomations } from '../../database/automations.js';
 
 /**
  * Reads and fully validates a portable import directory.
@@ -158,7 +160,33 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
     entries.push({ kind: 'attachment', id: valid.id, path: entry.path, text: '', rawBytes: Buffer.from(bytes) });
   }
 
+  entries.push(...await readImportDatabaseAutomationFiles(source));
   return { entries, notes, databases, databaseViews, databaseViewOrders: await readImportDatabaseViewOrders(source), ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+}
+
+async function readImportDatabaseAutomationFiles(source: string): Promise<VaultEntry[]> {
+  const root = join(source, '.nodus-automations');
+  let rootInfo;
+  try { rootInfo = await lstat(root); } catch (error) { if (isMissing(error)) return []; throw storageFailure(error, 'Read import automation directory', '.nodus-automations'); }
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Automation storage must be a regular .nodus-automations directory', { path: '.nodus-automations' });
+  const children = await readdir(root);
+  const allowed = new Set(['automations.json', 'history.json']);
+  for (const child of children) if (!allowed.has(child)) throw new StorageError('INVALID_CONTENT', `Unexpected file in automation storage: ${child}`, { path: `.nodus-automations/${child}` });
+  const entries: VaultEntry[] = [];
+  for (const [name, path, kind, id] of [
+    ['automations.json', DATABASE_AUTOMATIONS_PATH, 'automation-definitions', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'],
+    ['history.json', DATABASE_AUTOMATION_HISTORY_PATH, 'automation-history', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'],
+  ] as const) {
+    if (!children.includes(name)) continue;
+    const absolute = join(root, name); const info = await lstat(absolute);
+    if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', `Automation file must be a regular file: ${path}`, { path });
+    let bytes: Buffer; try { bytes = await readFile(absolute); } catch (error) { throw storageFailure(error, 'Read import automation file', path); }
+    const text = bytes.toString('utf8');
+    try { if (kind === 'automation-definitions') parseAutomations(text); else parseAutomationHistory(text); }
+    catch (error) { throw wrapContentError(error, path); }
+    entries.push({ kind, id, path, text, rawBytes: Buffer.from(bytes) });
+  }
+  return entries;
 }
 
 /**

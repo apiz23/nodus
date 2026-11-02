@@ -66,7 +66,7 @@ describe('saved-view ordering portability', () => {
       expect(await createBackup(source, backup)).toMatchObject({ databases: 1, databaseViews: 2, databaseViewOrders: 1 });
 
       const manifest = JSON.parse(await readFile(join(backup, BACKUP_MANIFEST), 'utf8'));
-      expect(manifest.version).toBe(5);
+      expect(manifest.version).toBe(6);
       expect(manifest.formats.databaseViewOrder).toBe(1);
       expect(manifest.counts.databaseViewOrders).toBe(1);
       expect(manifest.files.filter((file: { kind: string }) => file.kind === 'database-view-order')).toMatchObject([

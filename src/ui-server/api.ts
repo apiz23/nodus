@@ -11,6 +11,7 @@ import {
 } from '../database/schema.js';
 import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, parseDatabaseView, validateViewReferences } from '../database/database-view.js';
 import { inferFormulaPropertyTypes } from '../database/formula-engine.js';
+import { matchesAutomation, parseAutomation, sortAutomations, validateAutomationReferences, type AutomationExecution, type DatabaseAutomation, type DatabaseAutomationEvent } from '../database/automations.js';
 import { createNote, type Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
 import { normalizeTagList, type TagOperation } from '../domain/tags.js';
@@ -39,6 +40,7 @@ type BacklinkIndex = { markDirty(): void };
 import type {
   UiApiErrorBody,
   UiDatabase,
+  UiDatabaseAutomationsResponse,
   UiDatabaseRowsResponse,
   UiDatabaseView,
   UiDatabaseViewOrder,
@@ -533,7 +535,11 @@ export function createLocalApiMiddleware(
       }
       if (method === 'DELETE') {
         const body = await readJson(req);
-        return sendJson(res, 200, await deleteLocalNote(await getVault(), id, body, backlinkIndex));
+        const vault = await getVault();
+        const before = await readLocalNoteProperties(vault, id);
+        const deleted = await deleteLocalNote(vault, id, body, backlinkIndex);
+        for (const row of before.rows) await executeAutomationEvent(vault, { id: sha256Hex(`record-deleted:${row.databaseId}:${id}:${before.contentHash}`), type: 'record-deleted', databaseId: row.databaseId, recordId: id, before: row.values, after: row.values }, clock);
+        return sendJson(res, 200, deleted);
       }
     }
 
@@ -545,9 +551,17 @@ export function createLocalApiMiddleware(
       }
       if (method === 'PUT') {
         const body = await readJson(req);
-        const result = await setLocalNoteProperty(await getVault(), id, body, clock);
+        const vault = await getVault();
+        const before = await readLocalNoteProperties(vault, id);
+        const databaseId = requireUuid(body.databaseId, 'databaseId');
+        const propertyId = requireUuid(body.propertyId, 'propertyId');
+        const prior = before.rows.find((candidate) => candidate.databaseId === databaseId)?.values ?? {};
+        const result = await setLocalNoteProperty(vault, id, body, clock);
+        const after = result.rows.find((candidate) => candidate.databaseId === databaseId)?.values ?? {};
+        await executeAutomationEvent(vault, { id: sha256Hex(`property-updated:${databaseId}:${id}:${propertyId}:${before.contentHash}:${result.contentHash}`), type: 'property-updated', databaseId, recordId: id, propertyId, before: prior, after }, clock, propertyId);
+        await executeAutomationEvent(vault, { id: sha256Hex(`condition-entered:${databaseId}:${id}:${propertyId}:${before.contentHash}:${result.contentHash}`), type: 'condition-entered', databaseId, recordId: id, propertyId, before: prior, after }, clock);
         backlinkIndex.markDirty();
-        return sendJson(res, 200, result);
+        return sendJson(res, 200, await readLocalNoteProperties(vault, id));
       }
     }
 
@@ -674,6 +688,42 @@ export function createLocalApiMiddleware(
       return sendJson(res, 201, result);
     }
 
+    const automationsMatch = /^\/api\/databases\/([^/]+)\/automations$/.exec(path);
+    if (automationsMatch !== null) {
+      const databaseId = requireUuid(decodeURIComponent(automationsMatch[1] ?? ''), 'databaseId');
+      const vault = await getVault();
+      if (method === 'GET') {
+        await vault.readDatabase(databaseId);
+        const stored = await vault.readDatabaseAutomations();
+        return sendJson(res, 200, { databaseId, contentHash: stored.hash, automations: stored.automations.filter((automation) => automation.databaseId === databaseId) } satisfies UiDatabaseAutomationsResponse);
+      }
+      if (method === 'PUT') {
+        const body = await readJson(req);
+        requireAllowedKeys(body, ['automations', 'baseHash'], 'request');
+        if (!Array.isArray(body.automations)) throw new ApiError(400, 'INVALID_INPUT', 'automations must be an array.');
+        const baseHash = body.baseHash === null ? null : requireHash(body.baseHash);
+        const schema = await vault.readDatabase(databaseId);
+        const current = await vault.readDatabaseAutomations();
+        const submitted = body.automations.map((item) => {
+          try { const parsed = parseAutomation(item); validateAutomationReferences(parsed, schema); return parsed; }
+          catch (error) { throw new ApiError(422, 'INVALID_AUTOMATION', error instanceof Error ? error.message : 'Automation configuration is invalid.'); }
+        });
+        if (submitted.some((automation) => automation.databaseId !== databaseId)) throw new ApiError(422, 'INVALID_AUTOMATION', 'Every automation must belong to this database.');
+        const retained = current.automations.filter((automation) => automation.databaseId !== databaseId);
+        let saved;
+        try { saved = await vault.writeDatabaseAutomations([...retained, ...submitted], baseHash); }
+        catch (error) { throw toStaleApiError(error, 'saving automations'); }
+        return sendJson(res, 200, { databaseId, contentHash: saved.hash, automations: saved.automations.filter((automation) => automation.databaseId === databaseId) } satisfies UiDatabaseAutomationsResponse);
+      }
+    }
+
+    if (method === 'GET' && path === '/api/automations/history') {
+      const databaseId = url.searchParams.get('databaseId');
+      if (databaseId !== null) requireUuid(databaseId, 'databaseId');
+      const executions = await (await getVault()).listAutomationHistory();
+      return sendJson(res, 200, { executions: databaseId === null ? executions : executions.filter((entry) => entry.databaseId === databaseId) });
+    }
+
     const databaseMatch = /^\/api\/databases\/([^/]+)$/.exec(path);
     if (method === 'PUT' && databaseMatch !== null) {
       const id = decodeURIComponent(databaseMatch[1] ?? '');
@@ -695,6 +745,10 @@ export function createLocalApiMiddleware(
       try { result = await vault.setNoteProperty(noteId, { databaseId, membershipOnly: true, confirmCreate: true }, { expectedHash: requireHash(body.baseHash), now: clock() }); }
       catch (error) { throw toStaleApiError(error, 'adding database membership'); }
       if (!result.ok) throw new ApiError(422, 'STRUCTURED_DATA_INVALID', 'Membership was not changed.', 'issues' in result ? { structuredDataIssues: result.issues } : undefined);
+      const after = await readLocalNoteProperties(vault, noteId);
+      const row = after.rows.find((candidate) => candidate.databaseId === databaseId);
+      await executeAutomationEvent(vault, { id: sha256Hex(`record-created:${databaseId}:${noteId}:${after.contentHash}`), type: 'record-created', databaseId, recordId: noteId, before: {}, after: row?.values ?? {} }, clock);
+      await executeAutomationEvent(vault, { id: sha256Hex(`condition-entered:${databaseId}:${noteId}:${after.contentHash}`), type: 'condition-entered', databaseId, recordId: noteId, before: {}, after: row?.values ?? {} }, clock);
       backlinkIndex.markDirty();
       return sendJson(res, 200, await readLocalNoteProperties(vault, noteId));
     }
@@ -978,6 +1032,50 @@ async function listDatabaseRows(
     relationCandidates[property.relation!.databaseId] = notes.filter((note) => compatibleRelationTarget(graph.rows.get(note.id)?.get(property.relation!.databaseId))).map((note) => ({ id: note.id, title: note.title, path: note.path, status: 'resolved', aliases: note.aliases, tags: note.tags }));
   }
   return { databaseId, schemaHash, rows, diagnostics, relationCandidates };
+}
+
+/** Execute only local, declarative actions. Internal action writes intentionally emit no events. */
+async function executeAutomationEvent(
+  vault: FileSystemVault,
+  event: DatabaseAutomationEvent,
+  clock: () => string,
+  triggerPropertyId?: string,
+): Promise<void> {
+  const stored = await vault.readDatabaseAutomations();
+  const schema = await vault.readDatabase(event.databaseId).catch(() => undefined);
+  if (!schema) return;
+  const candidates = sortAutomations(stored.automations).filter((automation) => automation.enabled && automation.databaseId === event.databaseId && automation.trigger === event.type &&
+    (automation.trigger !== 'property-updated' || automation.triggerPropertyId === triggerPropertyId));
+  for (const automation of candidates) {
+    let invalidConfiguration: string | undefined;
+    try { validateAutomationReferences(automation, schema); }
+    catch (error) { invalidConfiguration = error instanceof Error ? error.message : 'Automation references are invalid.'; }
+    if (!invalidConfiguration && !matchesAutomation(automation, event)) continue;
+    const now = clock();
+    const execution: AutomationExecution = {
+      id: randomUUID(), eventId: event.id, automationId: automation.id, databaseId: event.databaseId,
+      recordId: event.recordId, trigger: event.type, status: 'running', startedAt: now, finishedAt: now, completedActions: 0,
+    };
+    if (!(await vault.claimAutomationEvent(event.id, execution))) continue;
+    let completedActions = 0;
+    let failure: string | undefined = invalidConfiguration;
+    if (!failure && event.type === 'record-deleted') failure = 'Record was deleted before actions could be applied.';
+    else if (!failure) {
+      try {
+        for (const action of automation.actions) {
+          const current = await vault.readNoteWithHash(event.recordId);
+          const result = await vault.setNoteProperty(event.recordId, {
+            databaseId: event.databaseId, propertyId: action.propertyId,
+            ...(action.type === 'clear-property' ? { remove: true } : { value: action.value }),
+            confirmCreate: true,
+          }, { expectedHash: current.hash, now: clock() });
+          if (!result.ok) throw new Error('Property write was rejected by database validation.');
+          completedActions += 1;
+        }
+      } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    }
+    await vault.finishAutomationExecution({ ...execution, status: failure ? 'failure' : 'success', finishedAt: clock(), completedActions, ...(failure ? { error: failure.slice(0, 1000) } : {}) });
+  }
 }
 
 async function createLocalNote(
@@ -1482,7 +1580,7 @@ async function createVaultBackup(
 async function validateVaultBackup(
   vault: FileSystemVault,
   body: Record<string, unknown>,
-): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number } }> {
+): Promise<{ manifest: BackupManifest; counts: { notes: number; databases: number; databaseViews: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number } }> {
   const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
   const validation = await validateBackup(source);
   return {
@@ -1490,7 +1588,8 @@ async function validateVaultBackup(
     counts: { notes: validation.notes.length, databases: validation.databases.length, databaseViews: validation.databaseViews.length,
       ...(validation.databaseViewOrders === undefined ? {} : { databaseViewOrders: validation.databaseViewOrders.length }),
       ...(validation.entries.some((entry) => entry.kind === 'attachment') ? { attachments: validation.entries.filter((entry) => entry.kind === 'attachment').length } : {}),
-      ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }) },
+      ...(validation.propertyCatalog === undefined ? {} : { propertyCatalog: 1 }),
+      ...(validation.entries.some((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history') ? { automationFiles: validation.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history').length } : {}) },
   };
 }
 

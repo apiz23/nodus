@@ -4,9 +4,12 @@ export const DATABASES_DIR = 'databases';
 export const DATABASE_VIEWS_DIR = 'database-views';
 /** Hidden Nodus-owned directory; the vault scanner skips hidden root entries. */
 export const DATABASE_VIEW_ORDER_DIR = '.nodus-orders';
+export const DATABASE_AUTOMATIONS_DIR = '.nodus-automations';
+export const DATABASE_AUTOMATIONS_PATH = `${DATABASE_AUTOMATIONS_DIR}/automations.json`;
+export const DATABASE_AUTOMATION_HISTORY_PATH = `${DATABASE_AUTOMATIONS_DIR}/history.json`;
 export const BACKUP_MANIFEST = 'nodus-backup.json';
 export const BACKUP_FORMAT = 'nodus-backup';
-export const BACKUP_VERSION = 5;
+export const BACKUP_VERSION = 6;
 export const TEMP_PREFIX = '.nodus-tmp-';
 
 /** Workspace-relative path of a database definition, always POSIX-separated. */

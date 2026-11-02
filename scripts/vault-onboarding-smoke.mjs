@@ -69,7 +69,9 @@ try {
   await pathField.fill(selectedVault);
   await pathField.press('Enter');
   await page.getByRole('button', { name: /Vault menu: existing-vault/ }).waitFor({ state: 'visible' });
-  const preferenceFile = join(preferenceRoot, process.platform === 'linux' ? 'nodus' : 'Nodus', 'preferences.json');
+  const preferenceFile = process.platform === 'darwin'
+    ? join(preferenceRoot, 'Library', 'Application Support', 'Nodus', 'preferences.json')
+    : join(preferenceRoot, process.platform === 'linux' ? 'nodus' : 'Nodus', 'preferences.json');
   const preference = JSON.parse(await readFile(preferenceFile, 'utf8'));
   assert.equal(preference.lastVaultPath, await realpath(selectedVault));
 

@@ -5,12 +5,19 @@ import { describe, expect, it } from 'vitest';
 import type { Property } from '../src/database/schema.js';
 import { DatabaseSelectorItem, formatPropertyValue, PropertyControl } from '../ui/src/DatabasesView.js';
 import { RelationSchemaFields } from '../ui/src/RelationSchemaFields.js';
+import { DatabaseAutomations } from '../ui/src/DatabaseAutomations.js';
 import type { UiDatabase } from '../src/ui-server/dto.js';
 
 const OPTION_A = '11111111-1111-4111-8111-111111111111';
 const OPTION_B = '22222222-2222-4222-8222-222222222222';
 
 describe('database property controls and display', () => {
+  it('exposes the automation manager from the selected database context', () => {
+    const database: UiDatabase = { id: IDS_DB_A, name: 'Tasks', path: `databases/${IDS_DB_A}.json`, contentHash: '0'.repeat(64), properties: [] };
+    const html = renderToStaticMarkup(createElement(DatabaseAutomations, { database }));
+    expect(html).toContain('Automations');
+    expect(html).toContain('button');
+  });
   it('formats each supported stored value type for readable table display', () => {
     expect(formatPropertyValue({ id: 't', name: 'Text', type: 'text' }, 'Café 日本語 🙂')).toBe('Café 日本語 🙂');
     expect(formatPropertyValue({ id: 'n', name: 'Number', type: 'number' }, 3.25)).toBe('3.25');

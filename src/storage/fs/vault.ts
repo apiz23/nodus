@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, unlink } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import type {
+  AutomationStore,
   DatabaseStore,
   DatabaseSummary,
   DatabaseViewOrder,
@@ -22,6 +23,8 @@ import type {
   NotePropertyWrite,
   VaultStorage,
 } from '../contracts.js';
+import type { AutomationExecution, DatabaseAutomation } from '../../database/automations.js';
+import { AUTOMATION_HISTORY_LIMIT, parseAutomationHistory, parseAutomations, serializeAutomations, validateAutomationReferences } from '../../database/automations.js';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase, serializeDatabase } from '../../database/schema.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
@@ -47,7 +50,7 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, isReservedNotePath } from './layout.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
@@ -88,6 +91,9 @@ const NOTE_NOT_FOUND = (id: string) =>
 
 const DATABASE_NOT_FOUND = (id: string) =>
   new StorageError('NOT_FOUND', `Database "${id}" was not found`, { details: { ids: [id] } });
+
+const AUTOMATION_DEFINITIONS_FILE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+const AUTOMATION_HISTORY_FILE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
 
 function staleWrite(path: string, currentHash?: string): StorageError {
   return new StorageError(
@@ -561,6 +567,110 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       path: databasePath(database.id),
       propertyCount: database.properties.length,
     }));
+  }
+
+  async readDatabaseAutomations(): Promise<{ automations: DatabaseAutomation[]; hash: string | null }> {
+    return withVaultRootLock(this.root, async () => {
+      const file = await this.readAutomationFileUnlocked(DATABASE_AUTOMATIONS_PATH);
+      if (!file) return { automations: [], hash: null };
+      try { return { automations: parseAutomations(file.text), hash: sha256Hex(file.bytes) }; }
+      catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation definitions are invalid.', { path: DATABASE_AUTOMATIONS_PATH, cause: error }); }
+    });
+  }
+
+  async writeDatabaseAutomations(automations: DatabaseAutomation[], expectedHash: string | null): Promise<{ automations: DatabaseAutomation[]; hash: string }> {
+    return withVaultRootLock(this.root, async () => {
+      const text = serializeAutomations(automations);
+      const file = await this.readAutomationFileUnlocked(DATABASE_AUTOMATIONS_PATH);
+      let previous: DatabaseAutomation[] = [];
+      if (file) {
+        try { previous = parseAutomations(file.text); }
+        catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation definitions are invalid.', { path: DATABASE_AUTOMATIONS_PATH, cause: error }); }
+      }
+      const schemas = new Map((await this.parseDatabasesStrict()).map(({ database }) => [database.id, database]));
+      for (const automation of parseAutomations(text)) {
+        const schema = schemas.get(automation.databaseId);
+        const old = previous.find((candidate) => candidate.id === automation.id);
+        const referenceConfig = (item: DatabaseAutomation) => JSON.stringify([item.databaseId, item.trigger, item.triggerPropertyId, item.conditions, item.actions]);
+        if (schema !== undefined && (!old || referenceConfig(old) !== referenceConfig(automation))) {
+          try { validateAutomationReferences(automation, schema); }
+          catch (error) { throw wrapInputError(error, `Invalid automation "${automation.id}"`); }
+        }
+      }
+      const currentHash = file ? sha256Hex(file.bytes) : null;
+      if (currentHash !== expectedHash) throw staleWrite(DATABASE_AUTOMATIONS_PATH, currentHash ?? undefined);
+      await this.writeDocument(DATABASE_AUTOMATIONS_PATH, text, true);
+      return { automations: parseAutomations(text), hash: sha256Hex(text) };
+    });
+  }
+
+  async listAutomationHistory(limit = AUTOMATION_HISTORY_LIMIT): Promise<AutomationExecution[]> {
+    return withVaultRootLock(this.root, async () => {
+      const file = await this.readAutomationFileUnlocked(DATABASE_AUTOMATION_HISTORY_PATH);
+      if (!file) return [];
+      try { return parseAutomationHistory(file.text).slice(-Math.max(1, Math.min(limit, AUTOMATION_HISTORY_LIMIT))).reverse(); }
+      catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation history is invalid.', { path: DATABASE_AUTOMATION_HISTORY_PATH, cause: error }); }
+    });
+  }
+
+  async claimAutomationEvent(eventId: string, execution: AutomationExecution): Promise<boolean> {
+    return withVaultRootLock(this.root, async () => {
+      const file = await this.readAutomationFileUnlocked(DATABASE_AUTOMATION_HISTORY_PATH);
+      let executions: AutomationExecution[] = [];
+      if (file) {
+        try { executions = parseAutomationHistory(file.text); }
+        catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation history is invalid.', { path: DATABASE_AUTOMATION_HISTORY_PATH, cause: error }); }
+      }
+      if (executions.some((item) => item.eventId === eventId && item.automationId === execution.automationId)) return false;
+      executions.push({ ...execution, eventId, status: 'running' });
+      await this.writeAutomationHistoryUnlocked(executions);
+      return true;
+    });
+  }
+
+  async finishAutomationExecution(execution: AutomationExecution): Promise<void> {
+    return withVaultRootLock(this.root, async () => {
+      const file = await this.readAutomationFileUnlocked(DATABASE_AUTOMATION_HISTORY_PATH);
+      if (!file) throw new StorageError('NOT_FOUND', 'Automation execution claim was not found.', { path: DATABASE_AUTOMATION_HISTORY_PATH });
+      let executions: AutomationExecution[];
+      try { executions = parseAutomationHistory(file.text); }
+      catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : 'Automation history is invalid.', { path: DATABASE_AUTOMATION_HISTORY_PATH, cause: error }); }
+      const index = executions.findIndex((item) => item.id === execution.id && item.status === 'running');
+      if (index < 0) throw new StorageError('STALE_WRITE', 'Automation execution claim was changed before it could finish.', { path: DATABASE_AUTOMATION_HISTORY_PATH });
+      executions[index] = execution;
+      await this.writeAutomationHistoryUnlocked(executions);
+    });
+  }
+
+  async listDatabaseAutomationFiles(): Promise<VaultEntry[]> {
+    return withVaultRootLock(this.root, () => this.listDatabaseAutomationFilesUnlocked());
+  }
+
+  private async listDatabaseAutomationFilesUnlocked(): Promise<VaultEntry[]> {
+    const files: VaultEntry[] = [];
+    for (const [path, kind, id, format] of [
+      [DATABASE_AUTOMATIONS_PATH, 'automation-definitions', AUTOMATION_DEFINITIONS_FILE_ID, 'nodus-database-automations'],
+      [DATABASE_AUTOMATION_HISTORY_PATH, 'automation-history', AUTOMATION_HISTORY_FILE_ID, 'nodus-automation-history'],
+    ] as const) {
+      const file = await this.readAutomationFileUnlocked(path);
+      if (!file) continue;
+      try { if (kind === 'automation-definitions') parseAutomations(file.text); else parseAutomationHistory(file.text); }
+      catch (error) { throw new StorageError('INVALID_CONTENT', error instanceof Error ? error.message : `${format} data is invalid.`, { path, cause: error }); }
+      files.push({ kind, id, path, text: file.text, rawBytes: Buffer.from(file.bytes) });
+    }
+    return files;
+  }
+
+  private async readAutomationFileUnlocked(path: string): Promise<{ text: string; bytes: Buffer } | null> {
+    const absolute = await this.validateInternalPath(path);
+    try { const bytes = await this.readBytesAt(absolute, path); return { text: decodeVaultText(bytes, path), bytes }; }
+    catch (error) { if (isMissing(error) || (error instanceof StorageError && error.code === 'NOT_FOUND')) return null; throw error; }
+  }
+
+  private async writeAutomationHistoryUnlocked(executions: AutomationExecution[]): Promise<void> {
+    const text = `${JSON.stringify({ format: 'nodus-automation-history', version: 1, executions }, null, 2)}\n`;
+    try { parseAutomationHistory(text); } catch (error) { throw wrapInputError(error, 'Invalid automation history'); }
+    await this.writeDocument(DATABASE_AUTOMATION_HISTORY_PATH, text, true);
   }
 
   async readDatabase(id: string): Promise<DatabaseDefinition> {
@@ -1243,6 +1353,22 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       await this.validateAttachmentPath(entry.path);
     }
 
+    const automationEntries = plan.entries.filter((entry) => entry.kind === 'automation-definitions' || entry.kind === 'automation-history');
+    const expectedAutomationFiles = new Map([
+      ['automation-definitions', { path: DATABASE_AUTOMATIONS_PATH, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1' }],
+      ['automation-history', { path: DATABASE_AUTOMATION_HISTORY_PATH, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2' }],
+    ] as const);
+    for (const entry of automationEntries) {
+      const expected = expectedAutomationFiles.get(entry.kind as 'automation-definitions' | 'automation-history')!;
+      const bytes = entry.rawBytes ?? Buffer.from(entry.text, 'utf8');
+      const text = decodeVaultText(bytes, expected.path);
+      if (entry.path !== expected.path || entry.id !== expected.id || text !== entry.text) throw new StorageError('INVALID_CONTENT', 'Import automation file does not match its managed path and ID', { path: entry.path });
+      try { if (entry.kind === 'automation-definitions') parseAutomations(text); else parseAutomationHistory(text); }
+      catch (error) { throw wrapContentError(error, expected.path); }
+      await this.validateInternalPath(expected.path);
+    }
+    if (new Set(automationEntries.map((entry) => entry.kind)).size !== automationEntries.length) throw new StorageError('CONFLICT', 'Import contains duplicate automation files.');
+
     const incomingOrders = plan.databaseViewOrders ?? [];
     const plannedOrderPaths = new Set<string>();
     for (const order of incomingOrders) {
@@ -1304,6 +1430,17 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
     const existingNotes = await this.parseNotesStrict();
     const existingDatabases = await this.parseDatabasesStrict();
+    const automationDefinitions = automationEntries.find((entry) => entry.kind === 'automation-definitions');
+    if (automationDefinitions) {
+      try {
+        const schemas = new Map(existingDatabases.map(({ database }) => [database.id, database]));
+        for (const database of plan.databases) schemas.set(database.id, database);
+        for (const automation of parseAutomations(automationDefinitions.text)) {
+          const schema = schemas.get(automation.databaseId);
+          if (schema) validateAutomationReferences(automation, schema);
+        }
+      } catch (error) { throw wrapContentError(error, automationDefinitions.path); }
+    }
     const existingViews = await this.parseDatabaseViewsStrict();
     const existingOrderFiles = await this.listDatabaseViewOrderFilesUnlocked();
 
@@ -1325,6 +1462,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     if (existingCatalog !== null) expectedHashes.set(PROPERTY_CATALOG_PATH, existingCatalog.hash);
     const existingOrderHashes = new Map(existingOrderFiles.map((file) => [file.path, file.hash] as const));
     for (const file of existingOrderFiles) expectedHashes.set(file.path, file.hash);
+    for (const entry of await this.listDatabaseAutomationFilesUnlocked()) expectedHashes.set(entry.path, sha256Hex(entry.rawBytes ?? entry.text));
 
     const plannedPaths = new Set<string>();
     const plannedNoteIds = new Set<string>();
@@ -1409,6 +1547,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       const existingHash = existingOrderHashes.get(order.path);
       if (existingHash !== undefined && existingHash !== order.hash) pathConflicts.add(order.path);
     }
+    for (const entry of automationEntries) {
+      const currentHash = expectedHashes.get(entry.path);
+      if (currentHash !== undefined && currentHash !== sha256Hex(entry.rawBytes ?? entry.text)) pathConflicts.add(entry.path);
+    }
 
     if (options.overwrite !== true && (idConflicts.size > 0 || pathConflicts.size > 0)) {
       throw new StorageError('CONFLICT', 'Import would overwrite existing data; pass { overwrite: true }', {
@@ -1464,6 +1606,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     let attachments = 0;
     let propertyCatalog = 0;
     let databaseViewOrders = 0;
+    let automationFiles = 0;
 
     try {
       if (incomingCatalog !== undefined) {
@@ -1532,6 +1675,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         written.push(order.path);
       }
 
+      for (const entry of automationEntries) {
+        const path = entry.path;
+        if (expectedHashes.get(path) === sha256Hex(entry.rawBytes ?? entry.text)) continue;
+        failedPath = path;
+        await this.writeDocument(path, entry.rawBytes ?? entry.text, true, () => this.assertImportTargetUnchanged(path, expectedHashes.get(path)));
+        automationFiles += 1;
+        written.push(path);
+      }
+
       // Remove old locations only after every target is written, so a failed
       // import never leaves a note in neither location.
       for (const stalePath of stalePaths) {
@@ -1552,7 +1704,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }) };
+    return { notes, databases, databaseViews, ...(attachments === 0 ? {} : { attachments }), ...(databaseViewOrders === 0 ? {} : { databaseViewOrders }), ...(propertyCatalog === 0 ? {} : { propertyCatalog }), ...(automationFiles === 0 ? {} : { automationFiles }) };
   }
 
   private async assertImportTargetUnchanged(path: string, expectedHash: string | undefined): Promise<void> {

@@ -41,6 +41,20 @@ describe('structured database API client', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/databases/db%2Fid/rows?schemaHash=${'b'.repeat(64)}`);
   });
 
+  it('loads and conditionally saves automation definitions and queries execution history', async () => {
+    const body = { databaseId: 'db/id', contentHash: null, automations: [] };
+    const fetchMock = vi.fn(async (..._args: Parameters<typeof fetch>) => jsonResponse(body));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(api.databaseAutomations('db/id')).resolves.toEqual(body);
+    await expect(api.saveDatabaseAutomations('db/id', [], null)).resolves.toEqual(body);
+    await expect(api.automationHistory('db/id')).resolves.toEqual(body);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/databases/db%2Fid/automations', '/api/databases/db%2Fid/automations', '/api/automations/history?databaseId=db%2Fid',
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ automations: [], baseHash: null }));
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe('PUT');
+  });
+
   it('creates and conditionally replaces database schemas through their dedicated API routes', async () => {
     const database = { id: 'database-id', name: 'Reading', properties: [] };
     const responseBody = { database: { ...database, path: 'databases/database-id.json', contentHash: 'a'.repeat(64) } };

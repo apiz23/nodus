@@ -7,6 +7,7 @@
 
 import type { BackupManifest, FolderImpact, VaultAttachment } from '../storage/contracts.js';
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
+import type { AutomationExecution, DatabaseAutomation } from '../database/automations.js';
 import type {
   NoteDatabaseRow,
   NotePropertyValue as DatabaseNotePropertyValue,
@@ -131,6 +132,9 @@ export interface UiDatabaseViewsResponse {
   views: UiDatabaseView[];
   order: UiDatabaseViewOrder;
 }
+
+export interface UiDatabaseAutomationsResponse { databaseId: string; contentHash: string | null; automations: DatabaseAutomation[] }
+export interface UiAutomationHistoryResponse { executions: AutomationExecution[] }
 
 /** Persistent saved-view ordering; `contentHash` is null for legacy databases. */
 export interface UiDatabaseViewOrder {

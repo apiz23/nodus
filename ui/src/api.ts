@@ -10,6 +10,7 @@ import type {
   UiCreateBackupInput,
   UiCreateNoteInput,
   UiDatabase,
+  UiDatabaseAutomationsResponse,
   UiDatabaseDefinition,
   UiDatabaseRowsResponse,
   UiDatabaseView,
@@ -326,6 +327,18 @@ export const api = {
     if (expectedSchemaHash !== undefined) params.set('schemaHash', expectedSchemaHash);
     const query = params.size > 0 ? `?${params.toString()}` : '';
     return request<UiDatabaseRowsResponse>(`/api/databases/${encodeURIComponent(id)}/rows${query}`);
+  },
+
+  databaseAutomations(databaseId: string): Promise<UiDatabaseAutomationsResponse> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/automations`);
+  },
+
+  saveDatabaseAutomations(databaseId: string, automations: import('../../src/database/automations.js').DatabaseAutomation[], baseHash: string | null): Promise<UiDatabaseAutomationsResponse> {
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/automations`, { method: 'PUT', body: jsonBody({ automations, baseHash }) });
+  },
+
+  automationHistory(databaseId: string): Promise<import('../../src/ui-server/dto.js').UiAutomationHistoryResponse> {
+    return request(`/api/automations/history?databaseId=${encodeURIComponent(databaseId)}`);
   },
 
   databaseViews(databaseId: string): Promise<UiDatabaseViewsResponse> {

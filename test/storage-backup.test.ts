@@ -61,8 +61,8 @@ function canonicalDigest(manifest: {
   files: unknown;
 }): string {
   const app = manifest.app as { name: string; version: string };
-  const formats = manifest.formats as { note: number; database: number; backup: number; databaseView?: number; databaseViewOrder?: number; propertyCatalog?: number };
-  const counts = manifest.counts as { notes: number; databases: number; databaseViews?: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number };
+  const formats = manifest.formats as { note: number; database: number; backup: number; databaseView?: number; databaseViewOrder?: number; propertyCatalog?: number; automations?: number };
+  const counts = manifest.counts as { notes: number; databases: number; databaseViews?: number; databaseViewOrders?: number; attachments?: number; propertyCatalog?: number; automationFiles?: number };
   const propertyCatalog = (manifest as { propertyCatalog?: Record<string, unknown> }).propertyCatalog;
   const files = (manifest.files as Array<Record<string, unknown>>).map((file) => ({
     kind: file.kind,
@@ -78,8 +78,8 @@ function canonicalDigest(manifest: {
         version: manifest.version,
         createdAt: manifest.createdAt,
         app: { name: app.name, version: app.version },
-        formats: { note: formats.note, database: formats.database, ...(formats.databaseView === undefined ? {} : { databaseView: formats.databaseView }), ...(formats.databaseViewOrder === undefined ? {} : { databaseViewOrder: formats.databaseViewOrder }), ...(formats.propertyCatalog === undefined ? {} : { propertyCatalog: formats.propertyCatalog }), backup: formats.backup },
-        counts: { notes: counts.notes, databases: counts.databases, ...(counts.databaseViews === undefined ? {} : { databaseViews: counts.databaseViews }), ...(counts.databaseViewOrders === undefined ? {} : { databaseViewOrders: counts.databaseViewOrders }), ...(manifest.version >= 3 ? { attachments: counts.attachments } : {}), ...(counts.propertyCatalog === undefined ? {} : { propertyCatalog: counts.propertyCatalog }) },
+        formats: { note: formats.note, database: formats.database, ...(formats.databaseView === undefined ? {} : { databaseView: formats.databaseView }), ...(formats.databaseViewOrder === undefined ? {} : { databaseViewOrder: formats.databaseViewOrder }), ...(formats.propertyCatalog === undefined ? {} : { propertyCatalog: formats.propertyCatalog }), ...(formats.automations === undefined ? {} : { automations: formats.automations }), backup: formats.backup },
+        counts: { notes: counts.notes, databases: counts.databases, ...(counts.databaseViews === undefined ? {} : { databaseViews: counts.databaseViews }), ...(counts.databaseViewOrders === undefined ? {} : { databaseViewOrders: counts.databaseViewOrders }), ...(manifest.version >= 3 ? { attachments: counts.attachments } : {}), ...(counts.propertyCatalog === undefined ? {} : { propertyCatalog: counts.propertyCatalog }), ...(counts.automationFiles === undefined ? {} : { automationFiles: counts.automationFiles }) },
         ...(propertyCatalog === undefined ? {} : { propertyCatalog }),
         files,
       }),
@@ -119,11 +119,11 @@ describe('createBackup', () => {
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
       expect(manifest).toEqual({
         format: 'nodus-backup',
-        version: 5,
+        version: 6,
         createdAt: BACKUP_NOW,
         app: { name: pkg.name, version: pkg.version },
-        formats: { note: 1, database: 1, databaseView: 3, databaseViewOrder: 1, backup: 5, propertyCatalog: 1 },
-        counts: { notes: 1, databases: 1, databaseViews: 0, databaseViewOrders: 0, attachments: 0, propertyCatalog: 0 },
+        formats: { note: 1, database: 1, databaseView: 3, databaseViewOrder: 1, backup: 6, propertyCatalog: 1, automations: 1 },
+        counts: { notes: 1, databases: 1, databaseViews: 0, databaseViewOrders: 0, attachments: 0, propertyCatalog: 0, automationFiles: 0 },
         files: [
           {
             kind: 'note',
@@ -281,7 +281,7 @@ describe('validateBackup', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target);
       const manifest = JSON.parse(await readFile(join(target, MANIFEST), 'utf8'));
-      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 6 }), 'utf8');
+      await writeFile(join(target, MANIFEST), JSON.stringify({ ...manifest, version: 7 }), 'utf8');
 
       expect(await storageErrorCode(() => validateBackup(target))).toBe('UNSUPPORTED_VERSION');
     });
@@ -749,8 +749,10 @@ describe('manifest metadata', () => {
       delete manifest.counts.attachments;
       delete manifest.counts.propertyCatalog;
       delete manifest.counts.databaseViewOrders;
+      delete manifest.counts.automationFiles;
       delete manifest.formats.propertyCatalog;
       delete manifest.formats.databaseViewOrder;
+      delete manifest.formats.automations;
       delete manifest.propertyCatalog;
       manifest.formats.databaseView = 1;
       manifest.digest = canonicalDigest(manifest);
@@ -777,8 +779,10 @@ describe('manifest metadata', () => {
       manifest.formats.backup = 3;
       delete manifest.formats.propertyCatalog;
       delete manifest.formats.databaseViewOrder;
+      delete manifest.formats.automations;
       delete manifest.counts.propertyCatalog;
       delete manifest.counts.databaseViewOrders;
+      delete manifest.counts.automationFiles;
       delete manifest.propertyCatalog;
       manifest.digest = canonicalDigest(manifest);
       await writeManifestJson(target, manifest);
@@ -901,7 +905,7 @@ describe('manifest metadata', () => {
       const target = join(dir, 'backup');
       await createBackup(vault, target, { now: BACKUP_NOW });
       const manifest = await readManifestJson(target);
-      manifest.counts = { notes: 2, databases: 1, databaseViews: 0, databaseViewOrders: 0, attachments: 0, propertyCatalog: 0 };
+      manifest.counts = { notes: 2, databases: 1, databaseViews: 0, databaseViewOrders: 0, attachments: 0, propertyCatalog: 0, automationFiles: 0 };
       manifest.digest = canonicalDigest(manifest);
       await writeManifestJson(target, manifest);
 

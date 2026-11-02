@@ -525,6 +525,44 @@ async function main() {
     await page.getByRole('button', { name: 'Add note and save property' }).click();
     assert.equal((await addResponse).status(), 200, 'Explicit add-to-database API request failed');
     await page.getByText('Property saved.', { exact: true }).waitFor({ state: 'visible' });
+
+    await page.getByRole('button', { name: 'Automations' }).click();
+    const automationManager = page.getByRole('dialog', { name: 'Automations for Reading list' });
+    await automationManager.getByRole('button', { name: 'Create' }).click();
+    const automationEditor = page.getByRole('dialog', { name: 'Create automation' });
+    await automationEditor.getByRole('textbox', { name: 'Automation name' }).fill('Browser smoke workflow');
+    await automationEditor.getByRole('button', { name: 'Save automation' }).click();
+    await automationManager.getByText('Browser smoke workflow', { exact: true }).waitFor({ state: 'visible' });
+    const workflowToggle = automationManager.getByRole('checkbox', { name: 'Enable Browser smoke workflow' });
+    await workflowToggle.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Enable Browser smoke workflow"]')?.getAttribute('aria-checked') === 'false');
+    await automationManager.getByText('Disabled', { exact: true }).waitFor({ state: 'visible' });
+    await workflowToggle.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Enable Browser smoke workflow"]')?.getAttribute('aria-checked') === 'true');
+    await automationManager.getByText('Enabled', { exact: true }).waitFor({ state: 'visible' });
+
+    await automationManager.getByRole('button', { name: /Browser smoke workflow Record created/ }).click();
+    const editAutomation = page.getByRole('dialog', { name: 'Edit automation' });
+    await editAutomation.getByRole('textbox', { name: 'Automation name' }).fill('Browser smoke workflow edited');
+    await editAutomation.getByRole('button', { name: 'Save automation' }).click();
+    await automationManager.getByText('Browser smoke workflow edited', { exact: true }).waitFor({ state: 'visible' });
+
+    const unlinkedRecord = (await (await fetch(`${baseUrl}/api/notes/12121212-1212-4121-8121-121212121212`)).json()).note;
+    const automationRun = await fetch(`${baseUrl}/api/databases/${databaseId}/rows`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteId: unlinkedRecord.id, baseHash: unlinkedRecord.contentHash, confirmCreate: true }),
+    });
+    assert.equal(automationRun.status, 200, 'Record-created automation did not run for a newly added record');
+    await automationManager.getByRole('button', { name: 'Close' }).first().click();
+    await page.getByRole('button', { name: 'Automations' }).click();
+    const refreshedAutomationManager = page.getByRole('dialog', { name: 'Automations for Reading list' });
+    await refreshedAutomationManager.getByText('success', { exact: true }).waitFor({ state: 'visible' });
+    await refreshedAutomationManager.getByRole('button', { name: 'Delete Browser smoke workflow edited' }).click();
+    const deleteAutomation = page.getByRole('alertdialog', { name: 'Delete automation?' });
+    await deleteAutomation.getByRole('button', { name: 'Delete automation' }).click();
+    await refreshedAutomationManager.getByText('Deleted automation', { exact: true }).waitFor({ state: 'visible' });
+    await refreshedAutomationManager.getByRole('button', { name: 'Close' }).first().click();
     await captureScreenshot(page, 'desktop-databases');
 
     // Exercise the actual component controls: invalid filter association,
@@ -936,7 +974,7 @@ async function main() {
     const expectedApiFailures = new Set([expectedStaleResponse, expectedInjectedFailure, expectedRowsFailure, expectedSchemaMismatch]);
     assert.deepEqual(apiFailures.filter((failure) => !expectedApiFailures.has(failure)), [], 'Unexpected local API request failed');
     assert.deepEqual(browserErrors, [], 'Browser reported uncaught or console errors');
-    console.log('Browser smoke passed: startup, note navigation/save/reload, global search, structured properties, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
+    console.log('Browser smoke passed: startup, note navigation/save/reload, global search, structured properties, database automation creation/edit/toggle/execution history/deletion, selection-scoped deferred row loads and mutations, filtering, column visibility, searchable options, viewport/Sheet layout, responsive focus behavior, and isolated API/filesystem persistence.');
   } catch (error) {
     console.error(`Browser errors: ${JSON.stringify(browserErrors)}`);
     console.error(`API failures: ${JSON.stringify(apiFailures)}`);

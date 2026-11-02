@@ -80,6 +80,7 @@ import { KanbanView, CalendarView, ListView, GalleryView } from './DatabaseLayou
 import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } from './database-view-layout';
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
+import { DatabaseAutomations } from './DatabaseAutomations';
 
 const SEARCHABLE_OPTIONS_THRESHOLD = 8;
 const NO_GROUP_PROPERTY = '__no_group__';
@@ -1164,6 +1165,7 @@ export function DatabasesView({
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
+                    <DatabaseAutomations key={`${vaultKey}:${selected.id}`} database={selected} />
                     <Button type="button" size="sm" variant="outline" onClick={() => openSchemaEditor(false)} disabled={schemaSaving}>
                       Edit schema
                     </Button>
