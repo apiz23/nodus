@@ -25,7 +25,8 @@
     "test:insights": "node scripts/insights-smoke.mjs",
     "test:graph-advanced": "node scripts/graph-advanced-smoke.mjs",
     "test:graph-canvas": "node scripts/graph-canvas-smoke.mjs",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
+    "bench:retrieval": "vitest run --config vitest.retrieval-benchmark.config.ts"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",

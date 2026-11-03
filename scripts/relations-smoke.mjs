@@ -72,11 +72,11 @@ try {
   await choose('Related tasks Target database', 'Tasks');
   await add('Total cost', 'Rollup');
   await choose('Total cost Relation', 'Related tasks');
-  await choose('Total cost Operation', 'sum');
+  await choose('Total cost Operation', 'Sum');
   await choose('Total cost Target property', 'Cost');
   await add('Completion', 'Rollup');
   await choose('Completion Relation', 'Related tasks');
-  await choose('Completion Operation', 'completion percentage');
+  await choose('Completion Operation', 'Completion percentage');
   await choose('Completion Target property', 'Done');
   await add('Lead task', 'Relation');
   await choose('Lead task Target database', 'Tasks');

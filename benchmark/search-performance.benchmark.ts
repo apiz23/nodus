@@ -13,6 +13,7 @@ import * as safePath from '../src/storage/fs/safe-path.js';
 import * as search from '../src/search/search-index.js';
 import * as links from '../src/links/link-index.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
+import { retrievalTerms } from '../src/search/retrieval.js';
 
 const NOW = '2026-10-25T12:00:00Z';
 const RESULT_LIMIT = 50;
@@ -58,6 +59,7 @@ const root = await mkdtemp(join(tmpdir(), 'nodus-search-benchmark-'));
 const startedServers: Server[] = [];
 const measurements: Measurement[] = [];
 const firstRequests: Array<{ size: number; query: string; returned: number; elapsedMs: number }> = [];
+const referenceDocuments = new Map<number, Map<string, number>[]>();
 const errors: Array<{ size: number; scenario: string; message: string }> = [];
 
 afterAll(async () => {
@@ -187,6 +189,8 @@ describe('production search performance', () => {
 
 async function generateVault(vaultPath: string, count: number): Promise<void> {
   await mkdir(vaultPath, { recursive: true });
+  const documents: Map<string, number>[] = [];
+  referenceDocuments.set(count, documents);
   for (let index = 0; index < count; index += 1) {
     const group = index % 20;
     const set = Math.floor(index / 20) % 10;
@@ -217,6 +221,13 @@ async function generateVault(vaultPath: string, count: number): Promise<void> {
       tags: index % 4 === 0 ? ['benchmark', 'research'] : ['benchmark'],
       aliases: index % 17 === 0 ? [`Reference ${index}`] : [],
     });
+    // Fixture-only scoring oracle: no production index/search calls. Exact result-ID
+    // checks below now account for length-normalized relevance inside the content tier.
+    const terms = new Map<string, number>();
+    for (const [text, boost] of [[note.title, 4], [note.aliases.join(' '), 3], [note.tags.join(' '), 3], [note.body, 1]] as const) {
+      for (const term of retrievalTerms(text)) terms.set(term, (terms.get(term) ?? 0) + boost);
+    }
+    documents.push(terms);
     await writeFile(notePath, serializeNote(note), 'utf8');
   }
 }
@@ -321,10 +332,20 @@ async function profileLifecycle(vaultPath: string, size: number) {
 }
 
 function expectedIds(scenario: Scenario, count: number): string[] {
-  return Array.from({ length: count }, (_, index) => index)
-    .filter((index) => scenario.matches(index, count))
-    .slice(0, RESULT_LIMIT)
-    .map(noteId);
+  const documents = referenceDocuments.get(count)!;
+  const terms = scenario.query.includes(':') ? [] : retrievalTerms(scenario.query);
+  const lengths = documents.map((document) => [...document.values()].reduce((sum, value) => sum + value, 0));
+  const average = lengths.reduce((sum, length) => sum + length, 0) / count;
+  const frequencies = terms.map((term) => documents.filter((document) => document.has(term)).length);
+  const score = (index: number) => terms.reduce((sum, term, position) => {
+    const frequency = documents[index]!.get(term) ?? 0;
+    return sum + Math.log(1 + (count - frequencies[position]! + 0.5) / (frequencies[position]! + 0.5))
+      * frequency * 2.2 / (frequency + 1.2 * (0.25 + 0.75 * lengths[index]! / average));
+  }, 0);
+  return Array.from({ length: count }, (_, index) => ({ index, score: score(index) }))
+    .filter(({ index }) => scenario.matches(index, count))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, RESULT_LIMIT).map(({ index }) => noteId(index));
 }
 
 function matchingCount(scenario: Scenario, count: number): number {
