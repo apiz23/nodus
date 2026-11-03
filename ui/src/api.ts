@@ -6,6 +6,8 @@ import type {
   UiRelationBacklinksResponse,
   UiDiscoveryResponse,
   UiNoteGraph,
+  UiKnowledgeInsights,
+  UiRelatedNotesResponse,
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
@@ -250,6 +252,14 @@ export const api = {
   },
   graph(refresh = false): Promise<UiNoteGraph> {
     return request(`/api/graph${refresh ? '?refresh=true' : ''}`);
+  },
+  insights(refresh = false): Promise<UiKnowledgeInsights> {
+    return request(`/api/insights${refresh ? '?refresh=true' : ''}`);
+  },
+  relatedNotes(id: string, limit = 6, refresh = false): Promise<UiRelatedNotesResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (refresh) params.set('refresh', 'true');
+    return request(`/api/notes/${encodeURIComponent(id)}/related?${params.toString()}`);
   },
   createLinkTarget(target: string): Promise<{ note: UiNote }> {
     return request('/api/discovery/create', { method: 'POST', body: jsonBody({ target }) });

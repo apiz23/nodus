@@ -37,6 +37,7 @@ import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
 import { BacklinksPanel } from './BacklinksPanel';
 import { RelationBacklinksPanel } from './RelationBacklinksPanel';
+import { RelatedNotesPanel } from './RelatedNotesPanel';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
 import { TagEditor } from './editor/TagEditor';
@@ -574,6 +575,11 @@ export function Editor({
             onOpenNote={onOpenNote}
           />
           <RelationBacklinksPanel
+            noteId={note.id}
+            revision={backlinksRevision}
+            onOpenNote={onOpenNote}
+          />
+          <RelatedNotesPanel
             noteId={note.id}
             revision={backlinksRevision}
             onOpenNote={onOpenNote}
