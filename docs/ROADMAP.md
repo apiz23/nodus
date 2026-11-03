@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-03
-**Latest verified implementation commit:** `3952db3` — Phase 18L implementation; prior integrated baseline was `a481276`.
+**Latest verified integrated baseline:** `origin/main` at `89be1f31a5b0dcfeadcd368ad2801602386cd92a` (Phase 24 PR #13 merged; checked 2026-11-03).
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -46,6 +46,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
 
 1. [How to Read This Roadmap](#1-how-to-read-this-roadmap)
 2. [Current State at a Glance](#2-current-state-at-a-glance)
+   - [Current Forward Sequence (verified 2026-11-03)](#current-forward-sequence-verified-2026-11-03)
 3. [Completed and Historical Milestones](#3-completed-and-historical-milestones)
    - [3.1 Milestone Summary](#31-milestone-summary)
    - [Phase 1 — Application Foundation and Domain Model](#phase-1--application-foundation-and-domain-model)
@@ -72,7 +73,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 16 — Markdown Editor Enhancements](#phase-16--markdown-editor-enhancements)
    - [Phase 17G — Knowledge Graph and Relationship Exploration](#phase-17g--knowledge-graph-and-relationship-exploration)
    - [Phase 18L — Link Integrity and Repair](#phase-18l--link-integrity-and-repair)
-4. [Proposed Future Milestones (Phases 15 and 17–34)](#4-proposed-future-milestones-phases-15-and-17-34)
+4. [Legacy Proposed Milestones (superseded sequence)](#4-legacy-proposed-milestones-superseded-sequence)
    - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
      - [Phase 17 — Database Protection and Safeguards](#phase-17--database-protection-and-safeguards)
@@ -83,7 +84,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Phase 22 — Plugin and Extension Architecture](#phase-22--plugin-and-extension-architecture)
      - [Phase 23 — Graph View](#phase-23--graph-view)
      - [Phase 24 — Backlinks and Knowledge Discovery](#phase-24--backlinks-and-knowledge-discovery)
-     - [Phase 25 — Advanced Markdown](#phase-25--advanced-markdown)
+     - [Phase 25 — Smart Organization](#phase-25--smart-organization)
      - [Phase 26 — Whiteboards and Visual Workspace](#phase-26--whiteboards-and-visual-workspace)
      - [Phase 27 — Advanced Search](#phase-27--advanced-search)
      - [Phase 28 — AI Integration](#phase-28--ai-integration)
@@ -155,7 +156,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Command palette, shortcuts, recent notes | **Implemented with documented limits** | `ui/src/CommandPalette.tsx`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `docs/shortcuts.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **100 files / 1,155 executed tests** (Phase 18L integration) | `test/` |
+| Test suite | **114 files / 1,204 executed tests** (Phase 24 integrated baseline; 2026-11-03) | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
@@ -167,6 +168,30 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 - Phase 18L: typecheck, build, browser, database-view, vault-onboarding, discovery/graph smokes, graph benchmark, and `git diff --check` passed. Local browser checks used loopback access.
 - Production build reports the App chunk at 799.91 kB (796.92 kB at the Phase 17 baseline). The advisory remains; no bundling refactor was made.
 - Phase 17G baseline: serial full suite passed, 98 files / 1,137 tests; graph benchmark recorded 78.45 ms for 5,000 notes / 15,000 links.
+
+### Current Forward Sequence (verified 2026-11-03)
+
+The prior proposal list in Section 4 is retained for historical context and is superseded by this current sequence.
+
+| Phase | Name | Status | Dependency notes |
+|---|---|---|---|
+| 22 | Portable Graph Views & Deeper Exploration | COMPLETE WITH LIMITATIONS — integrated | PR #10 and graph canvas PR #11 merged. |
+| 23 | Advanced Search & Filtering | COMPLETE WITH LIMITATIONS — integrated | PR #12 merged. |
+| 24 | Knowledge Retrieval | COMPLETE WITH LIMITATIONS — integrated; 24D deferred | PR #13 merged. |
+| 25 | Smart Organization | IN PROGRESS on `feat/phase-25-smart-organization` | Builds on existing metadata, Phase 23 index, and Phase 24 retrieval. Folder moves remain deferred while legacy Phase 19 is pending integration. |
+| 26 | Workspace Customization | PLANNED | Organization surfaces and navigation patterns. |
+| 27 | Task Management | PLANNED | Portable Markdown task conventions. |
+| 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
+| 29 | Advanced Import & Export | PLANNED | Preserve Markdown, metadata, and graph view portability. |
+| 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
+| 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
+| 32 | Product Experience & UX Simplification | PLANNED | Precedes desktop integration. |
+| 33 | Tauri Desktop Experience | PLANNED | Integrate the existing React/Vite app; do not duplicate its architecture. |
+| 34 | Synchronization | DEFERRED / EXPERIMENTAL | Relay groundwork is unwired; requires a separate architecture review. |
+| 35 | Security & Performance | PLANNED | Keep security and performance distinct from sync. |
+| 36 | Release Readiness | PLANNED | Final quality and compatibility review. |
+
+Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**. It is not the current Phase 28 calendar work and should be resolved before enabling automatic note or folder moves from organization suggestions.
 
 ---
 
@@ -1436,9 +1461,9 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
-## 4. Proposed Future Milestones (Phases 15, 17–34)
+## 4. Legacy Proposed Milestones (superseded sequence)
 
-These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
+The following proposed sequence predates the verified Phase 22–24 merges and the current forward sequence above. It is kept as historical planning context, not as the active roadmap. New work must follow the current forward sequence and the project owner's latest instructions.
 
 ### Future Milestone Summary
 
@@ -1453,7 +1478,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | 22 | Plugin and Extension Architecture | PLANNED | 15, 17, 32 |
 | 23 | Graph View | PLANNED | 6, 9 review, 24, 27 |
 | 24 | Backlinks and Knowledge Discovery | PLANNED | 6, 27 |
-| 25 | Advanced Markdown | PLANNED | 2A, 6, 7A |
+| 25 | Advanced Markdown | SUPERSEDED PROPOSAL | Replaced by the current Phase 25 Smart Organization milestone. |
 | 26 | Whiteboards and Visual Workspace | PLANNED | 23, 25, 27 |
 | 27 | Advanced Search | PARTIAL | 6, 9 review, 15, 24 |
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
@@ -1745,34 +1770,21 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ---
 
-### Phase 25 — Advanced Markdown
+### Phase 25 — Smart Organization
 
-**Objective:** Extend the Markdown authoring experience without breaking the plain-file contract.
+**Objective:** Help users organize large Markdown vaults with explainable local suggestions and explicit human decisions.
 
-**Expected features**
+**Implemented on the Phase 25 feature branch:** deterministic local suggestions for existing-tag recommendations, legacy tag spelling variants, exact/near duplicate review, folder destinations, and missing/invalid registered metadata. Suggestions include stable IDs, affected notes, evidence, and bounded heuristic confidence. The dedicated sidebar dashboard supports category filters, affected-note navigation, mark-reviewed/dismiss state, explicit tag preview/application, and a path-link impact preview for proposed note moves. See [Smart organization](smart-organization.md).
 
-- Footnotes, definition lists, callouts, math, and Mermaid-style diagrams (if approved).
-- Table editing affordances.
-- Slash commands and block references.
-- Better paste handling and Markdown normalization rules.
-- Optional frontmatter editing UI with strict validation.
+**Safety:** Tag changes revalidate the current suggestion and use the existing conditional tag write. Dismissed/reviewed state is versioned browser-local data scoped by vault identity and stores only suggestion IDs/statuses. Duplicate suggestions never merge or delete. Folder moves are not executed: the preview displays incoming path-link occurrences and destination collisions, while Phase 19 move-safe maintenance remains pending integration.
 
-**Dependencies:** Phase 2A (editor), Phase 6 (search), Phase 7A (metadata).
+**Architecture:** Reuses the existing rebuildable Markdown/search/retrieval/link snapshot and registered property catalog. Posting candidate generation is capped at 25,000 pairs and 32 neighbors per note; the response is capped at 500 suggestions. No new dependency, persistent index, AI API, or note storage format is introduced.
 
-**Potential architecture impact**
+**Status:** Implemented and verified on `feat/phase-25-smart-organization`; pending PR review and integration. It is not part of `origin/main` until merged.
 
-- Parser/preview/editor extensions; note format version decision if frontmatter syntax changes.
-- Must preserve unknown Markdown and avoid destructive rewrites.
-- Feature detection for unsupported constructs.
+**Limitations:** Similarity is lexical, not semantic; metadata suggestions do not infer values; folder previews are advisory and not locked against external edits; browser-local review state is not portable. Benchmarks and environment are recorded in the feature guide.
 
-**Acceptance criteria**
-
-- Files remain readable outside Nodus.
-- Source mode remains byte-faithful for unchanged content.
-- New syntax degrades gracefully in preview.
-- Tests cover round-trip, line endings, and unsupported constructs.
-
-**Status:** **PLANNED**
+**Dependencies:** Phase 23 search/metadata index and Phase 24 retrieval are integrated. Legacy Phase 19 move-safe path-link maintenance remains outstanding and blocks automatic moves.
 
 ---
 

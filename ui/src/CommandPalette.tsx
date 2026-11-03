@@ -12,6 +12,7 @@ import {
   Network,
   Plus,
   Save,
+  Sparkles,
   Settings,
   Sun,
 } from 'lucide-react';
@@ -178,6 +179,14 @@ export function CommandPalette({
         category: 'Navigation',
         icon: <Activity />,
         run: () => onView('insights'),
+      },
+      {
+        id: 'view-organization',
+        title: 'Smart organization',
+        keywords: 'tags duplicates folders metadata suggestions organize',
+        category: 'Navigation',
+        icon: <Sparkles />,
+        run: () => onView('organization'),
       },
       {
         id: 'view-databases',

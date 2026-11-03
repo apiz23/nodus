@@ -20,6 +20,7 @@ import type {
   PropertyCatalogMutation,
 } from '../properties/catalog.js';
 import type { TagOperation } from '../domain/tags.js';
+import type { OrganizationAnalysis, OrganizationMovePreview } from '../organization/analysis.js';
 
 export type {
   BackupManifest,
@@ -478,3 +479,6 @@ export interface UiRelatedNotesResponse {
   noteId: string;
   related: UiRelatedNote[];
 }
+
+export type UiOrganizationAnalysis = OrganizationAnalysis;
+export type UiOrganizationMovePreview = OrganizationMovePreview;
