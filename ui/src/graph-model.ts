@@ -154,15 +154,105 @@ export function graphConnections(edges: readonly GraphEdge[], noteId: string) {
   return { incoming, outgoing };
 }
 
-export function positionGraph(nodes: readonly GraphNode[], focusId: string | null, width = 1000, height = 640): PositionedNode[] {
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const radius = Math.max(100, Math.min(width, height) * 0.38);
-  return nodes.map((node, index) => {
-    if (node.id === focusId) return { ...node, x: centerX, y: centerY };
-    const ringIndex = focusId ? index - 1 : index;
-    const count = Math.max(1, nodes.length - (focusId && nodes.some((item) => item.id === focusId) ? 1 : 0));
-    const angle = (2 * Math.PI * ringIndex) / count - Math.PI / 2;
-    return { ...node, x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
-  });
+export interface GraphLayoutOptions {
+  clusterByNode?: ReadonlyMap<string, string> | null;
+  isolatedNodeIds?: ReadonlySet<string> | null;
+  /** Horizontal/vertical cell spacing before fit-to-view. */
+  spacingX?: number;
+  spacingY?: number;
+}
+
+export function positionGraph(
+  nodes: readonly GraphNode[],
+  focusId: string | null,
+  width = 1000,
+  height = 640,
+  options?: GraphLayoutOptions,
+): PositionedNode[] {
+  if (options === undefined) {
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = Math.max(100, Math.min(width, height) * 0.38);
+    return nodes.map((node, index) => {
+      if (node.id === focusId) return { ...node, x: centerX, y: centerY };
+      const ringIndex = focusId ? index - 1 : index;
+      const count = Math.max(1, nodes.length - (focusId && nodes.some((item) => item.id === focusId) ? 1 : 0));
+      const angle = (2 * Math.PI * ringIndex) / count - Math.PI / 2;
+      return { ...node, x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
+    });
+  }
+  const sorted = [...nodes].sort((left, right) => left.title.localeCompare(right.title) || left.path.localeCompare(right.path) || left.id.localeCompare(right.id));
+  const focused = focusId === null ? undefined : sorted.find((node) => node.id === focusId);
+  if (focused !== undefined) return focusLayout(sorted, focused, options);
+  return clusterLayout(sorted, options);
+}
+
+function focusLayout(nodes: readonly GraphNode[], focus: GraphNode, options: GraphLayoutOptions): PositionedNode[] {
+  const spacing = Math.max(150, options.spacingX ?? 150);
+  const others = nodes.filter((node) => node.id !== focus.id);
+  const positioned: PositionedNode[] = [{ ...focus, x: 0, y: 0 }];
+  let cursor = 0;
+  let ring = 1;
+  while (cursor < others.length) {
+    const radius = ring * spacing;
+    const capacity = Math.max(6, Math.floor((2 * Math.PI * radius) / spacing));
+    const count = Math.min(capacity, others.length - cursor);
+    for (let index = 0; index < count; index += 1) {
+      const angle = (2 * Math.PI * index) / count - Math.PI / 2;
+      const node = others[cursor + index]!;
+      positioned.push({ ...node, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+    }
+    cursor += count;
+    ring += 1;
+  }
+  return positioned;
+}
+
+function clusterLayout(nodes: readonly GraphNode[], options: GraphLayoutOptions): PositionedNode[] {
+  const spacingX = Math.max(110, options.spacingX ?? 138);
+  const spacingY = Math.max(80, options.spacingY ?? 94);
+  const groups = new Map<string, GraphNode[]>();
+  for (const node of nodes) {
+    const key = options.isolatedNodeIds?.has(node.id) ? '__isolated__' : options.clusterByNode?.get(node.id) ?? '__unclustered__';
+    const group = groups.get(key) ?? [];
+    group.push(node);
+    groups.set(key, group);
+  }
+  const blocks = [...groups.entries()].map(([id, members]) => {
+    members.sort((left, right) => left.title.localeCompare(right.title) || left.path.localeCompare(right.path) || left.id.localeCompare(right.id));
+    const columns = Math.max(1, Math.ceil(Math.sqrt(members.length * 1.45)));
+    const rows = Math.ceil(members.length / columns);
+    return { id, members, columns, rows, width: Math.max(spacingX, columns * spacingX), height: Math.max(spacingY, rows * spacingY) };
+  }).sort((left, right) => right.members.length - left.members.length || left.id.localeCompare(right.id));
+  const gap = 170;
+  const totalArea = blocks.reduce((sum, block) => sum + (block.width + gap) * (block.height + gap), 0);
+  const maxRowWidth = Math.max(900, Math.sqrt(totalArea * 1.5));
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowHeight = 0;
+  const positioned: PositionedNode[] = [];
+  for (const block of blocks) {
+    if (cursorX > 0 && cursorX + block.width > maxRowWidth) {
+      cursorX = 0;
+      cursorY += rowHeight + gap;
+      rowHeight = 0;
+    }
+    const startX = cursorX + (block.columns - 1) * spacingX / 2;
+    const startY = cursorY + (block.rows - 1) * spacingY / 2;
+    block.members.forEach((node, index) => {
+      const column = index % block.columns;
+      const row = Math.floor(index / block.columns);
+      positioned.push({ ...node, x: column * spacingX - startX + block.width / 2 - spacingX / 2, y: row * spacingY - startY + block.height / 2 - spacingY / 2 });
+    });
+    cursorX += block.width + gap;
+    rowHeight = Math.max(rowHeight, block.height);
+  }
+  if (positioned.length === 0) return [];
+  const minX = Math.min(...positioned.map((node) => node.x));
+  const maxX = Math.max(...positioned.map((node) => node.x));
+  const minY = Math.min(...positioned.map((node) => node.y));
+  const maxY = Math.max(...positioned.map((node) => node.y));
+  const offsetX = (minX + maxX) / 2;
+  const offsetY = (minY + maxY) / 2;
+  return positioned.map((node) => ({ ...node, x: node.x - offsetX, y: node.y - offsetY }));
 }
