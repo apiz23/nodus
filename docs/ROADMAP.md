@@ -1406,7 +1406,7 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 - `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`
 - tests, advanced graph smoke, graph benchmark, docs, and this roadmap
 
-**Known limitations:** Saved view files are UI preferences, not vault backup/portable knowledge. History and local views are browser-local. Connected components cannot have cross-component entry/exit edges; entry/exit means internal directed roots/leaves. Rendering remains bounded and no force layout is used. Phase 21 PR #9 and Phase 19 were not merged into `origin/main` when this work began; this branch is based on the latest Phase 21 branch.
+**Known limitations:** Saved view files are UI preferences, not vault backup/portable knowledge. History and local views are browser-local. Connected components cannot have cross-component entry/exit edges; entry/exit means internal directed roots/leaves. Rendering remains bounded and no force layout is used. Phase 21 merged during this work as squash commit `a1e71d5`; the Phase 22 branch was rebased onto that `origin/main`. Phase 19 remains unmerged.
 
 ---
 
@@ -2701,7 +2701,7 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Status:** COMPLETE WITH LIMITATIONS
 - **Summary:** Added portable graph-view export/import with preview and conflict strategies, path history, cluster-scoped insights, saved-view render limits, deterministic bounded rendering priority, tests, browser smokes, and benchmarks.
 - **Files changed:** `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`, `ui/src/graph-path-history.ts`, `ui/src/GraphPathExplorer.tsx`, `src/links/graph-cluster-insights.ts`, `ui/src/GraphClusterInsights.tsx`, `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`, tests, scripts, benchmark, docs, README, and roadmap.
-- **Integration note:** `origin/main` at start was `fa4bb28` (Phase 20). Phase 21 PR #9 was open/unmerged and Phase 19 remained unmerged, so this branch was created from `origin/feat/phase-21-advanced-graph-exploration`.
+- **Integration note:** Phase 21 PR #9 merged during implementation as squash commit `a1e71d5`; the Phase 22 branch was rebased onto that `origin/main`. Phase 19 remains unmerged.
 - **Known limitations:** Portable view files contain UI preferences only. History and local views are browser-local. Graph rendering remains bounded; no force simulation.
 
 ---
