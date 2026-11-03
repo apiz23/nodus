@@ -6,6 +6,8 @@ export interface GraphFilterOptions {
   folder?: string | null;
   showIsolated?: boolean;
   showUnresolved?: boolean;
+  /** When set, only notes in this cluster are visible. Unresolved sources outside it are hidden. */
+  clusterNodeIds?: ReadonlySet<string> | null;
 }
 
 export interface DisplayGraphNode extends GraphNode {
@@ -70,7 +72,9 @@ export function visibleGraph(
   const showUnresolved = options.showUnresolved !== false;
   const isolated = new Set(graph.isolatedNodeIds ?? []);
 
+  const clusterNodeIds = options.clusterNodeIds ?? null;
   const matchingNotes = graph.nodes.filter((node) => {
+    if (clusterNodeIds !== null && !clusterNodeIds.has(node.id)) return false;
     if (!matchesFolder(node.path, folder)) return false;
     if (!normalizedQuery) return true;
     return normalized(`${node.title}\n${node.path}`).includes(normalizedQuery);

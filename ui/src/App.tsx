@@ -1836,6 +1836,7 @@ export default function App() {
             key={status?.vault.path ?? 'vault-loading'}
             revision={backlinksRevision}
             initialNoteId={selectedNoteId}
+            vaultKey={status?.vault.path ?? 'no-vault'}
             onOpenNote={(id) => void openNoteById(id)}
           />
         ) : null}
