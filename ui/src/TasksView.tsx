@@ -166,7 +166,7 @@ function TaskRow({ task, today, busy, onToggle, onOpen }: { task: UiTask; today:
   return <li className="flex items-start gap-3 bg-background p-3 sm:px-4">
     <Checkbox className="mt-0.5" checked={task.checked} disabled={busy} aria-label={task.checked ? `Mark “${task.text || 'Untitled task'}” incomplete` : `Mark “${task.text || 'Untitled task'}” complete`} onCheckedChange={onToggle} />
     <div className="min-w-0 flex-1">
-      <Button variant="ghost" className="h-auto min-h-0 w-full justify-start p-0 text-left text-sm font-normal" onClick={onOpen}>{task.text || <span className="italic text-muted-foreground">Untitled task</span>}</Button>
+      <Button variant="ghost" className="h-auto min-h-0 w-full justify-start whitespace-normal break-words p-0 text-left text-sm font-normal" onClick={onOpen}>{task.text || <span className="italic text-muted-foreground">Untitled task</span>}</Button>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
         <span>{task.heading ? `${task.heading} · ` : ''}line {task.line}</span>
         <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" onClick={onOpen}>{task.noteTitle}</Button>
