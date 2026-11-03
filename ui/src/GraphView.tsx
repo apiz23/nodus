@@ -8,16 +8,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { GraphEdge } from '../../src/links/graph.js';
 import type { UiGraphCluster, UiNoteGraph } from '../../src/ui-server/dto.js';
 import type { GraphTraversalMode } from '../../src/links/graph-paths.js';
-import type { SavedGraphViewConfig } from './graph-saved-views';
+import { DEFAULT_GRAPH_RENDER_LIMIT, type SavedGraphViewConfig } from './graph-saved-views';
 import { GraphSavedViews } from './GraphSavedViews';
 import { GraphPathExplorer } from './GraphPathExplorer';
+import { GraphClusterInsights } from './GraphClusterInsights';
 import { api } from './api';
 import { graphConnections, graphFolders, positionGraph, visibleGraph } from './graph-model';
 import { cn } from '@/lib/utils';
 
 interface Props { revision: number; initialNoteId: string | null; vaultKey: string; onOpenNote: (id: string) => void }
 interface Viewport { x: number; y: number; scale: number }
-const GRAPH_NODE_LIMIT = 200;
 const ALL_FOLDERS = '__all__';
 const ALL_CLUSTERS = '__all__';
 const ISOLATED_CLUSTER = '__isolated__';
@@ -38,6 +38,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
   const [focusId, setFocusId] = useState<string | null>(null);
   const [focusHistory, setFocusHistory] = useState<string[]>([]);
   const [pathMode, setPathMode] = useState<GraphTraversalMode>('directed');
+  const [renderLimit, setRenderLimit] = useState(DEFAULT_GRAPH_RENDER_LIMIT);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const request = useRef(0);
   const mounted = useRef(true);
@@ -88,8 +89,8 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     return new Set(selectedCluster?.members.map((member) => member.id) ?? []);
   }, [clusterId, selectedCluster, graph]);
   const visible = useMemo(
-    () => graph ? visibleGraph(graph, query, focusId, GRAPH_NODE_LIMIT, { folder, showIsolated, showUnresolved, clusterNodeIds }) : null,
-    [graph, query, focusId, folder, showIsolated, showUnresolved, clusterNodeIds],
+    () => graph ? visibleGraph(graph, query, focusId, renderLimit, { folder, showIsolated, showUnresolved, clusterNodeIds, priorityIds: selectedCluster?.members.map((member) => member.id) }) : null,
+    [graph, query, focusId, folder, showIsolated, showUnresolved, clusterNodeIds, renderLimit, selectedCluster],
   );
   const positions = useMemo(() => visible ? positionGraph(visible.nodes, focusId) : [], [visible, focusId]);
   const positionsById = useMemo(() => new Map(positions.map((node) => [node.id, node])), [positions]);
@@ -136,10 +137,11 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     setFocusHistory([]);
     setSelectedId(null);
     setPathMode('directed');
+    setRenderLimit(DEFAULT_GRAPH_RENDER_LIMIT);
     resetViewport();
   }
   function captureConfig(): SavedGraphViewConfig {
-    return { query, folder, clusterId, focusId, selectedId, showIsolated, showUnresolved, pathMode, viewport };
+    return { query, folder, clusterId, focusId, selectedId, showIsolated, showUnresolved, pathMode, viewport, renderLimit };
   }
   function applySavedConfig(config: SavedGraphViewConfig) {
     setQuery(config.query);
@@ -148,6 +150,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     setShowIsolated(config.showIsolated);
     setShowUnresolved(config.showUnresolved);
     setPathMode(config.pathMode);
+    setRenderLimit(config.renderLimit);
     setViewport(config.viewport);
     setFocusHistory([]);
     const existing = new Set(graph?.nodes.map((node) => node.id) ?? []);
@@ -204,6 +207,16 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
         </label>
         <Button variant="outline" size="sm" onClick={() => zoom(1.2)} aria-label="Zoom in"><Plus /></Button>
         <Button variant="outline" size="sm" onClick={() => zoom(1 / 1.2)} aria-label="Zoom out"><Minus /></Button>
+        <Select value={String(renderLimit)} onValueChange={(value) => setRenderLimit(Number(value))}>
+          <SelectTrigger className="w-32" aria-label="Graph render limit">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="100">100 nodes</SelectItem>
+            <SelectItem value="200">200 nodes</SelectItem>
+            <SelectItem value="400">400 nodes</SelectItem>
+          </SelectContent>
+        </Select>
         <Button variant="outline" size="sm" onClick={resetViewport}><RotateCcw data-icon="inline-start" />Reset viewport</Button>
         <Button variant="ghost" size="sm" onClick={resetFilters}>Reset filters</Button>
         {focusHistory.length > 0 ? <Button variant="ghost" size="sm" onClick={backFocus}><ArrowLeft data-icon="inline-start" />Previous focus</Button> : null}
@@ -222,12 +235,13 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
           {visible.unresolvedCount > 0 ? <Badge variant="secondary">{visible.unresolvedCount} unresolved targets shown</Badge> : null}
           {graph.unresolvedCount ? <Badge variant="secondary">{graph.unresolvedCount} unresolved excluded</Badge> : null}
           {graph.ambiguousCount ? <Badge variant="secondary">{graph.ambiguousCount} ambiguous occurrences excluded</Badge> : null}
-          {visible.truncated ? <span>Showing the first {GRAPH_NODE_LIMIT}; filter or focus a note to explore more.</span> : null}
+          {visible.truncated ? <span>Showing the first {renderLimit}; filter, focus, or reduce the render limit to explore more.</span> : null}
           {clusterError ? <span role="alert" className="text-destructive">Cluster filter unavailable: {clusterError}</span> : null}
         </div>
         <div className="flex flex-wrap items-center gap-2 border-t pt-2">
-          <GraphSavedViews vaultKey={vaultKey} captureConfig={captureConfig} onApply={applySavedConfig} />
+          <GraphSavedViews vaultKey={vaultKey} references={{ noteIds: new Set(graph?.nodes.map((node) => node.id) ?? []), folderPaths: new Set(folders), clusterIds: new Set(clusters.filter((cluster) => cluster.size > 1).map((cluster) => cluster.id)) }} captureConfig={captureConfig} onApply={applySavedConfig} />
         </div>
+        {clusterId === null ? null : <GraphClusterInsights clusterId={clusterId} isolatedCount={graph?.isolatedNodeIds?.length ?? 0} onSelectNode={selectNode} onOpenNote={onOpenNote} />}
         <div className="grid min-h-[26rem] flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="min-h-[24rem] overflow-hidden rounded-md border bg-card">
             <svg viewBox="0 0 1000 640" role="group" aria-label="Directed wiki-link graph" className="size-full min-h-[24rem] touch-none select-none"
@@ -300,7 +314,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
               </div>
               <ConnectionList title={selectedIsUnresolved ? 'Referenced by' : 'Incoming links'} edges={connections.incoming} endpoint="sourceId" nodeById={nodeById} onSelect={selectNode} />
               {selectedIsUnresolved ? null : <ConnectionList title="Outgoing links" edges={connections.outgoing} endpoint="targetId" nodeById={nodeById} onSelect={selectNode} />}
-              {selectedIsUnresolved || graph === null ? null : <GraphPathExplorer source={selected} nodes={graph.nodes} mode={pathMode} onModeChange={setPathMode} onSelectNode={selectNode} />}
+              {selectedIsUnresolved || graph === null ? null : <GraphPathExplorer vaultKey={vaultKey} source={selected} nodes={graph.nodes} mode={pathMode} onModeChange={setPathMode} onSelectNode={selectNode} />}
             </> : <p className="text-sm text-muted-foreground">Select a note node to inspect its incoming and outgoing links. Unresolved targets are shown as dashed nodes.</p>}
           </aside>
         </div>

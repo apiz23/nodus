@@ -70,6 +70,8 @@ describe('local note graph projection', () => {
     const bounded = visibleGraph(graph, '', null, 200);
     expect(bounded.nodes).toHaveLength(200);
     expect(bounded.truncated).toBe(true);
+    const priority = visibleGraph(graph, '', null, 3, { priorityIds: ['42', '7'] });
+    expect(priority.nodes.map((node) => node.id)).toEqual(['42', '7', '0']);
     const positions = positionGraph(focused.nodes, '0');
     expect(positions.find((node) => node.id === '0')).toMatchObject({ x: 500, y: 320 });
   });

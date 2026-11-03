@@ -8,6 +8,8 @@ export interface GraphFilterOptions {
   showUnresolved?: boolean;
   /** When set, only notes in this cluster are visible. Unresolved sources outside it are hidden. */
   clusterNodeIds?: ReadonlySet<string> | null;
+  /** Stable priority order used before alphabetical truncation. */
+  priorityIds?: readonly string[] | null;
 }
 
 export interface DisplayGraphNode extends GraphNode {
@@ -73,6 +75,7 @@ export function visibleGraph(
   const isolated = new Set(graph.isolatedNodeIds ?? []);
 
   const clusterNodeIds = options.clusterNodeIds ?? null;
+  const priority = new Map((options.priorityIds ?? []).map((id, index) => [id, index]));
   const matchingNotes = graph.nodes.filter((node) => {
     if (clusterNodeIds !== null && !clusterNodeIds.has(node.id)) return false;
     if (!matchesFolder(node.path, folder)) return false;
@@ -129,14 +132,10 @@ export function visibleGraph(
   }
 
   const unique = [...new Map(candidates.map((node) => [node.id, node])).values()];
-  if (focusId) {
-    unique.sort((left, right) => left.id === focusId ? -1 : right.id === focusId ? 1
-      : Number(left.unresolved === true) - Number(right.unresolved === true)
-        || left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
-  } else {
-    unique.sort((left, right) => Number(left.unresolved === true) - Number(right.unresolved === true)
+  unique.sort((left, right) => left.id === focusId ? -1 : right.id === focusId ? 1
+    : (priority.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+      || Number(left.unresolved === true) - Number(right.unresolved === true)
       || left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
-  }
   const limited = unique.slice(0, limit);
   const ids = new Set(limited.map((node) => node.id));
   return {
