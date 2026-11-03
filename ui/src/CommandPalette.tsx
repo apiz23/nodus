@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  Activity,
   Compass,
   CopyPlus,
   Database,
@@ -169,6 +170,14 @@ export function CommandPalette({
         category: 'Navigation',
         icon: <Network />,
         run: () => onView('graph'),
+      },
+      {
+        id: 'view-insights',
+        title: 'Knowledge health',
+        keywords: 'insights analytics clusters metrics graph health',
+        category: 'Navigation',
+        icon: <Activity />,
+        run: () => onView('insights'),
       },
       {
         id: 'view-databases',

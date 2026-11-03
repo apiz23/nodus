@@ -27,6 +27,7 @@ import { ConflictResolutionDialog, type NoteConflict } from './editor/ConflictRe
 import { ExternalChangeDialog, ExternalChangeNotice } from './editor/ExternalChangeDialog';
 import { DiscoveryView } from './DiscoveryView';
 import { GraphView } from './GraphView';
+import { InsightsView } from './InsightsView';
 import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
@@ -1836,6 +1837,21 @@ export default function App() {
             revision={backlinksRevision}
             initialNoteId={selectedNoteId}
             onOpenNote={(id) => void openNoteById(id)}
+          />
+        ) : null}
+
+        {view === 'insights' ? (
+          <InsightsView
+            key={status?.vault.path ?? 'vault-loading'}
+            revision={backlinksRevision}
+            onOpenNote={(id) => void openNoteById(id)}
+            onOpenDiscovery={() => setView('discovery')}
+            onOpenGraph={(id) => {
+              if (id !== undefined) setSelectedNoteId(id);
+              setView('graph');
+            }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
         ) : null}
 
