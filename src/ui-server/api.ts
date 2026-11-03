@@ -42,6 +42,7 @@ import { chooseLinkTarget, rewriteWikiLink, sanitizeLinkDisplay } from '../links
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
 import { buildSearchIndex, normalizeSearch, searchIndex } from '../search/search-index.js';
 import { validateFilterLogic, validateNoteFilters, type NoteFilter } from '../search/note-filters.js';
+import { parseSearchQuery, SearchSyntaxError } from '../search/query.js';
 type BacklinkIndex = { markDirty(): void };
 import type {
   UiApiErrorBody,
@@ -764,6 +765,12 @@ export function createLocalApiMiddleware(
 
     if (method === 'GET' && path === '/api/search') {
       const query = url.searchParams.get('q') ?? '';
+      let parsedQuery;
+      try { parsedQuery = parseSearchQuery(query); }
+      catch (error) {
+        if (error instanceof SearchSyntaxError) throw new ApiError(400, 'INVALID_QUERY', error.message);
+        throw error;
+      }
       const requestedFilters = url.searchParams.get('filters');
       if (!normalizeSearch(query) && (requestedFilters === null || requestedFilters === '[]')) {
         return sendJson(res, 200, { results: [], metadataIssueCount: 0 });
@@ -778,7 +785,7 @@ export function createLocalApiMiddleware(
         try { filters = validateNoteFilters(parsed, { properties: snapshot.search.properties }); logic = validateFilterLogic(url.searchParams.get('logic') ?? undefined); }
         catch (error) { throw new ApiError(400, 'INVALID_FILTER', error instanceof Error ? error.message : 'Invalid filter.'); }
       }
-      const results = searchIndex(snapshot.search, query, 50, filters, logic);
+      const results = searchIndex(snapshot.search, query, 50, filters, logic, parsedQuery);
       return sendJson(res, 200, {
         results,
         metadataIssueCount: snapshot.search.metadataIssues.length,

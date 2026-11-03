@@ -31,6 +31,8 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { NoteFiltersPopover } from './NoteFiltersPopover';
+import { SearchLibraryPopover } from './SearchLibraryPopover';
+import { parseSearchQuery } from '../../src/search/query.js';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.js';
 import { PageTree } from './PageTree';
 import { detectPlatform, shortcutById, shortcutLabel } from './shortcuts';
@@ -142,6 +144,8 @@ export function Sidebar({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  let queryConstraints: ReturnType<typeof parseSearchQuery>['constraints'] = [];
+  try { queryConstraints = parseSearchQuery(query).constraints; } catch { /* The API reports the syntax error beside results. */ }
 
   useEffect(() => {
     if (!open) return undefined;
@@ -286,7 +290,7 @@ export function Sidebar({
               type="search"
               aria-label="Search notes"
               value={query}
-              placeholder="Search pages"
+              placeholder="Search pages · tag: folder: before:"
               autoComplete="off"
               className="h-7 rounded-md border-transparent bg-transparent pr-11 pl-7 text-[12.5px] hover:bg-sidebar-accent focus-visible:bg-sidebar-accent md:text-[13px] dark:bg-transparent"
               onChange={(event) => {
@@ -324,8 +328,16 @@ export function Sidebar({
             ) : null}
           </div>
           <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange} />
+          <SearchLibraryPopover vaultKey={status?.vault.path ?? ''} query={query} filters={filters} logic={filterLogic} searching={searching} error={searchError}
+            onRestore={(nextQuery, nextFilters, nextLogic) => { onQueryChange(nextQuery); onFiltersChange(nextFilters, nextLogic); onView('notes'); }} />
           </div>
         )}
+        {!compact && queryConstraints.length ? <div className="flex flex-wrap gap-1 px-1" aria-label="Active search operators">
+          {queryConstraints.map((constraint) => <Button key={`${constraint.start}-${constraint.operator}`} type="button" variant="secondary" size="xs" className="h-5 gap-1 px-1.5 text-[10px]"
+            aria-label={`Remove ${constraint.operator} filter ${constraint.value}`} onClick={() => onQueryChange(`${query.slice(0, constraint.start)} ${query.slice(constraint.end)}`.replace(/\s+/g, ' ').trim())}>
+            {constraint.operator}: {constraint.value}<X className="size-3" />
+          </Button>)}
+        </div> : null}
 
         <Button
           type="button"

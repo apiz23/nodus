@@ -89,6 +89,31 @@ try {
   await page.getByRole('button', { name: 'Clear all' }).click();
   assert.equal(await rows.count(), 0);
 
+  await search.fill('type:note tag:"Field work" title:Metadata');
+  await waitRows(1);
+  assert.equal(await rows.first().getAttribute('aria-label'), 'Open Metadata-only note');
+  await search.fill('what:ever');
+  await page.getByRole('alert').filter({ hasText: 'Unknown search operator' }).waitFor();
+  assert.equal(await rows.count(), 0);
+  await search.fill('title:"Alias destination"');
+  await waitRows(1);
+  await page.getByRole('button', { name: 'Saved searches and search history' }).click();
+  await page.getByRole('textbox', { name: 'Saved search name' }).fill('Plan notes');
+  await page.getByRole('textbox', { name: 'Saved search name' }).press('Enter');
+  await page.getByText('Plan notes', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Rename Plan notes' }).click();
+  await page.getByRole('textbox', { name: 'Rename Plan notes' }).fill('Planning notes');
+  await page.getByRole('button', { name: 'Save name' }).click();
+  await page.getByRole('button', { name: 'Run Planning notes' }).click();
+  await waitRows(1);
+  await page.getByRole('button', { name: 'Saved searches and search history' }).click();
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await page.getByRole('button', { name: 'Clear history' }).click();
+  await page.getByText('Completed searches appear here.').waitFor();
+  await page.getByRole('button', { name: 'Delete Planning notes' }).click();
+  await page.getByText('Saved searches are stored in this browser for this vault.').waitFor();
+  await page.getByRole('button', { name: 'Saved searches and search history' }).click();
+
   // Errors are actionable and retry performs a fresh request for the same query.
   let failNext = true;
   const refreshedQueries = [];
@@ -180,12 +205,12 @@ try {
   await page.getByText('No matches', { exact: true }).waitFor();
   await page.keyboard.press(`${modifier}+k`);
   await paletteInput.fill('planning');
-  await palette.getByText('No results.', { exact: true }).waitFor();
+  await palette.getByRole('status').filter({ hasText: 'No commands or notes match' }).waitFor();
   assert.equal(await page.getByText('STALE RESULT', { exact: true }).count(), 0);
   await paletteInput.fill('');
   await palette.getByRole('option', { name: 'Knowledge discovery' }).waitFor();
   assert.deepEqual(errors, []);
-console.log('Search browser smoke passed: ranking, alias/content context, metadata tag filtering, Enter/arrows/Home/End navigation, no results, empty queries, error retry, delayed responses, palette selection, and vault isolation.');
+console.log('Search browser smoke passed: ranking, alias/content context, metadata filtering, query operators/errors, saved search CRUD/history, keyboard navigation, no results, retries, stale responses, palette selection, and vault isolation.');
 } finally {
   await browser?.close();
   await server?.close();

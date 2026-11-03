@@ -16,7 +16,7 @@ import { FileSystemVault } from '../src/storage/fs/vault.js';
 
 const NOW = '2026-10-25T12:00:00Z';
 const RESULT_LIMIT = 50;
-const DEFAULT_SIZES = [100, 1_000, 10_000];
+const DEFAULT_SIZES = [1_000, 5_000, 10_000];
 const sizes = readPositiveIntegers(process.env.NODUS_SEARCH_BENCH_SIZES, DEFAULT_SIZES);
 const iterations = readPositiveInteger(process.env.NODUS_SEARCH_BENCH_ITERATIONS, 5);
 const warmups = readNonNegativeInteger(process.env.NODUS_SEARCH_BENCH_WARMUPS, 1);
@@ -50,6 +50,8 @@ const SCENARIOS: Scenario[] = [
   { name: 'no result', query: 'never_present_token', matches: () => false },
   { name: 'multiple terms', query: 'fieldwork reflection', matches: (index) => index % 13 === 0 },
   { name: 'many matches', query: 'frequent marker', matches: (index) => index % 3 !== 0 },
+  { name: 'tag operator', query: 'tag:research', matches: (index) => index % 4 === 0 },
+  { name: 'folder operator', query: 'folder:group-00', matches: (index) => index % 20 === 0 },
 ];
 
 const root = await mkdtemp(join(tmpdir(), 'nodus-search-benchmark-'));
