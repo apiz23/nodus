@@ -3,6 +3,7 @@ import { expect, it } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { buildLinkIndex } from '../src/links/link-index.js';
 import { graphFromLinkIndex } from '../src/links/graph.js';
+import { createLinkSuggester } from '../src/links/link-repair.js';
 
 const makeId = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -63,4 +64,37 @@ it('measures relationship indexing and graph projection at realistic vault sizes
   }
   expect(results).toHaveLength(2);
   console.log(JSON.stringify({ node: process.version, method: '5-run median after one warm-up; parse/index plus graph projection only, no filesystem or UI', results }, null, 2));
+}, 120_000);
+
+it('measures repair-suggestion ranking for unique and repeated broken targets', () => {
+  const results: Array<{ notes: number; uniqueTargets: number; uniqueMedianMs: number; perTargetMs: number; repeatedMedianMs: number }> = [];
+  for (const size of [1000, 5000]) {
+    const notes = dataset(size);
+    const suggester = createLinkSuggester(notes);
+    const uniqueTargets = Array.from({ length: size >= 5000 ? 500 : 250 }, (_, index) => `Graph ntoe ${index + 1} typo`);
+    suggester.suggest(uniqueTargets[0] ?? 'warmup');
+    const uniqueDurations: number[] = [];
+    const repeatedDurations: number[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      const uniqueStart = performance.now();
+      for (const target of uniqueTargets) suggester.suggest(target, { limit: 3 });
+      uniqueDurations.push(performance.now() - uniqueStart);
+
+      const repeatedStart = performance.now();
+      for (let index = 0; index < uniqueTargets.length; index += 1) {
+        suggester.suggest('Missing 3', { limit: 3 });
+      }
+      repeatedDurations.push(performance.now() - repeatedStart);
+    }
+    const uniqueMedian = median(uniqueDurations);
+    results.push({
+      notes: size,
+      uniqueTargets: uniqueTargets.length,
+      uniqueMedianMs: Number(uniqueMedian.toFixed(2)),
+      perTargetMs: Number((uniqueMedian / uniqueTargets.length).toFixed(3)),
+      repeatedMedianMs: Number(median(repeatedDurations).toFixed(2)),
+    });
+  }
+  expect(results).toHaveLength(2);
+  console.log(JSON.stringify({ node: process.version, method: '5-run median after one warm-up; suggestion ranking only, no filesystem or API serialization', results }, null, 2));
 }, 120_000);

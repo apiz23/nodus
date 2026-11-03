@@ -40,11 +40,11 @@ Title and alias take precedence over path. One match resolves; multiple title/al
 | Link | Behavior |
 |---|---|
 | `[[Stable ID]]` | Survives rename and move. |
-| `[[Title]]` / `[[Alias]]` | Breaks if the target is renamed; ambiguity is reported. |
+| `[[Title]]` / `[[Alias]]` | Follows a title change through an automatically retained previous-title alias; ambiguity is reported. |
 | `[[folder/note]]` | Resolves by path; breaks if the note moves. |
 | `[[folder/note.md]]` | Same path resolution with an explicit extension. |
 | `[[https://…]]` | Ignored; not a note relationship. |
-| `[[Missing]]` | Unresolved; preserved in Markdown. |
+| `[[Missing]]` | Unresolved; preserved in Markdown and repairable from Discovery. |
 
 ## Graph projection
 
@@ -114,6 +114,29 @@ Ambiguous outgoing entries include `candidateIds`; unresolved entries have no ta
 ### `GET /api/discovery`
 
 Adds `isolated` alongside the existing `unresolved`, `ambiguous`, and `orphans` collections.
+Unresolved and ambiguous entries include bounded `suggestions` computed from the same derived
+snapshot. Suggestions are deterministic and local, with a title, path, score, and reason.
+
+### `POST /api/notes/:id/links/repair`
+
+Rewrites exactly one unresolved or ambiguous wiki-link occurrence. The request supplies the
+source note's `baseHash`, the occurrence offsets and literal target, the chosen
+`replacementNoteId`, and optional `display` and `pin` values. The server re-verifies the
+occurrence, preserves explicit display text, adds a readable display when pinning a bare link,
+and writes only the source note. `pin` defaults to `true`; a title target is used only when it
+resolves uniquely to the chosen note.
+
+## Link repair
+
+Discovery offers up to three deterministic repair suggestions for each unresolved link, ranked
+from normalized titles, aliases, paths, shared words, and a bounded edit-distance comparison.
+Ambiguous links list their resolver candidates. Selecting a suggestion pins the link to the
+chosen note's stable ID, so future renames and moves keep working.
+
+When a note title changes and confirmed incoming title links exist, the previous title is
+retained as an alias on the renamed note. This is a single note metadata change, not a
+vault-wide rewrite. Path links are still not rewritten on move; use ID-pinned links for
+references that must remain stable.
 
 ## Performance and caching
 
@@ -122,7 +145,8 @@ Adds `isolated` alongside the existing `unresolved`, `ambiguous`, and `orphans` 
 - Graph projection is computed once when the shared knowledge index is built and reused by `/api/graph`.
 - UI filtering, focus, and selection never request a new snapshot; only the initial load and explicit refresh do.
 - The graph view bounds displayed nodes to 200 per render after filtering. Truncation is visible; focus is applied before the limit.
-- Local benchmark (`pnpm bench:graph`, Node 24.18.1, five-run median after warm-up) measured 1,000 notes / 3,000 occurrences at 16.27 ms total (12.52 ms index, 3.72 ms graph) and 5,000 notes / 15,000 occurrences at 78.45 ms (55.88 ms index, 21.11 ms graph). These are local development observations, not service-level guarantees.
+- Local benchmark (`pnpm bench:graph`, Node 24.18.1, five-run median after warm-up) measured 1,000 notes / 3,000 occurrences at 16.16 ms total (12.37 ms index, 3.76 ms graph) and 5,000 notes / 15,000 occurrences at 81.33 ms (57.68 ms index, 21.90 ms graph). These are local development observations, not service-level guarantees.
+- Repair suggestion ranking adds 80.81 ms for 250 unique targets at 1,000 notes (0.323 ms per target) and 975.98 ms for 500 unique targets at 5,000 notes (1.952 ms per target) in the same local benchmark. Fuzzy edit-distance work is bounded per target; prefix, containment, and token checks remain linear in the note count. The API caches ranked suggestions per missing target within one discovery request.
 - Virtual unresolved targets are added only for sources still visible after filtering.
 
 No persistent relationship index exists. Restarting Nodus rebuilds everything from Markdown. External edits appear after the snapshot TTL, explicit refresh, or a mutation. A note with a malformed Markdown file follows the existing storage error behavior.
@@ -132,7 +156,13 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 - The graph uses a deterministic radial layout; there is no force simulation or persisted node position.
 - The 200-node display bound requires filtering or focusing for larger vaults.
 - Unresolved targets are literal text, not notes; they cannot be opened or edited from the graph.
-- Path links intentionally break when the target moves; use ID-pinned links for stable references.
+- Path links intentionally break when the target moves; use ID-pinned links or repair the link from Discovery.
+- Title changes retain the previous title as an alias only when confirmed incoming title links
+  exist. Removing that alias later breaks those links again.
+- Repair suggestions are lexical and deterministic. They do not use content similarity, semantic
+  embeddings, or AI, and they never write without an explicit action.
+- Link repair rewrites one occurrence in one source note. There is no vault-wide repair-all
+  operation and no automatic link rewriting on move.
 - No link extraction from frontmatter, heading/block targets, or automatic link rewriting.
 - Graph and backlink data are derived in memory; there is no cross-process invalidation beyond the existing snapshot TTL/refresh behavior.
-- Ambiguous targets are counted and omitted from confirmed edges; the source Markdown must be edited to choose a candidate.
+- Ambiguous targets are counted and omitted from confirmed edges; the source Markdown must be edited or repaired to choose a candidate.

@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-02
-**Latest verified implementation commit:** `df89954` — Phase 17 graph implementation; integrated verification is recorded below.
+**Latest verified implementation commit:** `3952db3` — Phase 18L implementation; prior integrated baseline was `a481276`.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -71,6 +71,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 14 — Template Reliability and Vault Health Integration](#phase-14--template-reliability-and-vault-health-integration)
    - [Phase 16 — Markdown Editor Enhancements](#phase-16--markdown-editor-enhancements)
    - [Phase 17G — Knowledge Graph and Relationship Exploration](#phase-17g--knowledge-graph-and-relationship-exploration)
+   - [Phase 18L — Link Integrity and Repair](#phase-18l--link-integrity-and-repair)
 4. [Proposed Future Milestones (Phases 15 and 17–34)](#4-proposed-future-milestones-phases-15-and-17-34)
    - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
@@ -143,7 +144,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Cross-process vault lock | **Implemented for cooperating Nodus processes only** | `src/storage/fs/root-lock.ts`, `test/storage-root-lock.test.ts` |
 | Markdown editor | **Implemented with Phase 16 outline and table editing** | `ui/src/editor/CodeMirrorEditor.tsx`, `ui/src/Editor.tsx`, `ui/src/editor/documentOutline.ts` |
 | Search | **Implemented as in-memory derived index with TTL** | `src/search/`, `src/indexing/snapshot-cache.ts`, `docs/global-search.md` |
-| Wiki links, backlinks, graph | **Implemented** | `src/links/`, `ui/src/BacklinksPanel.tsx`, `ui/src/GraphView.tsx` |
+| Wiki links, backlinks, graph | **Implemented, with explicit repair and rename-safe title links** | `src/links/`, `ui/src/BacklinksPanel.tsx`, `ui/src/DiscoveryView.tsx`, `ui/src/GraphView.tsx` |
 | Database schemas | **Implemented, versions 1–3** | `src/database/schema.ts` |
 | Database rows | **Implemented as derived projections from `nodus_data`** | `src/database/note-properties.ts` |
 | Saved views | **Implemented, versions 1–3; table/list/kanban/calendar/gallery** | `src/database/database-view.ts`, `ui/src/DatabaseLayouts.tsx` |
@@ -154,19 +155,18 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Command palette, shortcuts, recent notes | **Implemented with documented limits** | `ui/src/CommandPalette.tsx`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `docs/shortcuts.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **98 files / 1,137 executed tests** (Phase 15–17 integration branch) | `test/` |
+| Test suite | **100 files / 1,155 executed tests** (Phase 18L integration) | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
-**Current working tree caveat:** verify `git status` before starting work. Uncommitted typography/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content have existed outside earlier Phase 13 commits and must be preserved.
-
-**Current working tree caveat:** verify `git status` before starting work. Uncommitted typography/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content have existed outside earlier phase commits and must be preserved.
+**Current working tree caveat:** verify `git status` before starting work. Uncommitted typography/editor changes and untracked `.agents/`, `.impeccable/`, `.pnpm-store/`, and `skills-lock.json` content have existed outside earlier phase commits and must be preserved. Phase 18L was delivered from a clean worktree created from `origin/main`; the original `main` worktree with those changes was left untouched.
 
 **Verified verification state for this document:** Phase-specific verification is recorded in each milestone and the integration session log below.
 
-- Combined Phase 15–17 branch: serial full suite passed, 98 files / 1,137 tests; focused relationship/link/graph suite passed, 10 files / 87 tests.
-- Combined branch: typecheck, build, browser, database-view, vault-onboarding, graph/discovery smokes, graph benchmark, and `git diff --check` passed. Local browser checks used loopback access.
-- Production build reports the App chunk at 796.92 kB (790.77 kB after Phase 15/16 integration; Phase 16 standalone baseline 778.45 kB). The advisory remains; no bundling refactor was made.
+- Phase 18L: serial full suite passed, **100 files / 1,155 tests**; focused repair/discovery suite passed, 5 files / 33 tests.
+- Phase 18L: typecheck, build, browser, database-view, vault-onboarding, discovery/graph smokes, graph benchmark, and `git diff --check` passed. Local browser checks used loopback access.
+- Production build reports the App chunk at 799.91 kB (796.92 kB at the Phase 17 baseline). The advisory remains; no bundling refactor was made.
+- Phase 17G baseline: serial full suite passed, 98 files / 1,137 tests; graph benchmark recorded 78.45 ms for 5,000 notes / 15,000 links.
 
 ---
 
@@ -199,6 +199,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | 16 | Markdown editor enhancements | COMPLETE WITH LIMITATIONS | `4f1ed22` |
 | 15P | Productivity and command experience | COMPLETE WITH LIMITATIONS | `2f8e41e` |
 | 17G | Knowledge graph and relationship exploration | COMPLETE WITH LIMITATIONS | `df89954` |
+| 18L | Link integrity and repair | COMPLETE WITH LIMITATIONS | Phase 18 delivery commit |
 
 ---
 
@@ -1270,6 +1271,59 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
+### Phase 18L — Link Integrity and Repair
+
+**Numbering note:** the roadmap reserves Phase 18 for **Tasks and Project Management** (still planned). This delivered work is recorded as **18L** to avoid renumbering future milestones.
+
+**Objective:** Make broken and ambiguous wiki links actionable from Discovery, and keep title-based links working when a note is renamed, without introducing a persistent index, new storage format, or dependency.
+
+**Implemented functionality**
+
+- Deterministic, local repair suggestions for unresolved links, ranked from normalized titles, aliases, workspace paths, shared words, and a bounded edit-distance comparison. Up to three suggestions are returned; the source note is excluded.
+- Ambiguous links expose their resolver candidates in stable order for explicit disambiguation.
+- Safe single-occurrence link rewrite: revision-checked source write, exact offset/target/display verification, explicit display preservation, and readable display text when pinning a bare link.
+- Repairs default to the target note's stable UUID; a title target is used only when it resolves uniquely, otherwise the server falls back to the stable ID.
+- Discovery UI shows suggestion buttons with reasoning labels, empty guidance, a repair status message, errors, and keyboard-accessible controls. The action re-reads the source hash immediately before the revision-checked write.
+- Rename-safe title links: when a note title changes and confirmed incoming title links exist, the previous title is retained as an alias on the renamed note. This is a single-note metadata change; no other Markdown file is rewritten.
+- No new dependency, storage format, or persistent index. Markdown remains authoritative and the existing link resolver, snapshot cache, `expectedHash` contract, and shadcn primitives are reused.
+
+**Important source files**
+
+- `src/links/link-repair.ts`, `src/links/link-edit.ts`, `src/links/wikilink.ts`
+- `src/ui-server/api.ts`, `src/ui-server/dto.ts`
+- `ui/src/DiscoveryView.tsx`, `ui/src/api.ts`, `ui/src/App.tsx`
+- `test/link-repair.test.ts`, `test/link-repair-api.test.ts`, `scripts/discovery-smoke.mjs`
+- `docs/wiki-links.md`, `docs/knowledge-graph.md`, `README.md`
+
+**Tests and verification**
+
+- Focused link repair and discovery suite: `test/link-repair.test.ts`, `test/link-repair-api.test.ts`, `test/ui-discovery.test.ts`, `test/graph-api.test.ts`, `test/graph-exploration.test.ts` — 5 files / 33 tests passed.
+- Full serial suite: **100 files / 1,155 tests passed**.
+- `pnpm typecheck` and `pnpm build` passed. The production build reports the App chunk at 799.91 kB; the existing 500 kB advisory remains.
+- `pnpm test:browser`, `pnpm test:database-views`, `pnpm test:vault-onboarding`, `scripts/discovery-smoke.mjs`, and `scripts/graph-smoke.mjs` passed.
+- `pnpm bench:graph` passed with the added suggestion benchmark; results are below.
+- Browser smoke covers rename-safe title links, suggestion display, keyboard repair, stable-ID pinning, and resolver refresh.
+
+**Performance measurements**
+
+- Graph baseline on the final code: 1,000 notes / 3,000 occurrences: 16.16 ms median (12.37 ms index, 3.76 ms graph); 5,000 / 15,000: 81.33 ms median (57.68 ms index, 21.90 ms graph).
+- Repair suggestions, 5-run median after warm-up: 1,000 notes / 250 unique targets: 80.81 ms total (0.323 ms per target); 5,000 notes / 500 unique targets: 975.98 ms total (1.952 ms per target). Repeated targets benefit from the per-request target cache in the API.
+- Fuzzy edit-distance work is bounded per target; normalized prefix, containment, and token checks still run for every note.
+- Local Node 24.18.1 measurements, no filesystem or browser rendering. No thresholds are enforced.
+
+**Known limitations**
+
+- Suggestions are lexical, not semantic; they do not inspect note bodies for topical similarity.
+- Repair handles one occurrence in one source note; there is no repair-all or vault-wide rewrite.
+- Path links still break when a note moves. Only title links benefit from the automatic alias.
+- The previous-title alias is retained only when a whole-vault link scan succeeds and confirmed incoming title links exist. If the scan fails because another note is malformed, the save still succeeds but link preservation is skipped.
+- The alias is ordinary metadata and can be removed later; doing so breaks those title links again.
+- No heading/block targets or frontmatter link extraction.
+
+**Status:** **COMPLETE WITH LIMITATIONS**
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15, 17–34)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -1951,6 +2005,9 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | Drag-and-drop moves | — | Not implemented |
 | Breadcrumb | `ui/src/Editor.tsx` | Display only |
 | Backlinks panel | `ui/src/BacklinksPanel.tsx` | Implemented — incoming and outgoing wiki links |
+| Link repair suggestions and disambiguation | `src/links/link-repair.ts`, `ui/src/DiscoveryView.tsx` | Implemented — deterministic local suggestions, explicit action |
+| Safe single-occurrence link rewrite | `src/links/link-edit.ts`, `POST /api/notes/:id/links/repair` | Implemented — revision-checked, stable-ID pinned by default |
+| Rename-safe title links | `src/ui-server/api.ts`, `src/links/link-repair.ts` | Implemented — previous title retained as alias when incoming title links exist |
 | Relation backlinks | `ui/src/RelationBacklinksPanel.tsx` | Implemented |
 | Local graph view | `ui/src/GraphView.tsx`, `src/links/graph.ts`, `ui/src/graph-model.ts` | Implemented — interactive graph, filters, unresolved targets, 200-node display bound |
 | Discovery view | `ui/src/DiscoveryView.tsx` | Implemented — unresolved, ambiguous, isolated notes |
@@ -2422,6 +2479,10 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-38 | Automations | Execution history is append-only and has no retention limit | Long-lived vaults can accumulate a large history file and slower claim checks | Design bounded retention without weakening duplicate-event protection |
 | L-39 | Templates | Prepared template journals require an explicit apply to recover; automatic background repair is intentionally absent | A vault can remain blocked from backup/export until the user retries an apply or manually inspects an invalid journal | Follow health guidance; never delete journals or unverified targets automatically |
 | L-40 | Testing | Parallel full-suite runs are sensitive to fixed 5-second test timeouts under load | Unrelated integration tests can time out when many workers run together | Use `pnpm exec vitest run --no-cache --maxWorkers=1` on this host; review timeout policy separately |
+| L-41 | Links | Repair suggestions are lexical only | Topically related but differently worded notes are not suggested | Treat suggestions as a shortcut, not a replacement for search; semantic ranking remains future work |
+| L-42 | Links | Path links still break when a note moves | `[[folder/old-path]]` references become unresolved | Use ID-pinned links; repair explicitly from Discovery |
+| L-43 | Links | Rename alias preservation depends on a successful whole-vault link scan | A malformed unrelated note can skip preservation while the save still succeeds | Health diagnostics identify malformed notes; the save is never blocked |
+| L-44 | Links | Repair is one occurrence per request | Large broken-link sets need repeated actions | A bounded repair-all workflow is future work; no silent bulk rewrite exists |
 
 ---
 
@@ -2516,6 +2577,18 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Commit:** `4f1ed22` — `feat: enhance markdown editing experience` (implementation; roadmap follow-up records final status).
 - **Integration:** PR #4 merged to `main` as squash commit `d2e7287`; GitHub linear-history rules rejected a merge commit and could not rebase the branch containing the required main merge, so squash was the allowed method. The original implementation commit remains on its retained feature branch.
 - **Notes / decisions:** The default parallel test runs exceeded fixed 5-second timeouts on unrelated storage/API tests (19 failures in the standard run, 13 with two workers); the serial full-suite run passed without changing timeouts. Initial sandbox-only browser/benchmark attempts could not bind loopback; escalated retries passed. Production build emits the advisory at 796.92 kB after all three changes; Phase 16 standalone build emitted 778.45 kB. No dependencies were added. Unrelated Phase 15/main-worktree changes remain untouched.
+
+### 2026-11-02 — Phase 18L — Link Integrity and Repair
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added deterministic local repair suggestions for unresolved links, candidate selection for ambiguous links, a revision-checked single-occurrence link rewrite API, Discovery controls with keyboard labels and status/error handling, and rename-safe title links via automatic previous-title aliases. No new dependency, persistent index, or storage format; Markdown remains authoritative.
+- **Files changed:** `src/links/link-repair.ts`, `src/links/link-edit.ts`, `src/links/wikilink.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/DiscoveryView.tsx`, `ui/src/api.ts`, `ui/src/App.tsx`, `test/link-repair.test.ts`, `test/link-repair-api.test.ts`, `test/ui-backlinks.test.ts`, `test/ui-search.test.ts`, `benchmark/graph.benchmark.ts`, `scripts/discovery-smoke.mjs`, `docs/wiki-links.md`, `docs/knowledge-graph.md`, `README.md`, and this roadmap.
+- **Tests executed:** Focused relationship/repair suite: 5 files / 33 tests passed. Full serial suite: `pnpm test --maxWorkers=1` — 100 files / 1,155 tests passed. `pnpm typecheck`; `pnpm build` (App chunk 799.91 kB); `pnpm test:browser`; `pnpm test:database-views`; `pnpm test:vault-onboarding`; discovery and graph browser smokes; `pnpm bench:graph`; `git diff --check` — all passed.
+- **Performance:** 5,000 notes / 15,000 links graph projection: 81.33 ms median. Repair suggestions: 500 unique targets at 5,000 notes: 975.98 ms total (1.952 ms per target); 250 unique targets at 1,000 notes: 80.81 ms total. Local Node 24.18.1; no enforced thresholds.
+- **Commit:** `3952db3` — `feat: add link integrity and repair`.
+- **Delivery:** A direct push to `origin/main` was rejected by the repository rule requiring a pull request. The commit was pushed to `origin/feat/phase-18-link-integrity` as the only available remote path. No pull request was opened.
+- **Remaining work:** Suggestions are lexical only; path links still break on move; repair is one occurrence per request; alias preservation depends on a successful whole-vault scan. See L-41–L-44.
+- **Notes / decisions:** The previous title is retained as an alias only when confirmed incoming title links exist, avoiding metadata churn for ordinary title edits. Repairs use the stable UUID by default and add a readable display when the original link had none. The discovery API caches ranked suggestions per missing target and applies the source exclusion afterward. The whole-vault scan for rename preservation is best-effort; a malformed unrelated note cannot block the save.
 
 ---
 

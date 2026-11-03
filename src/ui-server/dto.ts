@@ -391,12 +391,53 @@ export interface UiRelationBacklinksResponse {
 }
 
 /** Discovery results share the core index's stable source IDs and body locations. */
+export type UiLinkSuggestion = import('../links/link-repair.js').LinkSuggestion;
+
+export type UiUnresolvedLink = import('../links/link-index.js').IndexedLink & {
+  /** Deterministic, bounded repair candidates computed from the same snapshot. */
+  suggestions: UiLinkSuggestion[];
+};
+
+export type UiAmbiguousLink = import('../links/link-index.js').IndexedLink & {
+  /** Current candidates for the target; the source note is excluded. */
+  suggestions: UiLinkSuggestion[];
+};
+
 export interface UiDiscoveryResponse {
-  unresolved: import('../links/link-index.js').IndexedLink[];
-  ambiguous: import('../links/link-index.js').IndexedLink[];
+  unresolved: UiUnresolvedLink[];
+  ambiguous: UiAmbiguousLink[];
   orphans: import('../links/link-index.js').IndexedNote[];
   /** Notes with no confirmed incoming or outgoing internal links (self-links excluded). */
   isolated: import('../links/link-index.js').IndexedNote[];
+}
+
+/** Rewrites one wiki-link occurrence to a chosen note; the target is verified against `baseHash`. */
+export interface UiRepairWikiLinkInput {
+  baseHash: string;
+  start: number;
+  end: number;
+  target: string;
+  replacementNoteId: string;
+  /** Preserve the original display text when omitted. */
+  display?: string;
+  /** Defaults to true; a title target is used only when it resolves uniquely. */
+  pin?: boolean;
+}
+
+export interface UiRepairWikiLinkResponse {
+  note: UiNote;
+  changed: boolean;
+  /** True when the rewritten link uses the replacement note's stable UUID. */
+  pinned: boolean;
+}
+
+export interface UiSaveNoteResponse {
+  note: UiNote;
+  /**
+   * Present when a title change retained the previous title as an alias so
+   * confirmed incoming title links keep resolving. Path links are unchanged.
+   */
+  preservedLinks?: { alias: string; linkCount: number };
 }
 
 export type UiNoteGraph = import('../links/graph.js').NoteGraph;
