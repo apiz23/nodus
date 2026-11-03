@@ -11,6 +11,11 @@ export interface GraphViewport {
   scale: number;
 }
 
+export interface GraphPoint {
+  x: number;
+  y: number;
+}
+
 export interface SavedGraphViewConfig {
   query: string;
   folder: string | null;
@@ -21,6 +26,8 @@ export interface SavedGraphViewConfig {
   showUnresolved: boolean;
   pathMode: GraphTraversalMode;
   viewport: GraphViewport;
+  /** Optional manual node positions from this session. */
+  nodePositions: Record<string, GraphPoint>;
   /** Maximum rendered graph nodes for this saved view. */
   renderLimit: number;
 }
@@ -158,6 +165,7 @@ export function sanitizeGraphViewReferences(view: SavedGraphView, references: Gr
       clusterId: view.config.clusterId !== null && (view.config.clusterId === '__isolated__' || references.clusterIds.has(view.config.clusterId)) ? view.config.clusterId : null,
       focusId: view.config.focusId !== null && references.noteIds.has(view.config.focusId) ? view.config.focusId : null,
       selectedId: view.config.selectedId !== null && references.noteIds.has(view.config.selectedId) ? view.config.selectedId : null,
+      nodePositions: Object.fromEntries(Object.entries(view.config.nodePositions).filter(([id]) => references.noteIds.has(id))),
     },
   };
 }
@@ -250,6 +258,7 @@ function parseConfig(value: Record<string, unknown>): SavedGraphViewConfig | und
     || typeof value.showIsolated !== 'boolean' || typeof value.showUnresolved !== 'boolean'
     || (value.pathMode !== 'directed' && value.pathMode !== 'undirected')
     || (value.renderLimit !== undefined && (!isInteger(value.renderLimit) || value.renderLimit < 50 || value.renderLimit > 1000))
+    || (value.nodePositions !== undefined && !validPositions(value.nodePositions))
     || !isRecord(value.viewport)
     || !finite(value.viewport.x) || !finite(value.viewport.y) || !finite(value.viewport.scale)) return undefined;
   return {
@@ -261,6 +270,7 @@ function parseConfig(value: Record<string, unknown>): SavedGraphViewConfig | und
     showIsolated: value.showIsolated,
     showUnresolved: value.showUnresolved,
     pathMode: value.pathMode,
+    nodePositions: value.nodePositions === undefined ? {} : normalizePositions(value.nodePositions),
     renderLimit: value.renderLimit === undefined ? DEFAULT_GRAPH_RENDER_LIMIT : value.renderLimit,
     viewport: {
       x: value.viewport.x,
@@ -280,6 +290,7 @@ function normalizeConfig(config: SavedGraphViewConfig): SavedGraphViewConfig {
     showIsolated: config.showIsolated,
     showUnresolved: config.showUnresolved,
     pathMode: config.pathMode,
+    nodePositions: normalizePositions(config.nodePositions),
     renderLimit: isInteger(config.renderLimit) ? Math.max(50, Math.min(1000, config.renderLimit)) : DEFAULT_GRAPH_RENDER_LIMIT,
     viewport: {
       x: Number.isFinite(config.viewport.x) ? config.viewport.x : 0,
@@ -306,6 +317,18 @@ function finite(value: unknown): value is number {
 
 function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value);
+}
+
+function validPositions(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || Object.keys(value).length > 2000) return false;
+  return Object.values(value).every((position) => isRecord(position) && finite(position.x) && finite(position.y));
+}
+
+function normalizePositions(value: Record<string, unknown>): Record<string, GraphPoint> {
+  return Object.fromEntries(Object.entries(value).slice(0, 2000).flatMap(([id, position]) => {
+    if (id.length === 0 || id.length > 128 || !isRecord(position) || !finite(position.x) || !finite(position.y)) return [];
+    return [[id, { x: position.x, y: position.y }]];
+  }));
 }
 
 function foldName(value: string): string {
