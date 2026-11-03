@@ -35,6 +35,7 @@ import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
 import { analyzeGraph } from '../links/graph-analytics.js';
 import { relatedNotes } from '../links/related-notes.js';
+import { analyzeOrganization, previewOrganizationMove } from '../organization/analysis.js';
 import { shortestGraphPath, type GraphTraversalMode } from '../links/graph-paths.js';
 import { graphClusterInsights } from '../links/graph-cluster-insights.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
@@ -158,6 +159,8 @@ export function createLocalApiMiddleware(
     const links = buildLinkIndex(snapshot.notes);
     const graph = graphFromLinkIndex(links);
     return {
+      notes: snapshot.notes,
+      catalog: snapshot.catalog,
       links,
       graph,
       analytics: analyzeGraph(graph),
@@ -611,6 +614,60 @@ export function createLocalApiMiddleware(
         })),
         recentNotes: index.recentNotes,
       });
+    }
+    if (method === 'GET' && path === '/api/organization') {
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, {
+        ...analyzeOrganization(index.notes, index.links, index.search.retrieval, index.catalog),
+        ...(index.search.retrievalIssue ? { retrievalIssue: index.search.retrievalIssue } : {}),
+        ...(index.search.catalogIssue ? { catalogIssue: index.search.catalogIssue } : {}),
+      });
+    }
+    const organizationApplyMatch = /^\/api\/organization\/([^/]+)\/apply$/.exec(path);
+    if (method === 'POST' && organizationApplyMatch !== null) {
+      const suggestionId = decodeURIComponent(organizationApplyMatch[1] ?? '');
+      if (!/^[a-f0-9]{24}$/.test(suggestionId)) throw new ApiError(400, 'INVALID_INPUT', 'Invalid organization suggestion ID.');
+      const vault = await getVault();
+      // Force a current snapshot before applying; an old suggestion is never
+      // allowed to authorize a write after its evidence has changed.
+      const index = await indexFor(vault).get(true);
+      const suggestion = analyzeOrganization(index.notes, index.links, index.search.retrieval, index.catalog)
+        .suggestions.find((item) => item.id === suggestionId);
+      if (!suggestion || suggestion.action.type !== 'add-tag') {
+        throw new ApiError(409, 'STALE_SUGGESTION', 'This organization suggestion is no longer current. Refresh the analysis and review it again.');
+      }
+      const action = suggestion.action;
+      const current = await vault.readNoteWithHash(action.noteId);
+      if (current.note.tags.some((tag) => tag.normalize('NFC').trim().toLowerCase() === action.tag.normalize('NFC').trim().toLowerCase())) {
+        throw new ApiError(409, 'STALE_SUGGESTION', 'The suggested tag is already present. Refresh the analysis.');
+      }
+      try {
+        const updated = await vault.updateNoteTags(action.noteId, { type: 'add', tag: action.tag }, { expectedHash: current.hash, now: clock() });
+        backlinkIndex.markDirty();
+        return sendJson(res, 200, { note: toUiNote(updated.note, updated.hash) });
+      } catch (error) {
+        if (isStorageError(error) && error.code === 'STALE_WRITE') throw toStaleApiError(error, 'applying this suggestion');
+        if (isStorageError(error) && error.code === 'INVALID_INPUT') throw new ApiError(422, 'INVALID_TAG', error.message);
+        throw error;
+      }
+    }
+    const organizationMovePreviewMatch = /^\/api\/organization\/([^/]+)\/move-preview$/.exec(path);
+    if (method === 'GET' && organizationMovePreviewMatch !== null) {
+      const suggestionId = decodeURIComponent(organizationMovePreviewMatch[1] ?? '');
+      if (!/^[a-f0-9]{24}$/.test(suggestionId)) throw new ApiError(400, 'INVALID_INPUT', 'Invalid organization suggestion ID.');
+      const vault = await getVault();
+      const index = await indexFor(vault).get(true);
+      const suggestion = analyzeOrganization(index.notes, index.links, index.search.retrieval, index.catalog)
+        .suggestions.find((item) => item.id === suggestionId);
+      if (!suggestion || suggestion.action.type !== 'preview-move') {
+        throw new ApiError(409, 'STALE_SUGGESTION', 'This folder suggestion is no longer current. Refresh the analysis.');
+      }
+      if (!(await vault.listFolders()).includes(suggestion.action.folder)) {
+        throw new ApiError(409, 'STALE_SUGGESTION', 'The suggested folder no longer exists. Refresh the analysis.');
+      }
+      const preview = previewOrganizationMove(index.notes, index.links, suggestion.action.noteId, suggestion.action.folder);
+      if (!preview) throw new ApiError(409, 'STALE_SUGGESTION', 'The suggested note no longer exists. Refresh the analysis.');
+      return sendJson(res, 200, { preview });
     }
     const relatedMatch = /^\/api\/notes\/([^/]+)\/related$/.exec(path);
     if (method === 'GET' && relatedMatch !== null) {
