@@ -7,6 +7,7 @@ import { Sidebar } from '@/Sidebar';
 import { SidebarToggle } from '@/SidebarToggle';
 import { SearchResultContext } from '@/SearchResultContext';
 import type { View } from '@/types';
+import { DEFAULT_WORKSPACE_PREFERENCES } from '../ui/src/workspacePreferences.js';
 
 const status: UiVaultStatus = {
   vault: { name: 'Nodus', path: '/Users/alex/Documents/Journal' },
@@ -49,7 +50,9 @@ function renderSidebar(
     open = false,
     folderError = null,
     searchError = null,
-  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; searchError?: string | null } = {},
+    sectionOrder = DEFAULT_WORKSPACE_PREFERENCES.sidebar.order,
+    hiddenSections = [],
+  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; searchError?: string | null; sectionOrder?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; hiddenSections?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][] } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(
@@ -72,6 +75,8 @@ function renderSidebar(
         status,
         theme: 'light',
         onToggleTheme: () => {},
+        sidebarSectionOrder: sectionOrder,
+        hiddenSidebarSections: hiddenSections,
         notes,
         folders,
         folderError,
@@ -122,6 +127,16 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-selected="true"');
     const settingsNav = markup.match(/<button[^>]*>[\s\S]*?<\/button>/g)?.find((b) => b.includes('Settings'));
     expect(settingsNav).toContain('aria-current="page"');
+  });
+
+  it('allows optional sections to be hidden and reordered while keeping All Notes and Settings pinned', () => {
+    const markup = renderSidebar('settings', { sectionOrder: ['templates', 'graph', 'discovery', 'insights', 'organization', 'databases'], hiddenSections: ['graph', 'databases'] });
+    expect(markup).toContain('All notes');
+    expect(markup).toContain('Settings');
+    expect(markup).toContain('Templates');
+    expect(markup).not.toContain('Local graph');
+    expect(markup).not.toContain('Databases');
+    expect(markup.indexOf('Templates')).toBeLessThan(markup.indexOf('Discovery'));
   });
 
   it('does not mark a section as current on All notes for the selected note', () => {

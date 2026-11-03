@@ -611,7 +611,9 @@ describe('autosave completion', () => {
     expect(props('test-editor').fullWidth).toBe(false);
     props('test-editor').onToggleWidth(); await flush();
     expect(props('test-editor').fullWidth).toBe(true);
-    expect(storedPreferences.get('nodus-editor-width')).toBe('full');
+    const stored = JSON.parse(storedPreferences.get('nodus-workspace-preferences-v1') ?? '{}');
+    expect(stored.version).toBe(1);
+    expect(stored.workspaces['/synthetic/vault'].preferences.editor.width).toBe('full');
 
     props('test-sidebar').onView('settings'); await flush();
     props('test-sidebar').onView('notes'); await flush();

@@ -207,7 +207,7 @@ export function CommandPalette({
       {
         id: 'view-settings',
         title: 'Settings',
-        keywords: 'preferences vault storage theme',
+        keywords: 'preferences workspace layout sidebar panels presets vault storage theme',
         category: 'Navigation',
         icon: <Settings />,
         run: () => onView('settings'),

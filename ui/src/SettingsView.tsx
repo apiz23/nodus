@@ -18,6 +18,8 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { BackupRestoreSection } from './BackupRestoreSection';
 import { SidebarToggle } from './SidebarToggle';
+import { WorkspaceCustomizationSettings } from './WorkspaceCustomizationSettings';
+import type { WorkspacePreferences, WorkspacePresetId, WorkspacePresetUndo } from './workspacePreferences';
 
 interface SettingsViewProps {
   status: UiVaultStatus | null;
@@ -36,6 +38,14 @@ interface SettingsViewProps {
   onVaultWorkChange: (active: boolean) => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  workspacePreferences: WorkspacePreferences;
+  workspacePreferencesReady: boolean;
+  workspacePreferencesIssue: string | null;
+  workspacePresetUndo: WorkspacePresetUndo | null;
+  onWorkspacePreferencesChange: (next: WorkspacePreferences) => void;
+  onApplyWorkspacePreset: (preset: WorkspacePresetId) => void;
+  onUndoWorkspacePreset: () => void;
+  onResetWorkspace: () => void;
 }
 
 function Section({
@@ -75,6 +85,14 @@ export function SettingsView({
   onVaultWorkChange,
   sidebarCollapsed,
   onToggleSidebar,
+  workspacePreferences,
+  workspacePreferencesReady,
+  workspacePreferencesIssue,
+  workspacePresetUndo,
+  onWorkspacePreferencesChange,
+  onApplyWorkspacePreset,
+  onUndoWorkspacePreset,
+  onResetWorkspace,
 }: SettingsViewProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label="Settings">
@@ -281,6 +299,19 @@ export function SettingsView({
                     <span>Localhost only</span>
                   </div>
                 </Section>
+              </div>
+
+              <div className="lg:col-span-2">
+                <WorkspaceCustomizationSettings
+                  preferences={workspacePreferences}
+                  ready={workspacePreferencesReady}
+                  issue={workspacePreferencesIssue}
+                  undo={workspacePresetUndo}
+                  onChange={onWorkspacePreferencesChange}
+                  onApplyPreset={onApplyWorkspacePreset}
+                  onUndoPreset={onUndoWorkspacePreset}
+                  onReset={onResetWorkspace}
+                />
               </div>
 
               <div className="lg:col-span-2">
