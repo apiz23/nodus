@@ -580,6 +580,7 @@ export function Editor({
             onOpenNote={onOpenNote}
           />
           <RelatedNotesPanel
+            key={`${vaultIdentity}:${note.id}`}
             noteId={note.id}
             revision={backlinksRevision}
             onOpenNote={onOpenNote}

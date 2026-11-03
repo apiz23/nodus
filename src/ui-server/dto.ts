@@ -474,6 +474,7 @@ export interface UiKnowledgeInsights {
 }
 
 export interface UiRelatedNotesResponse {
+  retrievalIssue?: string;
   noteId: string;
   related: UiRelatedNote[];
 }
