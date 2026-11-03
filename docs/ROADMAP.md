@@ -1410,6 +1410,32 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
+---
+
+### Phase 22H — Graph Canvas Interaction and Layout
+
+**Status:** **COMPLETE WITH LIMITATIONS** (feature branch `fix/graph-canvas-interaction`)
+
+**Objective:** Make the existing SVG graph naturally navigable, prevent node overlap/overflow, add optional node positions, and preserve all graph analytics, saved-view, path, cluster, and accessibility behavior.
+
+**Implemented functionality**
+
+- Left-drag canvas panning with pointer capture and rAF batching.
+- Pointer-centered wheel/trackpad zoom, scale limits, Fit, Reset view, and Re-layout controls.
+- Per-node dragging separated from canvas panning, with accidental-click/open suppression.
+- Optional manual node positions stored only in explicit saved graph views; old views default to none.
+- Deterministic cluster-aware unfocused layout and focused-neighborhood ring layout with fit-to-view.
+- Level-of-detail labels and non-scaling edge strokes for readable zoomed-out graphs.
+- Bounded rendering remains 100/200/400 nodes; no force-layout dependency.
+
+**Important files:** `ui/src/graph-viewport.ts`, `ui/src/graph-model.ts`, `ui/src/GraphView.tsx`, `ui/src/graph-saved-views.ts`, viewport/layout/saved-view tests, `scripts/graph-canvas-smoke.mjs`, benchmark, docs, README.
+
+**Known limitations:** Manual positions are not automatic global note preferences. Labels are hidden below 0.65× except selected/focused/neighbours. Fit can make very large layouts visually dense; use focus, filters, clusters, or a lower render limit. Phase 19 remains unmerged.
+
+**Performance:** Cluster-aware layout + fit median: 100 nodes 0.15/0.02 ms, 200 nodes 0.12/0.03 ms, 400 nodes 0.26/0.05 ms, minimum node spacing 94 px. Bounded filter/position prep at 1k/5k/10k: 1.13/6.46/15.36 ms and ~0.03–0.07 ms. These exclude React/SVG paint and are local observations, not thresholds.
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15, 17–34)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -2703,6 +2729,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Files changed:** `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`, `ui/src/graph-path-history.ts`, `ui/src/GraphPathExplorer.tsx`, `src/links/graph-cluster-insights.ts`, `ui/src/GraphClusterInsights.tsx`, `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`, tests, scripts, benchmark, docs, README, and roadmap.
 - **Integration note:** Phase 21 PR #9 merged during implementation as squash commit `a1e71d5`; the Phase 22 branch was rebased onto that `origin/main`. Phase 19 remains unmerged.
 - **Known limitations:** Portable view files contain UI preferences only. History and local views are browser-local. Graph rendering remains bounded; no force simulation.
+
+---
+
+### 2026-11-03 — Phase 22H — Graph Canvas Interaction and Layout
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Rebuilt graph viewport math around pointer-centered zoom and fit; added canvas panning, node dragging, rAF batching, deterministic cluster-aware/focused layouts, label LOD, saved node positions, tests, browser smoke, and benchmarks.
+- **Files changed:** `ui/src/graph-viewport.ts`, `ui/src/graph-model.ts`, `ui/src/GraphView.tsx`, `ui/src/graph-saved-views.ts`, tests, `scripts/graph-canvas-smoke.mjs`, benchmark, README, docs, and roadmap.
+- **Integration note:** Built from `origin/main` at `6e3795c` after Phase 22 merged. Phase 19 remains unmerged.
+- **Known limitations:** Node positions are saved only in graph views. Large layouts remain bounded and label LOD hides most labels when zoomed out. No force simulation.
 
 ---
 

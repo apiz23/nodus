@@ -52,7 +52,7 @@ The table records current status; deferred items need a separate design and appr
 | Note graph | Implemented | Derived graph and navigation UI; link records are not persisted. |
 | Link repair and rename safety | Implemented | Discovery suggests deterministic targets, repairs one occurrence with revision checks, and retains a previous title as an alias when incoming title links would otherwise break; see [wiki links](docs/wiki-links.md). |
 | Knowledge health and recommendations | Implemented | Vault-scoped graph metrics, connected clusters, related-note evidence, and a read-only insights dashboard; see [knowledge graph](docs/knowledge-graph.md). |
-| Advanced graph exploration | Implemented | Saved graph views, portable view export/import, bounded shortest paths and history, cluster filtering/insights, focus history, and bounded rendering; see [knowledge graph](docs/knowledge-graph.md). |
+| Advanced graph exploration | Implemented | Saved graph views, portable view export/import, bounded shortest paths and history, cluster filtering/insights, focus history, node dragging, pointer-centered canvas navigation, cluster-aware layout, and bounded rendering; see [knowledge graph](docs/knowledge-graph.md). |
 | Cross-device sync | **Experimental** | A relay and sync client exist (`src/relay/`, `src/sync/`) but are not wired to any script, bin, or the UI. No multi-device setup is supported. |
 
 Also not implemented: database/property/option removal, accounts, AI, telemetry, and third-party data transfer.
