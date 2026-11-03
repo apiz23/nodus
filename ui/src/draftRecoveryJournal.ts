@@ -23,6 +23,7 @@ interface IndexedRequest<T> {
 }
 interface IndexedStore {
   index(name: string): { getAll(key: IndexedKey): IndexedRequest<unknown> };
+  indexNames: { contains(name: string): boolean };
   get(key: IndexedKey): IndexedRequest<unknown>;
   getAll(key?: IndexedKey): IndexedRequest<unknown>;
   put(value: unknown): unknown;
@@ -43,13 +44,14 @@ interface IndexedDatabase {
   close(): void;
 }
 interface IndexedOpenRequest extends IndexedRequest<IndexedDatabase> {
+  transaction: IndexedTransaction | null;
   onupgradeneeded: ((event: unknown) => void) | null;
   onblocked: ((event: unknown) => void) | null;
 }
 interface IndexedFactory { open(name: string, version: number): IndexedOpenRequest }
 
 const DATABASE = 'nodus-draft-recovery';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DRAFTS = 'drafts';
 const WATERMARKS = 'watermarks';
 const DELETED_NOTES = 'deleted-notes';
@@ -195,11 +197,16 @@ export class IndexedDbDraftJournal implements DraftJournal {
       catch (error) { reject(error); return; }
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(DRAFTS)) {
-          const store = db.createObjectStore(DRAFTS, { keyPath: 'key' });
-          store.createIndex('vaultNote', ['vaultIdentity', 'noteId'], { unique: false });
-          store.createIndex('vaultIdentity', 'vaultIdentity', { unique: false });
+        const transaction = request.transaction;
+        let drafts: IndexedStore;
+        if (db.objectStoreNames.contains(DRAFTS)) {
+          if (transaction === null) throw new Error('Draft recovery upgrade transaction is unavailable.');
+          drafts = transaction.objectStore(DRAFTS);
+        } else {
+          drafts = db.createObjectStore(DRAFTS, { keyPath: 'key' });
         }
+        if (!drafts.indexNames.contains('vaultNote')) drafts.createIndex('vaultNote', ['vaultIdentity', 'noteId'], { unique: false });
+        if (!drafts.indexNames.contains('vaultIdentity')) drafts.createIndex('vaultIdentity', 'vaultIdentity', { unique: false });
         if (!db.objectStoreNames.contains(WATERMARKS)) db.createObjectStore(WATERMARKS, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(DELETED_NOTES)) db.createObjectStore(DELETED_NOTES, { keyPath: 'key' });
       };
