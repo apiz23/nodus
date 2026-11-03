@@ -92,7 +92,7 @@ export function NoteFiltersPopover({ vaultKey, revision, filters, logic, onChang
       </Button>
     </PopoverTrigger>
     <PopoverContent align="start" className="w-[min(360px,calc(100vw-24px))] space-y-3">
-      <div><div className="text-sm font-medium">Filter notes</div><p className="text-xs text-muted-foreground">Combine metadata filters with {logic.toUpperCase()}.</p></div>
+      <div><div className="text-sm font-medium">Filter notes</div><p className="text-xs text-muted-foreground">Combine metadata filters with {logic.toUpperCase()}. Search also supports <code>folder:</code>, <code>before:</code>, and <code>created-after:</code>.</p></div>
       {loadError ? <div role="alert" className="text-xs text-destructive">{loadError}<Button size="xs" variant="link" onClick={() => setOpen(false)}>Close and retry</Button></div> : null}
       {catalogIssue ? <p role="status" className="text-xs text-amber-700 dark:text-amber-300">Property filters unavailable: {catalogIssue}</p> : null}
       <div className="flex items-center gap-2">

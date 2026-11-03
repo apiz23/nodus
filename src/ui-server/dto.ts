@@ -148,6 +148,8 @@ export interface UiSearchResult extends UiNoteSummary {
   snippet: string;
   /** Structured context and offsets for accessible, text-only match highlighting. */
   match?: import('../search/search-index.js').SearchMatch;
+  /** Every field matched by the query or its constraints, in deterministic order. */
+  matchedFields?: import('../search/search-index.js').SearchField[];
 }
 
 export interface UiSearchResponse {

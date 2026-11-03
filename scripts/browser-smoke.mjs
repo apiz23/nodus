@@ -1048,7 +1048,7 @@ async function main() {
     await page.getByLabel('Template name').fill('Browser template');
     await page.getByLabel('New note title').fill('Template result');
     await page.getByLabel('Markdown body').fill('# Created from a saved template');
-    const saveTemplate = page.getByRole('button', { name: 'Save' });
+    const saveTemplate = page.getByRole('button', { name: 'Save', exact: true });
     await saveTemplate.click();
     await page.getByText('Template library saved.').waitFor({ state: 'visible' });
     await page.getByLabel('Markdown body').fill('# Edited saved template');

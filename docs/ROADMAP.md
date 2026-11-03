@@ -1455,7 +1455,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 | 24 | Backlinks and Knowledge Discovery | PLANNED | 6, 27 |
 | 25 | Advanced Markdown | PLANNED | 2A, 6, 7A |
 | 26 | Whiteboards and Visual Workspace | PLANNED | 23, 25, 27 |
-| 27 | Advanced Search | PLANNED | 6, 9 review, 15, 24 |
+| 27 | Advanced Search | PARTIAL | 6, 9 review, 15, 24 |
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
 | 29 | Sync Architecture | BLOCKED | 3, 8, 30, 32 |
 | 30 | Conflict Resolution | PLANNED | 3, 8 |
@@ -1809,6 +1809,12 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 
 ### Phase 27 — Advanced Search
 
+**Delivery note (2026-11-03):** The current product milestone was requested as Phase 23. It delivers
+an in-memory typed query parser, note metadata filters, browser-local saved searches/history,
+explainable lexical ranking, and performance coverage. This roadmap keeps its original Phase 27
+label to avoid renumbering older proposals. Structured database rows, persistent indexing,
+pagination, fuzzy matching, and semantic search remain out of scope.
+
 **Objective:** Evolve the in-memory search into a scalable, persistent, query-capable search system.
 
 **Expected features**
@@ -1834,7 +1840,7 @@ These milestones are **proposals, not commitments**. They are ordered by likely 
 - Search results remain explainable and deterministic by default.
 - Benchmarks enforce agreed budgets.
 
-**Status:** **PLANNED**
+**Status:** **PARTIAL**
 
 ---
 

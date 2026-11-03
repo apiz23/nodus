@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UiSearchResult } from '../../src/ui-server/dto';
 import { api } from './api';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.js';
+import { recordSearchHistory } from './searchPersistence';
 
 interface SearchState { request: object | null; results: UiSearchResult[]; error: string | null; metadataIssueCount: number; catalogIssue?: string }
 
@@ -24,7 +25,10 @@ export function useNoteSearch(query: string, vaultKey: string, revision = 0, ena
       const refresh = refreshFor.current === contextKey;
       if (refresh) refreshFor.current = null;
       void api.search(value, controller.signal, refresh, filters, logic).then((response) => {
-        if (!cancelled) setState({ request, results: response.results, error: null, metadataIssueCount: response.metadataIssueCount, ...(response.catalogIssue === undefined ? {} : { catalogIssue: response.catalogIssue }) });
+        if (!cancelled) {
+          setState({ request, results: response.results, error: null, metadataIssueCount: response.metadataIssueCount, ...(response.catalogIssue === undefined ? {} : { catalogIssue: response.catalogIssue }) });
+          try { recordSearchHistory(window.localStorage, vaultKey, value, filters, logic); } catch { /* History is a best-effort local preference. */ }
+        }
       }).catch((cause: unknown) => {
         if (!cancelled) setState({ request, results: [], metadataIssueCount: 0,
           error: cause instanceof Error ? cause.message : 'Search failed. Try again.' });
