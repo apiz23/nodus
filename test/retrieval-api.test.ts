@@ -34,7 +34,7 @@ describe('retrieval snapshot integration', () => {
         await writeFile(join(root, 'b.md'), bytes.replace('Field study', 'Renamed study'));
         await rename(join(root, 'b.md'), join(root, 'renamed.md'));
         expect(((await (await related()).json()) as UiRelatedNotesResponse).related[0]?.note).toMatchObject({ id: B, title: 'Renamed study', path: 'renamed.md' });
-        const load = vi.spyOn(FileSystemVault.prototype, 'snapshotNotes').mockRejectedValueOnce(new Error('Interrupted read'));
+        const load = vi.spyOn(FileSystemVault.prototype, 'snapshotNotesWithHashes').mockRejectedValueOnce(new Error('Interrupted read'));
         expect((await related()).status).toBe(500);
         load.mockRestore();
         expect(((await (await related()).json()) as UiRelatedNotesResponse).related[0]?.note.id).toBe(B);

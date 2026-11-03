@@ -26,6 +26,7 @@ export interface CodeMirrorEditorProps {
   onOutlineChange?: (headings: readonly DocumentHeading[]) => void;
   onActiveHeadingChange?: (id: string | null) => void;
   outlineNavigationRequest?: { id: string; sequence: number } | null;
+  taskNavigationRequest?: { line: number; sequence: number } | null;
   notePath: string;
   className?: string;
   'aria-label'?: string;
@@ -198,6 +199,19 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
     });
     view.focus();
   }, [props.outlineNavigationRequest]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    const request = props.taskNavigationRequest;
+    if (view === null || request === null || request === undefined) return;
+    const line = view.state.doc.line(Math.min(Math.max(1, request.line), view.state.doc.lines));
+    view.dispatch({
+      selection: { anchor: line.from },
+      effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+      userEvent: 'select',
+    });
+    view.focus();
+  }, [props.taskNavigationRequest]);
 
   useEffect(() => {
     const view = viewRef.current;

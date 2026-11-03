@@ -121,6 +121,10 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(renderSidebar('notes')).toContain('Alpha note');
   });
 
+  it('exposes the Tasks navigation destination', () => {
+    expect(renderSidebar('tasks')).toContain('Tasks');
+  });
+
   it('marks the active section while the selected note stays selected', () => {
     const markup = renderSidebar('settings');
     expect(markup.match(/aria-current="page"/g)).toHaveLength(1);

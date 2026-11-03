@@ -21,7 +21,7 @@ interface Props {
 }
 
 const sectionLabels: Record<(typeof SIDEBAR_SECTIONS)[number], string> = {
-  discovery: 'Discovery', graph: 'Local graph', insights: 'Knowledge health', organization: 'Smart organization', databases: 'Databases', templates: 'Templates',
+  tasks: 'Tasks', discovery: 'Discovery', graph: 'Local graph', insights: 'Knowledge health', organization: 'Smart organization', databases: 'Databases', templates: 'Templates',
 };
 
 export function WorkspaceCustomizationSettings({ preferences, ready, issue, undo, onChange, onApplyPreset, onUndoPreset, onReset }: Props) {

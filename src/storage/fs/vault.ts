@@ -335,14 +335,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return withVaultRootLock(this.root, () => this.createNoteUnlocked(note));
   }
 
-  /** Root-locked, byte-verified snapshot for derived search/discovery indexes. */
-  async snapshotNotes(): Promise<Note[]> {
+  /** Root-locked note snapshot with raw hashes for revision-safe projections. */
+  async snapshotNotesWithHashes(): Promise<Array<{ note: Note; hash: string }>> {
     return withVaultRootLock(this.root, async () => {
       const { entries } = await walkVault(this.root);
       const notes = entries.filter((entry) => entry.kind === 'note');
       const next = new Map<string, { hash: string; note: Note }>();
       const seen = new Map<string, string>();
-      const result: Note[] = [];
+      const result: Array<{ note: Note; hash: string }> = [];
       // Bound open files and memory, overlap I/O, and drain a whole batch before
       // throwing so no reads outlive the root lock. Errors stay in path order.
       for (let offset = 0; offset < notes.length; offset += 8) {
@@ -351,9 +351,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         for (const [index, read] of reads.entries()) {
           const entry = batch[index]!;
           let note: Note;
+          let hash = '';
           try {
             if (read.status === 'rejected') throw read.reason;
-            const hash = sha256Hex(read.value);
+            hash = sha256Hex(read.value);
             const previous = this.noteSnapshot.get(entry.path);
             // Always re-read/hash bytes: same-size edits with preserved timestamps
             // must not be hidden, even after an explicit refresh or restore.
@@ -365,13 +366,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
             { details: { ids: [note.id], paths: [duplicate, entry.path] } });
           seen.set(note.id, entry.path);
           // Callers cannot mutate the parsed cache through returned arrays/metadata.
-          result.push(structuredClone(note));
+          result.push({ note: structuredClone(note), hash });
         }
       }
       // Publish only complete successful snapshots; removed paths are evicted.
       this.noteSnapshot = next;
       return result;
     });
+  }
+
+  /** Root-locked, byte-verified snapshot for derived search/discovery indexes. */
+  async snapshotNotes(): Promise<Note[]> {
+    return (await this.snapshotNotesWithHashes()).map(({ note }) => note);
   }
 
   /** Relation target validation and the conditional source write share one root lock. */
