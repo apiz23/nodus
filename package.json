@@ -23,6 +23,7 @@
     "test:vault-onboarding": "node scripts/vault-onboarding-smoke.mjs",
     "test:database-views": "node scripts/database-views-smoke.mjs",
     "test:insights": "node scripts/insights-smoke.mjs",
+    "test:graph-advanced": "node scripts/graph-advanced-smoke.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit"
   },
   "dependencies": {
