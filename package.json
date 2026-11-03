@@ -24,6 +24,7 @@
     "test:database-views": "node scripts/database-views-smoke.mjs",
     "test:insights": "node scripts/insights-smoke.mjs",
     "test:organization": "node scripts/organization-smoke.mjs",
+    "test:workspace": "node scripts/workspace-customization-smoke.mjs",
     "bench:organization": "vitest run --config vitest.organization-benchmark.config.ts",
     "test:graph-advanced": "node scripts/graph-advanced-smoke.mjs",
     "test:graph-canvas": "node scripts/graph-canvas-smoke.mjs",

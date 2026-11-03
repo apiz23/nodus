@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-03
-**Latest verified integrated baseline:** `origin/main` at `89be1f31a5b0dcfeadcd368ad2801602386cd92a` (Phase 24 PR #13 merged; checked 2026-11-03).
+**Latest verified integrated baseline:** `origin/main` at `a8c6675ed3741031d20021b5d22fe80ab6bd70f5` (Phase 25 PR #14 merged; checked 2026-11-03).
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -85,7 +85,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Phase 23 — Graph View](#phase-23--graph-view)
      - [Phase 24 — Backlinks and Knowledge Discovery](#phase-24--backlinks-and-knowledge-discovery)
      - [Phase 25 — Smart Organization](#phase-25--smart-organization)
-     - [Phase 26 — Whiteboards and Visual Workspace](#phase-26--whiteboards-and-visual-workspace)
+     - [Legacy Phase 26 — Whiteboards and Visual Workspace (superseded proposal)](#legacy-phase-26--whiteboards-and-visual-workspace-superseded-proposal)
      - [Phase 27 — Advanced Search](#phase-27--advanced-search)
      - [Phase 28 — AI Integration](#phase-28--ai-integration)
      - [Phase 29 — Sync Architecture](#phase-29--sync-architecture)
@@ -178,8 +178,8 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 22 | Portable Graph Views & Deeper Exploration | COMPLETE WITH LIMITATIONS — integrated | PR #10 and graph canvas PR #11 merged. |
 | 23 | Advanced Search & Filtering | COMPLETE WITH LIMITATIONS — integrated | PR #12 merged. |
 | 24 | Knowledge Retrieval | COMPLETE WITH LIMITATIONS — integrated; 24D deferred | PR #13 merged. |
-| 25 | Smart Organization | IN PROGRESS on `feat/phase-25-smart-organization` | Builds on existing metadata, Phase 23 index, and Phase 24 retrieval. Folder moves remain deferred while legacy Phase 19 is pending integration. |
-| 26 | Workspace Customization | PLANNED | Organization surfaces and navigation patterns. |
+| 25 | Smart Organization | COMPLETE WITH LIMITATIONS — integrated | PR #14 merged. Folder moves remain deferred while legacy Phase 19 is pending integration. |
+| 26 | Workspace Customization | IN PROGRESS on `feat/phase-26-workspace-customization` | Reuses existing UI resizable panels; browser-local global theme and vault-scoped layout preferences. |
 | 27 | Task Management | PLANNED | Portable Markdown task conventions. |
 | 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
 | 29 | Advanced Import & Export | PLANNED | Preserve Markdown, metadata, and graph view portability. |
@@ -1479,7 +1479,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 | 23 | Graph View | PLANNED | 6, 9 review, 24, 27 |
 | 24 | Backlinks and Knowledge Discovery | PLANNED | 6, 27 |
 | 25 | Advanced Markdown | SUPERSEDED PROPOSAL | Replaced by the current Phase 25 Smart Organization milestone. |
-| 26 | Whiteboards and Visual Workspace | PLANNED | 23, 25, 27 |
+| 26 | Whiteboards and Visual Workspace | SUPERSEDED PROPOSAL | Replaced by the current Phase 26 Workspace Customization milestone. |
 | 27 | Advanced Search | PARTIAL | 6, 9 review, 15, 24 |
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
 | 29 | Sync Architecture | BLOCKED | 3, 8, 30, 32 |
@@ -1774,13 +1774,13 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 
 **Objective:** Help users organize large Markdown vaults with explainable local suggestions and explicit human decisions.
 
-**Implemented on the Phase 25 feature branch:** deterministic local suggestions for existing-tag recommendations, legacy tag spelling variants, exact/near duplicate review, folder destinations, and missing/invalid registered metadata. Suggestions include stable IDs, affected notes, evidence, and bounded heuristic confidence. The dedicated sidebar dashboard supports category filters, affected-note navigation, mark-reviewed/dismiss state, explicit tag preview/application, and a path-link impact preview for proposed note moves. See [Smart organization](smart-organization.md).
+**Implemented and integrated:** deterministic local suggestions for existing-tag recommendations, legacy tag spelling variants, exact/near duplicate review, folder destinations, and missing/invalid registered metadata. Suggestions include stable IDs, affected notes, evidence, and bounded heuristic confidence. The dedicated sidebar dashboard supports category filters, affected-note navigation, mark-reviewed/dismiss state, explicit tag preview/application, and a path-link impact preview for proposed note moves. See [Smart organization](smart-organization.md).
 
 **Safety:** Tag changes revalidate the current suggestion and use the existing conditional tag write. Dismissed/reviewed state is versioned browser-local data scoped by vault identity and stores only suggestion IDs/statuses. Duplicate suggestions never merge or delete. Folder moves are not executed: the preview displays incoming path-link occurrences and destination collisions, while Phase 19 move-safe maintenance remains pending integration.
 
 **Architecture:** Reuses the existing rebuildable Markdown/search/retrieval/link snapshot and registered property catalog. Posting candidate generation is capped at 25,000 pairs and 32 neighbors per note; the response is capped at 500 suggestions. No new dependency, persistent index, AI API, or note storage format is introduced.
 
-**Status:** Implemented and verified on `feat/phase-25-smart-organization`; pending PR review and integration. It is not part of `origin/main` until merged.
+**Status:** Integrated through PR #14. The Phase 26 branch is based on verified `origin/main` commit `a8c6675ed3741031d20021b5d22fe80ab6bd70f5`.
 
 **Limitations:** Similarity is lexical, not semantic; metadata suggestions do not infer values; folder previews are advisory and not locked against external edits; browser-local review state is not portable. Benchmarks and environment are recorded in the feature guide.
 
@@ -1788,7 +1788,21 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 
 ---
 
-### Phase 26 — Whiteboards and Visual Workspace
+### Phase 26 — Workspace Customization
+
+**Objective:** Make Nodus adaptable without making it complicated: simple by default, customizable when needed.
+
+**Status:** Implemented on `feat/phase-26-workspace-customization`; verification and PR delivery are in progress. This feature builds on existing sidebar and editor panels and does not introduce a general-purpose window manager.
+
+**Implemented scope:** A versioned browser-local preference record separates a global theme from vault-path-scoped workspace settings. Runtime validation, bounded panel dimensions, safe defaults, legacy theme/width migration, malformed-data fallback, future-version protection, per-vault reset, sidebar section visibility/order, persisted sidebar width/collapse, Live/Source/Preview/Split editor layouts, bounded split resizing, existing note-panel visibility, and five previewable presets with one-step undo. Preferences contain no note content and are not part of vault backups. See [workspace customization](workspace-customization.md).
+
+**UX and safety decisions:** All Notes, search, and Settings remain accessible; optional navigation can be restored through Settings or reset. Editor layout changes reuse the same draft and Markdown preview, preserving the existing save lifecycle. Resize persistence is debounced and discarded across vault switches. Browser storage errors remain visible, and unsupported future settings are not overwritten.
+
+**Limitations:** Preferences are browser-profile local and are not synchronized, backed up, or portable across browsers. Only existing sidebar/editor panels are configurable. Typography and brand assets are not modified by this feature.
+
+---
+
+### Legacy Phase 26 — Whiteboards and Visual Workspace (superseded proposal)
 
 **Objective:** Add a canvas for arranging notes, database records, and freeform visual thinking.
 

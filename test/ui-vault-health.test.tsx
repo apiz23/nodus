@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { TooltipProvider } from '../ui/src/components/ui/tooltip.js';
 import type { UiVaultStatus } from '../src/ui-server/dto.js';
 import { SettingsView } from '../ui/src/SettingsView.js';
+import { DEFAULT_WORKSPACE_PREFERENCES } from '../ui/src/workspacePreferences.js';
 
 describe('vault health settings UI', () => {
   it('renders template catalog health details using the existing issue list', () => {
@@ -18,6 +19,9 @@ describe('vault health settings UI', () => {
       vaultPathDraft: status.vault.path, onVaultPathDraftChange() {}, onOpenVault() {}, openingVault: false,
       theme: 'light', onToggleTheme() {}, onRestored() {}, onVaultWorkChange() {},
       sidebarCollapsed: false, onToggleSidebar() {},
+      workspacePreferences: DEFAULT_WORKSPACE_PREFERENCES, workspacePreferencesReady: true,
+      workspacePreferencesIssue: null, workspacePresetUndo: null,
+      onWorkspacePreferencesChange() {}, onApplyWorkspacePreset() {}, onUndoWorkspacePreset() {}, onResetWorkspace() {},
     })));
     expect(markup).toContain('validate the optional template catalog');
     expect(markup).toContain('UNSUPPORTED_VERSION');

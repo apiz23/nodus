@@ -38,6 +38,7 @@ import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.
 import { PageTree } from './PageTree';
 import { detectPlatform, shortcutById, shortcutLabel } from './shortcuts';
 import type { View } from './types';
+import type { SidebarSectionId } from './workspacePreferences';
 
 interface SidebarProps {
   view: View;
@@ -56,6 +57,8 @@ interface SidebarProps {
   status: UiVaultStatus | null;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  sidebarSectionOrder: readonly SidebarSectionId[];
+  hiddenSidebarSections: readonly SidebarSectionId[];
   notes: UiNoteSummary[];
   folders: string[];
   folderError: string | null;
@@ -113,6 +116,8 @@ export function Sidebar({
   status,
   theme,
   onToggleTheme,
+  sidebarSectionOrder,
+  hiddenSidebarSections,
   notes,
   folders,
   folderError,
@@ -367,7 +372,10 @@ export function Sidebar({
         </Button>
 
         <nav className={cn('flex w-full flex-col gap-0.5', compact && 'md:items-center')} aria-label="Primary">
-          {navItems.map((item) => {
+          {[navItems[0]!, ...sidebarSectionOrder
+            .filter((id) => !hiddenSidebarSections.includes(id))
+            .map((id) => navItems.find((item) => item.id === id))
+            .filter((item): item is typeof navItems[number] => item !== undefined)].map((item) => {
             const Icon = item.icon;
             const selected = view === item.id;
             return (

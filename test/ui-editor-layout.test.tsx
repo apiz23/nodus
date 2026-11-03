@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { UiNote, UiNoteSummary } from '../src/ui-server/dto';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Editor } from '@/Editor';
+import { DEFAULT_WORKSPACE_PREFERENCES } from '../ui/src/workspacePreferences.js';
 
 const note: UiNote = {
   id: '6f1c2a9e-3b7d-4c8e-9f0a-1d2e3f4a5b6c',
@@ -39,6 +40,13 @@ function render(fullWidth: boolean): string {
         focusMode: false,
         fullWidth,
         onToggleWidth: () => {},
+        layout: 'live',
+        editorMode: 'live',
+        splitRatio: 0.5,
+        onLayoutChange: () => {},
+        onEditorModeChange: () => {},
+        onSplitRatioChange: () => {},
+        panels: DEFAULT_WORKSPACE_PREFERENCES.panels,
         sidebarCollapsed: false,
         onToggleSidebar: () => {},
         onToggleFocus: () => {},

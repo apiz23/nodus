@@ -51,15 +51,25 @@ import {
   resolveRecentNotes,
   type RecentNote,
 } from './recentNavigation';
+import {
+  DEFAULT_WORKSPACE_PREFERENCES,
+  clearWorkspacePreferences,
+  loadWorkspacePreferences,
+  makeWorkspacePreset,
+  readWorkspaceTheme,
+  restoreWorkspacePreset,
+  saveGlobalTheme,
+  saveWorkspacePreferences,
+  type EditorLayout,
+  type WorkspacePreferences,
+  type WorkspacePresetId,
+  type WorkspacePresetUndo,
+} from './workspacePreferences';
 
 type ModalState =
   | { type: 'delete'; note: UiNote }
   | { type: 'rename'; note: UiNote }
   | null;
-
-const THEME_KEY = 'nodus-ui-theme';
-const EDITOR_WIDTH_KEY = 'nodus-editor-width';
-const SIDEBAR_WIDTH_KEY = 'nodus-sidebar-width';
 
 function uiStorage(): Storage | null {
   try {
@@ -69,25 +79,8 @@ function uiStorage(): Storage | null {
   }
 }
 
-function initialSidebarWidth(): number {
-  try {
-    const width = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    return Number.isFinite(width) && width >= 200 && width <= 480 ? width : 240;
-  } catch { return 240; }
-}
-
 function initialTheme(): 'light' | 'dark' {
-  const stored = window.localStorage.getItem(THEME_KEY);
-  if (stored === 'light' || stored === 'dark') return stored;
-  return 'light';
-}
-
-function initialFullWidth(): boolean {
-  try {
-    return window.localStorage.getItem(EDITOR_WIDTH_KEY) === 'full';
-  } catch {
-    return false;
-  }
+  return readWorkspaceTheme(uiStorage());
 }
 
 function createWriterId(): string {
@@ -168,11 +161,37 @@ export default function App() {
 
   const [theme, setTheme] = useState<'light' | 'dark'>(initialTheme);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [desktop, setDesktop] = useState(() => window.matchMedia?.('(min-width: 768px)').matches ?? true);
+  const previousDesktopRef = useRef(desktop);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const sidebarWidthRef = useRef(initialSidebarWidth());
+  const [workspacePreferences, setWorkspacePreferencesState] = useState<WorkspacePreferences>(DEFAULT_WORKSPACE_PREFERENCES);
+  const workspacePreferencesRef = useRef<WorkspacePreferences>(DEFAULT_WORKSPACE_PREFERENCES);
+  const [workspacePreferencesVault, setWorkspacePreferencesVault] = useState('');
+  const [workspacePreferencesIssue, setWorkspacePreferencesIssue] = useState<string | null>(null);
+  const [workspacePresetUndo, setWorkspacePresetUndo] = useState<WorkspacePresetUndo | null>(null);
+  const workspacePresetUndoRef = useRef<WorkspacePresetUndo | null>(null);
+  const sidebarWidthRef = useRef(DEFAULT_WORKSPACE_PREFERENCES.sidebar.width);
+  const activeVaultIdentity = status?.vault.path ?? '';
+  const activeVaultIdentityRef = useRef(activeVaultIdentity);
+  activeVaultIdentityRef.current = activeVaultIdentity;
+  const sidebarResizeTimerRef = useRef<number | null>(null);
+  const splitResizeTimerRef = useRef<number | null>(null);
+  const workspacePreferencesReady = activeVaultIdentity !== '' && workspacePreferencesVault === activeVaultIdentity;
+  const sidebarCollapsed = workspacePreferences.sidebar.collapsed;
+  const editorFullWidth = workspacePreferences.editor.width === 'full';
+
+  useEffect(() => {
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+    sidebarResizeTimerRef.current = null;
+    splitResizeTimerRef.current = null;
+  }, [activeVaultIdentity]);
+
+  useEffect(() => () => {
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const media = window.matchMedia?.('(min-width: 768px)');
@@ -183,9 +202,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    sidebarPanelRef.current?.resize(!desktop ? 0 : sidebarCollapsed ? 64 : sidebarWidthRef.current);
-  }, [desktop, sidebarCollapsed, focusMode]);
-  const [editorFullWidth, setEditorFullWidth] = useState(initialFullWidth);
+    if (previousDesktopRef.current === desktop) return;
+    previousDesktopRef.current = desktop;
+    setSidebarOpen(false);
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!workspacePreferencesReady) return;
+    sidebarPanelRef.current?.resize(!desktop ? 0 : sidebarCollapsed ? 64 : workspacePreferences.sidebar.width);
+  }, [desktop, sidebarCollapsed, focusMode, workspacePreferences.sidebar.width, workspacePreferencesReady]);
   const [vaultSwitching, setVaultSwitching] = useState(false);
   const [vaultWorkInFlight, setVaultWorkInFlight] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -220,18 +245,114 @@ export default function App() {
   dirtyRef.current = dirty;
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+    if (!activeVaultIdentity) return;
+    const loaded = loadWorkspacePreferences(uiStorage(), activeVaultIdentity);
+    workspacePreferencesRef.current = loaded.preferences;
+    workspacePresetUndoRef.current = loaded.undo;
+    sidebarWidthRef.current = loaded.preferences.sidebar.width;
+    setWorkspacePreferencesState(loaded.preferences);
+    setWorkspacePresetUndo(loaded.undo);
+    setWorkspacePreferencesIssue(loaded.issue ?? null);
+    setWorkspacePreferencesVault(activeVaultIdentity);
+  }, [activeVaultIdentity]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(EDITOR_WIDTH_KEY, editorFullWidth ? 'full' : 'comfortable');
-    } catch {
-      // Storage may be unavailable; keep the preference for this app session.
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  function persistWorkspacePreferences(next: WorkspacePreferences, undo: WorkspacePresetUndo | null = null): void {
+    if (!workspacePreferencesReady || workspacePreferencesIssue?.includes('newer Nodus version')) return;
+    workspacePreferencesRef.current = next;
+    workspacePresetUndoRef.current = undo;
+    sidebarWidthRef.current = next.sidebar.width;
+    setWorkspacePreferencesState(next);
+    setWorkspacePresetUndo(undo);
+    const saved = saveWorkspacePreferences(uiStorage(), workspacePreferencesVault, next, undo);
+    setWorkspacePreferencesIssue(saved ? null : 'Workspace changes are active for this session but could not be saved in browser storage.');
+  }
+
+  function updateWorkspacePreferences(update: (current: WorkspacePreferences) => WorkspacePreferences): void {
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+    sidebarResizeTimerRef.current = null;
+    splitResizeTimerRef.current = null;
+    persistWorkspacePreferences(update(workspacePreferencesRef.current));
+  }
+
+  function setSidebarCollapsed(value: boolean | ((previous: boolean) => boolean)): void {
+    if (!workspacePreferencesReady) return;
+    const previous = workspacePreferencesRef.current.sidebar.collapsed;
+    const collapsed = typeof value === 'function' ? value(previous) : value;
+    if (sidebarResizeTimerRef.current !== null) {
+      window.clearTimeout(sidebarResizeTimerRef.current);
+      sidebarResizeTimerRef.current = null;
     }
-  }, [editorFullWidth]);
+    updateWorkspacePreferences((current) => ({ ...current, sidebar: {
+      ...current.sidebar,
+      collapsed,
+      width: previous === false && collapsed ? Math.round(sidebarWidthRef.current) : current.sidebar.width,
+    } }));
+  }
+
+  function setEditorFullWidth(value: boolean | ((previous: boolean) => boolean)): void {
+    if (!workspacePreferencesReady) return;
+    const previous = workspacePreferencesRef.current.editor.width === 'full';
+    const full = typeof value === 'function' ? value(previous) : value;
+    updateWorkspacePreferences((current) => ({ ...current, editor: { ...current.editor, width: full ? 'full' : 'comfortable' } }));
+  }
+
+  function setEditorLayout(layout: EditorLayout): void {
+    updateWorkspacePreferences((current) => ({ ...current, editor: { ...current.editor, layout } }));
+  }
+
+  function setEditorMode(mode: 'live' | 'source'): void {
+    updateWorkspacePreferences((current) => ({ ...current, editor: { ...current.editor, mode } }));
+  }
+
+  function applyWorkspacePreset(preset: WorkspacePresetId): void {
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+    sidebarResizeTimerRef.current = null;
+    splitResizeTimerRef.current = null;
+    const result = makeWorkspacePreset(workspacePreferencesRef.current, preset);
+    persistWorkspacePreferences(result.preferences, result.undo);
+  }
+
+  function undoWorkspacePreset(): void {
+    const undo = workspacePresetUndoRef.current;
+    if (undo === null) return;
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+    sidebarResizeTimerRef.current = null;
+    splitResizeTimerRef.current = null;
+    persistWorkspacePreferences(restoreWorkspacePreset(undo));
+  }
+
+  function resetWorkspace(): void {
+    if (!workspacePreferencesReady || workspacePreferencesIssue?.includes('newer Nodus version')) return;
+    if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+    if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+    sidebarResizeTimerRef.current = null;
+    splitResizeTimerRef.current = null;
+    const saved = clearWorkspacePreferences(uiStorage(), workspacePreferencesVault);
+    workspacePreferencesRef.current = DEFAULT_WORKSPACE_PREFERENCES;
+    workspacePresetUndoRef.current = null;
+    sidebarWidthRef.current = DEFAULT_WORKSPACE_PREFERENCES.sidebar.width;
+    setWorkspacePreferencesState(DEFAULT_WORKSPACE_PREFERENCES);
+    setWorkspacePresetUndo(null);
+    setWorkspacePreferencesIssue(saved ? null : 'Default workspace settings are active for this session but could not be saved.');
+  }
+
+  function toggleTheme(): void {
+    const next = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    if (!saveGlobalTheme(uiStorage(), next)) {
+      if (!workspacePreferencesIssue?.includes('newer Nodus version')) setWorkspacePreferencesIssue('The theme changed for this session but could not be saved in browser storage.');
+    } else if (workspacePreferencesIssue?.includes('browser storage')) {
+      setWorkspacePreferencesIssue(null);
+    }
+  }
 
   useEffect(() => {
     document.title = status === null ? 'Nodus' : `${status.vault.name} — Nodus`;
@@ -1605,12 +1726,26 @@ export default function App() {
       >
         Skip to content
       </a>
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1" disabled={!desktop || sidebarCollapsed || focusMode}>
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        disabled={!desktop || sidebarCollapsed || focusMode || !workspacePreferencesReady}
+        onLayoutChanged={(_, meta) => {
+          if (!meta.isUserInteraction || !desktop || sidebarCollapsed || focusMode || !workspacePreferencesReady) return;
+          const vault = activeVaultIdentity;
+          if (sidebarResizeTimerRef.current !== null) window.clearTimeout(sidebarResizeTimerRef.current);
+          sidebarResizeTimerRef.current = window.setTimeout(() => {
+            sidebarResizeTimerRef.current = null;
+            if (activeVaultIdentityRef.current !== vault) return;
+            updateWorkspacePreferences((current) => ({ ...current, sidebar: { ...current.sidebar, width: Math.round(sidebarWidthRef.current) } }));
+          }, 180);
+        }}
+      >
       {focusMode ? null : (
         <ResizablePanel
           id="workspace-sidebar"
           panelRef={sidebarPanelRef}
-          defaultSize={desktop ? sidebarWidthRef.current : 0}
+          defaultSize={desktop ? workspacePreferences.sidebar.width : 0}
           minSize={!desktop ? 0 : sidebarCollapsed ? 64 : 200}
           maxSize={!desktop ? 0 : sidebarCollapsed ? 64 : 480}
           groupResizeBehavior="preserve-pixel-size"
@@ -1618,7 +1753,6 @@ export default function App() {
           onResize={({ inPixels }) => {
             if (!desktop || sidebarCollapsed || inPixels < 200) return;
             sidebarWidthRef.current = inPixels;
-            try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(inPixels)); } catch { /* Optional preference. */ }
           }}
         >
         <Sidebar
@@ -1645,7 +1779,9 @@ export default function App() {
           creating={creating}
           status={status}
           theme={theme}
-          onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          onToggleTheme={toggleTheme}
+          sidebarSectionOrder={workspacePreferences.sidebar.order}
+          hiddenSidebarSections={workspacePreferences.sidebar.hidden}
           notes={notes}
           folders={folders}
           folderError={folderError}
@@ -1780,6 +1916,21 @@ export default function App() {
             focusMode={focusMode}
             fullWidth={editorFullWidth}
             onToggleWidth={() => setEditorFullWidth((value) => !value)}
+            layout={workspacePreferences.editor.layout}
+            editorMode={workspacePreferences.editor.mode}
+            splitRatio={workspacePreferences.editor.splitRatio}
+            onLayoutChange={setEditorLayout}
+            onEditorModeChange={setEditorMode}
+            onSplitRatioChange={(splitRatio) => {
+              const vault = activeVaultIdentity;
+              if (splitResizeTimerRef.current !== null) window.clearTimeout(splitResizeTimerRef.current);
+              splitResizeTimerRef.current = window.setTimeout(() => {
+                splitResizeTimerRef.current = null;
+                if (activeVaultIdentityRef.current !== vault) return;
+                updateWorkspacePreferences((current) => ({ ...current, editor: { ...current.editor, splitRatio } }));
+              }, 180);
+            }}
+            panels={workspacePreferences.panels}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
             onToggleFocus={() => setFocusMode((value) => !value)}
@@ -1917,7 +2068,7 @@ export default function App() {
             onOpenVault={() => void openVaultPath()}
             openingVault={openingVault}
             theme={theme}
-            onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            onToggleTheme={toggleTheme}
             onRestored={() => {
               setBacklinksRevision((value) => value + 1);
               void Promise.all([refreshNotes(true), refreshDatabases(), refreshStatus()]);
@@ -1925,6 +2076,14 @@ export default function App() {
             onVaultWorkChange={setVaultWorkInFlight}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+            workspacePreferences={workspacePreferences}
+            workspacePreferencesReady={workspacePreferencesReady}
+            workspacePreferencesIssue={workspacePreferencesIssue}
+            workspacePresetUndo={workspacePresetUndo}
+            onWorkspacePreferencesChange={(next) => persistWorkspacePreferences(next)}
+            onApplyWorkspacePreset={applyWorkspacePreset}
+            onUndoWorkspacePreset={undoWorkspacePreset}
+            onResetWorkspace={resetWorkspace}
           />
         ) : null}
       </main>
@@ -1959,7 +2118,7 @@ export default function App() {
         folders={folders}
         recentNotes={resolvedRecentNotes.slice(0, 5)}
         theme={theme}
-        onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+        onToggleTheme={toggleTheme}
       />
 
       <RecentNotesDialog

@@ -16,6 +16,7 @@ Your notes are ordinary Markdown files. YAML frontmatter is optional; when prese
 - Portable export/import that validates before writing and refuses silent overwrites.
 - Verified backups with SHA-256 manifests, validation, and explicit-overwrite restoration.
 - A local React UI (`ui/`) with a live Markdown editor, task checkboxes, wiki links, page icons, attachments, advanced note search across titles, aliases, paths, content, tags and registered properties, query operators, saved searches and history, [content-assisted related notes](docs/knowledge-retrieval.md), backlinks, link repair with stable-ID pinning, rename-safe title links, a command palette (`Ctrl/Cmd+K`), and a database browser/schema editor.
+- Vault-scoped workspace customization with versioned browser-local preferences, adjustable/reorderable sidebar navigation, persistent editor/preview layouts, linked-note panel visibility, and previewable presets. See [workspace customization](docs/workspace-customization.md).
 - **Smart organization** suggests existing tags, possible duplicate notes, folder destinations, and registered-property review opportunities from local Markdown and the derived graph/retrieval snapshot. Tag changes require an explicit preview and conditional write. Folder proposals are read-only previews; see [Smart organization](docs/smart-organization.md).
 - A relay server, sync client, and conflict handling (`src/relay/`, `src/sync/`) — **experimental**. They are not wired to any npm script, CLI bin, or the UI.
 
@@ -90,6 +91,7 @@ Also not implemented: database/property/option removal, accounts, AI, telemetry,
 - [Storage, export/import, and backups](docs/storage.md)
 - [Editor behavior](docs/editor.md)
 - [Page icons](docs/page-icons.md)
+- [Workspace customization](docs/workspace-customization.md)
 
 ## Development
 
