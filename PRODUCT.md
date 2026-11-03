@@ -34,6 +34,7 @@ Confirmed implemented or present in the repository:
 - Versioned JSON database definitions with typed properties.
 - Filesystem vault CRUD, path safety, atomic per-file writes, portable export/import, and verified backup/restore.
 - React/Vite local UI with note editing, search, command palette, read-only database schemas, settings, and local folder selection.
+- A derived Markdown task dashboard with completion, filtering, grouping, due/priority text metadata, and revision-safe source updates; tasks are never stored separately.
 - Node/SQLite relay foundation with device pairing, hashed bearer tokens, revisions, change feed, tombstones, and retired IDs.
 - Programmatic sync client foundation with outbox, apply ledger, cursor, bootstrap, pull/push, and conflict copies.
 

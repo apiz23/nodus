@@ -29,6 +29,7 @@ import { DiscoveryView } from './DiscoveryView';
 import { GraphView } from './GraphView';
 import { InsightsView } from './InsightsView';
 import { SmartOrganizationView } from './SmartOrganizationView';
+import { TasksView } from './TasksView';
 import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
@@ -95,6 +96,7 @@ function messageOf(error: unknown): string {
 
 export default function App() {
   const [view, setView] = useState<View>('notes');
+  const [taskNavigation, setTaskNavigation] = useState<{ noteId: string; line: number; sequence: number } | null>(null);
   const [status, setStatus] = useState<UiVaultStatus | null>(null);
   const [vaultSetup, setVaultSetup] = useState<UiVaultSetupState | null>(null);
   const [vaultSetupError, setVaultSetupError] = useState<string | null>(null);
@@ -663,7 +665,7 @@ export default function App() {
     }
   }
 
-  async function openNoteById(id: string, confirmDiscard = true): Promise<void> {
+  async function openNoteById(id: string, confirmDiscard = true, targetLine?: number): Promise<void> {
     if (confirmDiscard && dirty) {
       const proceed = window.confirm('Discard unsaved changes and open another note?');
       if (!proceed) return;
@@ -672,6 +674,7 @@ export default function App() {
 
     const request = ++noteRequestRef.current;
     draftRevisionRef.current += 1;
+    setTaskNavigation((current) => targetLine === undefined ? null : { noteId: id, line: targetLine, sequence: (current?.sequence ?? 0) + 1 });
     setView('notes');
     setSelectedNoteId(id);
     setNoteLoading(true);
@@ -1968,6 +1971,18 @@ export default function App() {
             onUnsetPropertyValue={(propertyId) => mutateActiveNoteProperty(propertyId)}
             onCatalogChanged={() => setSearchRevision((revision) => revision + 1)}
             backlinksRevision={backlinksRevision}
+            taskNavigation={taskNavigation?.noteId === activeNote?.id ? taskNavigation : null}
+          />
+        ) : null}
+
+        {view === 'tasks' ? (
+          <TasksView
+            key={status?.vault.path ?? 'vault-loading'}
+            vaultIdentity={status?.vault.path ?? ''}
+            revision={backlinksRevision}
+            onOpenTask={(noteId, line) => void openNoteById(noteId, true, line)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
         ) : null}
 

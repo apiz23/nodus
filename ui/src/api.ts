@@ -9,6 +9,9 @@ import type {
   UiKnowledgeInsights,
   UiOrganizationAnalysis,
   UiOrganizationMovePreview,
+  UiTasksResponse,
+  UiToggleTaskInput,
+  UiToggleTaskResponse,
   UiRelatedNotesResponse,
   UiGraphCluster,
   UiGraphPathResult,
@@ -263,6 +266,12 @@ export const api = {
   },
   organization(refresh = false): Promise<UiOrganizationAnalysis> {
     return request(`/api/organization${refresh ? '?refresh=true' : ''}`);
+  },
+  tasks(refresh = false): Promise<UiTasksResponse> {
+    return request(`/api/tasks${refresh ? '?refresh=true' : ''}`);
+  },
+  toggleTask(noteId: string, input: UiToggleTaskInput): Promise<UiToggleTaskResponse> {
+    return request(`/api/notes/${encodeURIComponent(noteId)}/tasks/toggle`, { method: 'PUT', body: jsonBody(input) });
   },
   applyOrganizationSuggestion(suggestionId: string): Promise<{ note: UiNote }> {
     return request(`/api/organization/${encodeURIComponent(suggestionId)}/apply`, { method: 'POST', body: '{}' });

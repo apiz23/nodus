@@ -36,6 +36,7 @@ import { graphFromLinkIndex } from '../links/graph.js';
 import { analyzeGraph } from '../links/graph-analytics.js';
 import { relatedNotes } from '../links/related-notes.js';
 import { analyzeOrganization, previewOrganizationMove } from '../organization/analysis.js';
+import { buildTaskProjection, extractTasksFromNote, setTaskChecked, type TaskProjection } from '../tasks/extract.js';
 import { shortestGraphPath, type GraphTraversalMode } from '../links/graph-paths.js';
 import { graphClusterInsights } from '../links/graph-cluster-insights.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
@@ -68,6 +69,9 @@ import type {
   UiVaultSetupState,
   UiBacklinksResponse,
   UiRelationBacklinksResponse,
+  UiTasksResponse,
+  UiToggleTaskInput,
+  UiToggleTaskResponse,
 } from './dto.js';
 import { pickFolder } from './folder-picker.js';
 import { applicationPreferencesPath, gettingStartedCompleted, readLastVaultPreference, setGettingStartedCompleted, writeLastVaultPreference } from './app-preferences.js';
@@ -145,21 +149,25 @@ export function createLocalApiMiddleware(
   let startupPromise: Promise<void> | undefined;
   let disposed = false;
   let disposalPromise: Promise<void> | undefined;
-  type KnowledgeSnapshot = { notes: Note[]; catalog: PropertyCatalog; catalogIssue?: string };
+  type KnowledgeSnapshot = { notes: Note[]; hashes: Map<string, string>; catalog: PropertyCatalog; catalogIssue?: string };
   const loadKnowledgeSnapshot = async (vault: FileSystemVault): Promise<KnowledgeSnapshot> => {
-    const notes = await vault.snapshotNotes();
+    const stored = await vault.snapshotNotesWithHashes();
+    const notes = stored.map(({ note }) => note);
+    const hashes = new Map(stored.map(({ note, hash }) => [note.id, hash] as const));
     try {
       const { catalog } = await vault.readPropertyCatalogWithHash();
-      return { notes, catalog };
+      return { notes, hashes, catalog };
     } catch (error) {
-      return { notes, catalog: { properties: [] }, catalogIssue: error instanceof Error ? error.message : 'Property catalog could not be read.' };
+      return { notes, hashes, catalog: { properties: [] }, catalogIssue: error instanceof Error ? error.message : 'Property catalog could not be read.' };
     }
   };
+  type KnowledgeIndex = ReturnType<typeof buildKnowledgeIndex>;
   const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot, previousSearch?: ReturnType<typeof buildSearchIndex>) => {
     const links = buildLinkIndex(snapshot.notes);
     const graph = graphFromLinkIndex(links);
     return {
       notes: snapshot.notes,
+      hashes: snapshot.hashes,
       catalog: snapshot.catalog,
       links,
       graph,
@@ -172,19 +180,29 @@ export function createLocalApiMiddleware(
       search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue, previousSearch),
     };
   };
-  const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<KnowledgeSnapshot, ReturnType<typeof buildKnowledgeIndex>>>>();
+  const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<KnowledgeSnapshot, KnowledgeIndex>>>();
   const indexFor = (vault: FileSystemVault) => {
     let index = indexes.get(vault);
     if (!index) {
       let previousSearch: ReturnType<typeof buildSearchIndex> | undefined;
       index = createSnapshotCache(() => loadKnowledgeSnapshot(vault), (snapshot) => {
-        const built = buildKnowledgeIndex(snapshot, previousSearch);
+        const built: KnowledgeIndex = buildKnowledgeIndex(snapshot, previousSearch);
         previousSearch = built.search;
         return built;
       });
       indexes.set(vault, index);
     }
     return index;
+  };
+  const taskProjections = new WeakMap<KnowledgeIndex, TaskProjection>();
+  const previousTaskProjections = new WeakMap<FileSystemVault, TaskProjection>();
+  const tasksFor = (vault: FileSystemVault, index: KnowledgeIndex): TaskProjection => {
+    const cached = taskProjections.get(index);
+    if (cached) return cached;
+    const projection = buildTaskProjection(index.notes, index.hashes, {}, previousTaskProjections.get(vault));
+    previousTaskProjections.set(vault, projection);
+    taskProjections.set(index, projection);
+    return projection;
   };
   type RelationSnapshot = { notes: Note[]; schemas: Map<string, DatabaseDefinition> };
   const loadRelationSnapshot = async (vault: FileSystemVault): Promise<RelationSnapshot> => {
@@ -622,6 +640,47 @@ export function createLocalApiMiddleware(
         ...(index.search.retrievalIssue ? { retrievalIssue: index.search.retrievalIssue } : {}),
         ...(index.search.catalogIssue ? { catalogIssue: index.search.catalogIssue } : {}),
       });
+    }
+    if (method === 'GET' && path === '/api/tasks') {
+      const vault = await getVault();
+      const index = await indexFor(vault).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, tasksFor(vault, index) satisfies UiTasksResponse);
+    }
+    const taskToggleMatch = /^\/api\/notes\/([^/]+)\/tasks\/toggle$/.exec(path);
+    if (method === 'PUT' && taskToggleMatch !== null) {
+      const noteId = decodeURIComponent(taskToggleMatch[1] ?? '');
+      if (!isUuidV4(noteId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['taskId', 'checked', 'baseHash'], 'request');
+      if (typeof body.checked !== 'boolean') throw new ApiError(400, 'INVALID_INPUT', 'checked must be a boolean.');
+      const input: UiToggleTaskInput = {
+        taskId: requireString(body.taskId, 'taskId'),
+        checked: body.checked,
+        baseHash: requireHash(body.baseHash),
+      };
+      const vault = await getVault();
+      const current = await vault.readNoteWithHash(noteId);
+      if (current.hash !== input.baseHash) {
+        throw new ApiError(409, 'STALE_WRITE', 'The note changed before this task update. Refresh the task list and try again.', { currentHash: current.hash });
+      }
+      const task = extractTasksFromNote(current.note, current.hash).find((candidate) => candidate.id === input.taskId);
+      if (task === undefined) {
+        throw new ApiError(409, 'STALE_TASK', 'This task is no longer present in the note. Refresh the task list and try again.');
+      }
+      const nextBody = setTaskChecked(current.note.body, task, input.checked);
+      if (nextBody === current.note.body) {
+        return sendJson(res, 200, { task, note: toUiNoteSummary(current.note) } satisfies UiToggleTaskResponse);
+      }
+      try {
+        await vault.replaceNote({ ...current.note, body: nextBody, updatedAt: clock() }, { expectedHash: current.hash });
+      } catch (error) {
+        throw toStaleApiError(error, 'updating this task');
+      }
+      markProjectionCachesDirty();
+      const stored = await vault.readNoteWithHash(noteId);
+      const updatedTask = extractTasksFromNote(stored.note, stored.hash).find((candidate) => candidate.id === task.id);
+      if (updatedTask === undefined) throw new ApiError(409, 'STALE_TASK', 'The task moved while it was being updated. Refresh the task list.');
+      return sendJson(res, 200, { task: updatedTask, note: toUiNoteSummary(stored.note) } satisfies UiToggleTaskResponse);
     }
     const organizationApplyMatch = /^\/api\/organization\/([^/]+)\/apply$/.exec(path);
     if (method === 'POST' && organizationApplyMatch !== null) {
@@ -1907,6 +1966,17 @@ function toUiNote(note: Note, contentHash: string): UiNote {
     metadataKeys: Object.keys(note.extraFrontmatter).sort(),
     icon: readPageIcon(note.extraFrontmatter),
     contentHash,
+  };
+}
+
+function toUiNoteSummary(note: Note): UiNoteSummary {
+  return {
+    id: note.id,
+    title: note.title,
+    path: note.path,
+    updatedAt: note.updatedAt,
+    aliases: [...note.aliases],
+    icon: readPageIcon(note.extraFrontmatter),
   };
 }
 

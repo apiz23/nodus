@@ -9,6 +9,7 @@ import {
   FileText,
   FolderClosed,
   FolderOpen,
+  ListTodo,
   Moon,
   Network,
   Plus,
@@ -91,6 +92,7 @@ interface SidebarProps {
 const paletteShortcut = shortcutLabel(shortcutById('command-palette').binding, detectPlatform());
 
 const navItems = [  { id: 'notes' as const, label: 'All notes', icon: FileText },
+  { id: 'tasks' as const, label: 'Tasks', icon: ListTodo },
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'insights' as const, label: 'Knowledge health', icon: Activity },

@@ -210,7 +210,7 @@ describe('global search snapshot lifecycle', () => {
       const vault = await FileSystemVault.open(vaultPath);
       const aliasId = 'eeeeeeee-5555-4555-8555-555555555555';
       await vault.createNote(createNote({ id: aliasId, title: 'Alias destination', path: 'alias.md', body: '', aliases: ['Planning'], now: NOW }));
-      const snapshot = vi.spyOn(FileSystemVault.prototype, 'snapshotNotes');
+      const snapshot = vi.spyOn(FileSystemVault.prototype, 'snapshotNotesWithHashes');
       const started = await startApi(vaultPath);
       const mutate = async (path: string, method: string, body: unknown) => {
         const response = await fetch(`${started.base}/api${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

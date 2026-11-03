@@ -21,6 +21,7 @@ import type {
 } from '../properties/catalog.js';
 import type { TagOperation } from '../domain/tags.js';
 import type { OrganizationAnalysis, OrganizationMovePreview } from '../organization/analysis.js';
+import type { ExtractedTask, TaskCounts, TaskProjection } from '../tasks/extract.js';
 
 export type {
   BackupManifest,
@@ -165,6 +166,24 @@ export interface UiSearchMetadataResponse {
   metadataIssueCount: number;
   catalogIssue?: string;
 }
+
+export type UiTask = ExtractedTask;
+
+export type UiTasksResponse = TaskProjection;
+
+export interface UiToggleTaskInput {
+  taskId: string;
+  checked: boolean;
+  /** Raw note hash from the task projection. */
+  baseHash: string;
+}
+
+export interface UiToggleTaskResponse {
+  task: UiTask;
+  note: UiNoteSummary;
+}
+
+export type { TaskCounts };
 
 export interface UiHealthIssue {
   code: string;
