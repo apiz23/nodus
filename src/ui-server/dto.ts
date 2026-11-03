@@ -443,6 +443,8 @@ export interface UiSaveNoteResponse {
 export type UiNoteGraph = import('../links/graph.js').NoteGraph;
 export type UiGraphNoteMetric = import('../links/graph-analytics.js').GraphNoteMetric;
 export type UiRelatedNote = import('../links/related-notes.js').RelatedNote;
+export type UiGraphCluster = import('../links/graph-analytics.js').GraphComponentSummary;
+export type UiGraphPathResult = import('../links/graph-paths.js').GraphPathResult;
 
 export interface UiKnowledgeInsights {
   metrics: {
