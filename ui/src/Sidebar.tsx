@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import {
   Activity,
+  Sparkles,
   ChevronDown,
   CircleHelp,
   Database,
@@ -90,6 +91,7 @@ const navItems = [  { id: 'notes' as const, label: 'All notes', icon: FileText }
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'insights' as const, label: 'Knowledge health', icon: Activity },
+  { id: 'organization' as const, label: 'Smart organization', icon: Sparkles },
   { id: 'databases' as const, label: 'Databases', icon: Database },
   { id: 'templates' as const, label: 'Templates', icon: CopyPlus },
 ];

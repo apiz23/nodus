@@ -7,6 +7,8 @@ import type {
   UiDiscoveryResponse,
   UiNoteGraph,
   UiKnowledgeInsights,
+  UiOrganizationAnalysis,
+  UiOrganizationMovePreview,
   UiRelatedNotesResponse,
   UiGraphCluster,
   UiGraphPathResult,
@@ -258,6 +260,15 @@ export const api = {
   },
   insights(refresh = false): Promise<UiKnowledgeInsights> {
     return request(`/api/insights${refresh ? '?refresh=true' : ''}`);
+  },
+  organization(refresh = false): Promise<UiOrganizationAnalysis> {
+    return request(`/api/organization${refresh ? '?refresh=true' : ''}`);
+  },
+  applyOrganizationSuggestion(suggestionId: string): Promise<{ note: UiNote }> {
+    return request(`/api/organization/${encodeURIComponent(suggestionId)}/apply`, { method: 'POST', body: '{}' });
+  },
+  organizationMovePreview(suggestionId: string): Promise<{ preview: UiOrganizationMovePreview }> {
+    return request(`/api/organization/${encodeURIComponent(suggestionId)}/move-preview`);
   },
   graphClusters(refresh = false): Promise<{ clusters: UiGraphCluster[] }> {
     return request(`/api/graph/clusters${refresh ? '?refresh=true' : ''}`);

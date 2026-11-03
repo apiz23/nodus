@@ -28,6 +28,7 @@ import { ExternalChangeDialog, ExternalChangeNotice } from './editor/ExternalCha
 import { DiscoveryView } from './DiscoveryView';
 import { GraphView } from './GraphView';
 import { InsightsView } from './InsightsView';
+import { SmartOrganizationView } from './SmartOrganizationView';
 import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
@@ -1850,6 +1851,22 @@ export default function App() {
             onOpenGraph={(id) => {
               if (id !== undefined) setSelectedNoteId(id);
               setView('graph');
+            }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+          />
+        ) : null}
+
+        {view === 'organization' ? (
+          <SmartOrganizationView
+            key={status?.vault.path ?? 'vault-loading'}
+            vaultIdentity={status?.vault.path ?? ''}
+            revision={backlinksRevision}
+            onOpenNote={(id) => void openNoteById(id)}
+            onChanged={async () => {
+              await refreshNotes(true);
+              setBacklinksRevision((value) => value + 1);
+              setSearchRevision((value) => value + 1);
             }}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
