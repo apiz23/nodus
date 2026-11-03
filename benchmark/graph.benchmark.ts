@@ -7,6 +7,7 @@ import { analyzeGraph } from '../src/links/graph-analytics.js';
 import { relatedNotes } from '../src/links/related-notes.js';
 import { shortestGraphPath } from '../src/links/graph-paths.js';
 import { positionGraph, visibleGraph } from '../ui/src/graph-model.js';
+import { fitGraphViewport } from '../ui/src/graph-viewport.js';
 import { createLinkSuggester } from '../src/links/link-repair.js';
 
 const makeId = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -186,4 +187,33 @@ it('measures bounded graph filtering and positioning for large vaults', () => {
   }
   expect(results).toHaveLength(3);
   console.log(JSON.stringify({ node: process.version, method: '5-run median for deterministic filtering to 200 rendered nodes and radial positioning; excludes React/SVG paint', results }, null, 2));
+}, 120_000);
+
+
+it('measures cluster-aware layout separately from rendering', () => {
+  const results: Array<{ nodes: number; clusters: number; minDistance: number; layoutMs: number; fitMs: number }> = [];
+  for (const size of [100, 200, 400]) {
+    const nodes = Array.from({ length: size }, (_, index) => ({ id: makeId(index + 1), title: `Layout note ${index + 1}`, path: `folder-${Math.floor(index / 50)}/note-${index + 1}.md` }));
+    const clusterByNode = new Map(nodes.map((node, index) => [node.id, `cluster-${Math.floor(index / 50)}`]));
+    const options = { clusterByNode, isolatedNodeIds: new Set<string>() };
+    positionGraph(nodes, null, 1000, 640, options);
+    const layoutDurations: number[] = [];
+    const fitDurations: number[] = [];
+    let positioned = positionGraph(nodes, null, 1000, 640, options);
+    for (let run = 0; run < 5; run += 1) {
+      const layoutStart = performance.now();
+      positioned = positionGraph(nodes, null, 1000, 640, options);
+      layoutDurations.push(performance.now() - layoutStart);
+      const fitStart = performance.now();
+      fitGraphViewport(positioned);
+      fitDurations.push(performance.now() - fitStart);
+    }
+    let minDistance = Infinity;
+    for (let i = 0; i < positioned.length; i += 1) for (let j = i + 1; j < positioned.length; j += 1) {
+      minDistance = Math.min(minDistance, Math.hypot(positioned[i]!.x - positioned[j]!.x, positioned[i]!.y - positioned[j]!.y));
+    }
+    results.push({ nodes: size, clusters: Math.ceil(size / 50), minDistance: Number(minDistance.toFixed(2)), layoutMs: Number(median(layoutDurations).toFixed(2)), fitMs: Number(median(fitDurations).toFixed(2)) });
+  }
+  expect(results).toHaveLength(3);
+  console.log(JSON.stringify({ node: process.version, method: '5-run median; deterministic cluster-aware layout and fit-to-view only, excludes React/SVG paint', results }, null, 2));
 }, 120_000);

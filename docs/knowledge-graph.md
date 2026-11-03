@@ -113,6 +113,30 @@ The current note is excluded, duplicate candidates are collapsed by stable ID, a
 
 The **Knowledge health** view in the sidebar and command palette presents overview metrics, largest clusters, most connected notes, and recently modified notes. Metric actions navigate to Discovery, the local graph, or individual notes. It has loading, empty, error, and retry states, is keyboard accessible, and uses a request generation guard so older responses cannot replace a newer vault revision. Vault switching remounts the view by vault key.
 
+## Canvas interaction and layout
+
+The graph canvas uses SVG viewBox coordinates and corrected `preserveAspectRatio` letterboxing math:
+
+- Left-drag empty canvas pans. Node drags never start a canvas pan.
+- Wheel/trackpad zoom is pointer-centered and clamped to 0.12×–3×. Zoom controls anchor at the canvas centre.
+- **Fit** fits the current layout with padding; **Reset view** returns to the centered 100% view; **Re-layout** clears manual node positions and refits.
+- **Previous focus** and existing selection, double-click open, keyboard selection, filters, render limits, saved views, path exploration, and cluster insights are preserved.
+- Graph labels use level-of-detail: all labels appear at 0.65× and above; below that, selected, focused, and neighbour labels remain.
+- Edge strokes use non-scaling strokes so links stay readable when zoomed out.
+
+### Deterministic layout
+
+`positionGraph` now supports cluster-aware deterministic layout when cluster metadata is available:
+
+- **Unfocused graph:** notes are grouped by confirmed connected component; all isolated notes form a separate group. Each group is packed into a deterministic grid, and groups are shelf-packed with large separation. This keeps related notes close and unrelated clusters apart without overlap simulation.
+- **Focused neighborhood:** the focus note is centered at the origin; one-hop neighbours are placed on concentric rings sorted by title/path/ID.
+- Node and group coordinates are virtual; fit-to-view maps the full layout into the visible viewport. Manual node positions are optional and constrained to a sane coordinate range.
+- No force-layout dependency is introduced.
+
+### Saved node positions
+
+Manual node positions are session state and are persisted only when a saved graph view is created or updated. The saved-view config accepts an optional `nodePositions` map; older browser-local and imported views without it default to an empty map. Positions are vault-scoped through the existing saved-view storage key, versioned by the saved-view envelope, and ignored when the note is no longer present. Positions are not automatic per-note preferences.
+
 ## Orphans and isolated notes
 
 The legacy API `orphans` list means “no confirmed incoming link.” The graph/discovery UI uses the stricter **isolated** definition from the task: no confirmed incoming **and** no confirmed outgoing internal link. Self-links, unresolved links, and ambiguous mentions do not connect a note.
@@ -223,8 +247,8 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 
 ## Known limitations
 
-- The graph uses a deterministic radial layout; there is no force simulation or persisted node position.
-- Saved graph views remain browser-local preferences; portable JSON export/import is explicit and is not part of vault backup. They do not survive clearing site storage unless exported first.
+- The graph uses deterministic cluster-aware and focused-ring layouts; there is no force simulation. Manual node positions persist only inside explicitly saved graph views, not as global per-note preferences.
+- Saved graph views remain browser-local preferences; portable JSON export/import is explicit and is not part of vault backup. They do not survive clearing site storage unless exported first. Manual node positions are saved only when explicitly written into a view.
 - Path history is browser-local and vault-scoped; it stores stable note IDs only and is pruned when either endpoint disappears.
 - Shortest paths are bounded BFS results over confirmed links; very large searches can return `limit` rather than an exhaustive answer.
 - Cluster filter options currently list all non-singleton clusters; extremely fragmented vaults use the separate isolated-notes option.

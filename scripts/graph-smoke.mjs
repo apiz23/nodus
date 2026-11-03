@@ -51,10 +51,14 @@ try {
   await page.getByRole('checkbox', { name: 'Show isolated notes' }).click();
   await page.getByRole('button', { name: 'Select Lone Node' }).waitFor({ state: 'visible' });
   const canvas = page.getByRole('group', { name: 'Directed wiki-link graph' });
+  const viewGroup = canvas.locator('[data-graph-viewport]');
+  const scaleBefore = Number(await viewGroup.getAttribute('data-scale'));
   await page.getByRole('button', { name: 'Zoom in' }).click();
-  assert.match(await canvas.locator('g').first().getAttribute('transform'), /scale\(1\.2\)/);
-  await page.getByRole('button', { name: 'Reset viewport' }).click();
-  assert.match(await canvas.locator('g').first().getAttribute('transform'), /scale\(1\)/);
+  await page.waitForTimeout(80);
+  assert(Number(await viewGroup.getAttribute('data-scale')) > scaleBefore, 'Zoom in did not increase graph scale');
+  await page.getByRole('button', { name: 'Reset view' }).click();
+  await page.waitForTimeout(80);
+  assert.equal(Number(await viewGroup.getAttribute('data-scale')), 1, 'Reset view did not restore 100% scale');
   await page.getByLabel('Filter notes by title or path').fill('no such note');
   await page.getByRole('heading', { name: 'No matching notes', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Reset filters', exact: true }).click();

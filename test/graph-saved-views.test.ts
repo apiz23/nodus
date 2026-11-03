@@ -26,6 +26,7 @@ const config: SavedGraphViewConfig = {
   showUnresolved: true,
   pathMode: 'undirected',
   renderLimit: 200,
+  nodePositions: {},
   viewport: { x: 12, y: -4, scale: 1.4 },
 };
 
@@ -68,6 +69,14 @@ describe('saved graph views', () => {
     expect(parseSavedGraphViews(raw)).toEqual([view]);
     expect(parseSavedGraphViews('{bad')).toEqual([]);
     expect(parseSavedGraphViews(JSON.stringify({ version: 99, views: [view] }))).toEqual([]);
+  });
+
+  it('round-trips manual node positions and defaults legacy views to none', () => {
+    const view = createSavedGraphView('Pinned', { ...config, nodePositions: { n1: { x: 120, y: -40 } } }, '2026-11-03T00:00:00Z');
+    expect(parseSavedGraphViews(serializeSavedGraphViews([view]))[0]?.config.nodePositions).toEqual({ n1: { x: 120, y: -40 } });
+    const raw = JSON.parse(serializeSavedGraphViews([view]));
+    delete raw.views[0].config.nodePositions;
+    expect(parseSavedGraphViews(JSON.stringify(raw))[0]?.config.nodePositions).toEqual({});
   });
 
   it('renames views and updates only the config revision', () => {

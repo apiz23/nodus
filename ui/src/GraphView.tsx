@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Minus, Network, Plus, RefreshCw, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Maximize, Minus, Network, Plus, RefreshCw, RotateCcw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -8,19 +8,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { GraphEdge } from '../../src/links/graph.js';
 import type { UiGraphCluster, UiNoteGraph } from '../../src/ui-server/dto.js';
 import type { GraphTraversalMode } from '../../src/links/graph-paths.js';
-import { DEFAULT_GRAPH_RENDER_LIMIT, type SavedGraphViewConfig } from './graph-saved-views';
+import { DEFAULT_GRAPH_RENDER_LIMIT, type GraphPoint, type SavedGraphViewConfig } from './graph-saved-views';
 import { GraphSavedViews } from './GraphSavedViews';
 import { GraphPathExplorer } from './GraphPathExplorer';
 import { GraphClusterInsights } from './GraphClusterInsights';
 import { api } from './api';
 import { graphConnections, graphFolders, positionGraph, visibleGraph } from './graph-model';
 import { cn } from '@/lib/utils';
+import {
+  GRAPH_VIEW_HEIGHT,
+  GRAPH_VIEW_WIDTH,
+  centeredGraphViewport,
+  clientToGraphViewBox,
+  fitGraphViewport,
+  graphViewportTransform,
+  panGraphViewport,
+  zoomGraphViewportAt,
+  type GraphViewport,
+} from './graph-viewport';
 
 interface Props { revision: number; initialNoteId: string | null; vaultKey: string; onOpenNote: (id: string) => void }
-interface Viewport { x: number; y: number; scale: number }
 const ALL_FOLDERS = '__all__';
 const ALL_CLUSTERS = '__all__';
 const ISOLATED_CLUSTER = '__isolated__';
+
+type Interaction =
+  | { type: 'pan'; pointerId: number; startClientX: number; startClientY: number; origin: GraphViewport; moved: boolean; captureTarget: Element }
+  | { type: 'node'; pointerId: number; nodeId: string; startClientX: number; startClientY: number; originX: number; originY: number; moved: boolean; captureTarget: Element };
 
 export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Props) {
   const [graph, setGraph] = useState<UiNoteGraph | null>(null);
@@ -39,10 +53,24 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
   const [focusHistory, setFocusHistory] = useState<string[]>([]);
   const [pathMode, setPathMode] = useState<GraphTraversalMode>('directed');
   const [renderLimit, setRenderLimit] = useState(DEFAULT_GRAPH_RENDER_LIMIT);
-  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
+  const [nodePositions, setNodePositions] = useState<Record<string, GraphPoint>>({});
+  const [viewport, setViewport] = useState<GraphViewport>(centeredGraphViewport());
+  const [panning, setPanning] = useState(false);
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const request = useRef(0);
   const mounted = useRef(true);
-  const drag = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const viewportRef = useRef(viewport);
+  const nodePositionsRef = useRef(nodePositions);
+  const interaction = useRef<Interaction | null>(null);
+  const frame = useRef<number | null>(null);
+  const pendingViewport = useRef<GraphViewport | null>(null);
+  const pendingPositions = useRef<Record<string, GraphPoint>>({});
+  const lastClick = useRef<{ id: string; time: number } | null>(null);
+  const lastDragAt = useRef(0);
+  const skipFit = useRef(false);
+  viewportRef.current = viewport;
+  nodePositionsRef.current = nodePositions;
 
   async function load(refresh = false) {
     const current = ++request.current;
@@ -66,6 +94,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
       setSelectedId((id) => id && result.nodes.some((node) => node.id === id) ? id : null);
       setFocusId((id) => id && result.nodes.some((node) => node.id === id) ? id : null);
       setFocusHistory((history) => history.filter((id) => result.nodes.some((node) => node.id === id)));
+      setNodePositions((positions) => Object.fromEntries(Object.entries(positions).filter(([id]) => result.nodes.some((node) => node.id === id))));
     } catch (reason) {
       if (mounted.current && current === request.current) setError(reason instanceof Error ? reason.message : 'Could not load the local note graph.');
     } finally {
@@ -76,7 +105,13 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
   useEffect(() => {
     mounted.current = true;
     void load();
-    return () => { mounted.current = false; request.current++; drag.current = null; };
+    return () => {
+      mounted.current = false;
+      request.current++;
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+      interaction.current = null;
+    };
   }, [revision]);
 
   const folders = useMemo(() => graphFolders(graph?.nodes ?? []), [graph]);
@@ -92,7 +127,13 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     () => graph ? visibleGraph(graph, query, focusId, renderLimit, { folder, showIsolated, showUnresolved, clusterNodeIds, priorityIds: selectedCluster?.members.map((member) => member.id) }) : null,
     [graph, query, focusId, folder, showIsolated, showUnresolved, clusterNodeIds, renderLimit, selectedCluster],
   );
-  const positions = useMemo(() => visible ? positionGraph(visible.nodes, focusId) : [], [visible, focusId]);
+  const clusterByNode = useMemo(() => new Map(clusters.flatMap((cluster) => cluster.members.map((member) => [member.id, cluster.id] as const))), [clusters]);
+  const isolatedNodeIds = useMemo(() => new Set(graph?.isolatedNodeIds ?? []), [graph]);
+  const basePositions = useMemo(() => visible ? positionGraph(visible.nodes, focusId, GRAPH_VIEW_WIDTH, GRAPH_VIEW_HEIGHT, { clusterByNode, isolatedNodeIds }) : [], [visible, focusId, clusterByNode, isolatedNodeIds]);
+  const positions = useMemo(() => basePositions.map((node) => {
+    const manual = nodePositions[node.id];
+    return manual === undefined ? node : { ...node, x: manual.x, y: manual.y };
+  }), [basePositions, nodePositions]);
   const positionsById = useMemo(() => new Map(positions.map((node) => [node.id, node])), [positions]);
   const selected = visible?.nodes.find((node) => node.id === selectedId) ?? null;
   const connections = useMemo(
@@ -106,9 +147,70 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
   ]), [selected, connections]);
   const nodeById = useMemo(() => new Map(visible?.nodes.map((node) => [node.id, node]) ?? []), [visible]);
 
+  useEffect(() => {
+    if (basePositions.length === 0) return;
+    if (skipFit.current) { skipFit.current = false; return; }
+    const manual = nodePositionsRef.current;
+    setViewport(fitGraphViewport(basePositions.map((node) => {
+      const position = manual[node.id];
+      return position === undefined ? node : { ...node, x: position.x, y: position.y };
+    })));
+  }, [basePositions]);
+
+  useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (svg === null) return undefined;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = svg.getBoundingClientRect();
+      const point = clientToGraphViewBox(event.clientX, event.clientY, bounds);
+      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      const factor = Math.exp(-delta * (event.ctrlKey ? 0.01 : 0.0018));
+      pendingViewport.current = zoomGraphViewportAt(pendingViewport.current ?? viewportRef.current, point, factor);
+      scheduleFrame();
+    };
+    svg.addEventListener('wheel', handleWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', handleWheel);
+  }, [graph]);
+
   function selectNode(id: string) { setSelectedId(id); }
-  function zoom(factor: number) { setViewport((current) => ({ ...current, scale: Math.max(0.5, Math.min(2.5, current.scale * factor)) })); }
-  function resetViewport() { setViewport({ x: 0, y: 0, scale: 1 }); }
+  function scheduleFrame() {
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      const nextViewport = pendingViewport.current;
+      if (nextViewport !== null) {
+        pendingViewport.current = null;
+        viewportRef.current = nextViewport;
+        setViewport(nextViewport);
+      }
+      const nextPositions = pendingPositions.current;
+      pendingPositions.current = {};
+      if (Object.keys(nextPositions).length > 0) setNodePositions((current) => ({ ...current, ...nextPositions }));
+    });
+  }
+  function setViewportNow(next: GraphViewport) {
+    pendingViewport.current = next;
+    scheduleFrame();
+  }
+  function zoomAt(point: { x: number; y: number }, factor: number) {
+    setViewportNow(zoomGraphViewportAt(pendingViewport.current ?? viewportRef.current, point, factor));
+  }
+  function zoom(factor: number) { zoomAt({ x: GRAPH_VIEW_WIDTH / 2, y: GRAPH_VIEW_HEIGHT / 2 }, factor); }
+  function fitViewport() {
+    const manual = nodePositionsRef.current;
+    setViewportNow(fitGraphViewport(basePositions.map((node) => {
+      const position = manual[node.id];
+      return position === undefined ? node : { ...node, x: position.x, y: position.y };
+    })));
+  }
+  function resetViewport() { setViewportNow(centeredGraphViewport()); }
+  function clearNodePositions() {
+    setNodePositions({});
+    fitViewport();
+  }
   function focusGraph(id: string) {
     if (focusId !== null && focusId !== id) setFocusHistory((history) => [...history.slice(-9), focusId]);
     setFocusId(id);
@@ -138,10 +240,11 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     setSelectedId(null);
     setPathMode('directed');
     setRenderLimit(DEFAULT_GRAPH_RENDER_LIMIT);
+    setNodePositions({});
     resetViewport();
   }
   function captureConfig(): SavedGraphViewConfig {
-    return { query, folder, clusterId, focusId, selectedId, showIsolated, showUnresolved, pathMode, viewport, renderLimit };
+    return { query, folder, clusterId, focusId, selectedId, showIsolated, showUnresolved, pathMode, viewport: viewportRef.current, renderLimit, nodePositions: nodePositionsRef.current };
   }
   function applySavedConfig(config: SavedGraphViewConfig) {
     setQuery(config.query);
@@ -151,6 +254,8 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
     setShowUnresolved(config.showUnresolved);
     setPathMode(config.pathMode);
     setRenderLimit(config.renderLimit);
+    setNodePositions(config.nodePositions ?? {});
+    skipFit.current = true;
     setViewport(config.viewport);
     setFocusHistory([]);
     const existing = new Set(graph?.nodes.map((node) => node.id) ?? []);
@@ -217,7 +322,9 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
             <SelectItem value="400">400 nodes</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" onClick={resetViewport}><RotateCcw data-icon="inline-start" />Reset viewport</Button>
+        <Button variant="outline" size="sm" onClick={fitViewport} aria-label="Fit graph to screen"><Maximize data-icon="inline-start" />Fit</Button>
+        <Button variant="outline" size="sm" onClick={resetViewport}><RotateCcw data-icon="inline-start" />Reset view</Button>
+        <Button variant="ghost" size="sm" onClick={clearNodePositions}>Re-layout</Button>
         <Button variant="ghost" size="sm" onClick={resetFilters}>Reset filters</Button>
         {focusHistory.length > 0 ? <Button variant="ghost" size="sm" onClick={backFocus}><ArrowLeft data-icon="inline-start" />Previous focus</Button> : null}
         {focusId ? <Button variant="ghost" size="sm" onClick={clearFocus}>Show full graph</Button> : null}
@@ -244,20 +351,76 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
         {clusterId === null ? null : <GraphClusterInsights clusterId={clusterId} isolatedCount={graph?.isolatedNodeIds?.length ?? 0} onSelectNode={selectNode} onOpenNote={onOpenNote} />}
         <div className="grid min-h-[26rem] flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="min-h-[24rem] overflow-hidden rounded-md border bg-card">
-            <svg viewBox="0 0 1000 640" role="group" aria-label="Directed wiki-link graph" className="size-full min-h-[24rem] touch-none select-none"
-              onWheel={(event) => { event.preventDefault(); zoom(event.deltaY < 0 ? 1.08 : 1 / 1.08); }}
-              onPointerDown={(event) => { if ((event.target as Element).closest('[data-graph-node]')) return; drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, originX: viewport.x, originY: viewport.y }; event.currentTarget.setPointerCapture(event.pointerId); }}
-              onPointerMove={(event) => { const active = drag.current; if (!active || active.pointerId !== event.pointerId) return; const bounds = event.currentTarget.getBoundingClientRect(); setViewport((current) => ({ ...current, x: active.originX + (event.clientX - active.x) * 1000 / Math.max(1, bounds.width), y: active.originY + (event.clientY - active.y) * 640 / Math.max(1, bounds.height) })); }}
-              onPointerUp={(event) => { if (drag.current?.pointerId === event.pointerId) drag.current = null; }}
-              onPointerCancel={() => { drag.current = null; }}>
+            <svg
+              ref={svgRef}
+              viewBox={`0 0 ${GRAPH_VIEW_WIDTH} ${GRAPH_VIEW_HEIGHT}`}
+              role="group"
+              aria-label="Directed wiki-link graph"
+              className={cn('size-full min-h-[24rem] touch-none select-none', panning || draggingNodeId !== null ? 'cursor-grabbing' : 'cursor-grab')}
+              data-graph-canvas="true"
+              onPointerDown={(event) => {
+                if (event.button !== 0 || (event.target as Element).closest('[data-graph-node]')) return;
+                event.preventDefault();
+                interaction.current = { type: 'pan', pointerId: event.pointerId, startClientX: event.clientX, startClientY: event.clientY, origin: viewportRef.current, moved: false, captureTarget: event.currentTarget };
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setPanning(true);
+              }}
+              onPointerMove={(event) => {
+                const active = interaction.current;
+                if (active === null || active.pointerId !== event.pointerId) return;
+                const distance = Math.hypot(event.clientX - active.startClientX, event.clientY - active.startClientY);
+                if (distance > 3) active.moved = true;
+                if (active.type === 'pan') {
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  pendingViewport.current = panGraphViewport(active.origin, event.clientX - active.startClientX, event.clientY - active.startClientY, bounds);
+                  scheduleFrame();
+                } else {
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  const displayScale = Math.min(bounds.width / GRAPH_VIEW_WIDTH, bounds.height / GRAPH_VIEW_HEIGHT);
+                  const scale = Math.max(0.01, displayScale * viewportRef.current.scale);
+                  const x = active.originX + (event.clientX - active.startClientX) / scale;
+                  const y = active.originY + (event.clientY - active.startClientY) / scale;
+                  pendingPositions.current[active.nodeId] = { x: Math.max(-5000, Math.min(5000, x)), y: Math.max(-5000, Math.min(5000, y)) };
+                  scheduleFrame();
+                }
+              }}
+              onPointerUp={(event) => {
+                const active = interaction.current;
+                if (active === null || active.pointerId !== event.pointerId) return;
+                if (active.type === 'node') {
+                  if (active.moved) {
+                    lastClick.current = null;
+                    lastDragAt.current = Date.now();
+                  } else {
+                    const now = Date.now();
+                    const previous = lastClick.current;
+                    if (previous !== null && previous.id === active.nodeId && now - previous.time < 420 && now - lastDragAt.current >= 500) {
+                      lastClick.current = null;
+                      const target = nodeById.get(active.nodeId);
+                      if (target?.unresolved !== true) onOpenNote(active.nodeId);
+                    } else {
+                      lastClick.current = { id: active.nodeId, time: now };
+                      selectNode(active.nodeId);
+                    }
+                  }
+                }
+                interaction.current = null;
+                setPanning(false);
+                setDraggingNodeId(null);
+                if (active.captureTarget.hasPointerCapture?.(event.pointerId)) active.captureTarget.releasePointerCapture(event.pointerId);
+              }}
+              onPointerCancel={() => { interaction.current = null; setPanning(false); setDraggingNodeId(null); }}
+              onDragStart={(event) => event.preventDefault()}
+            >
               <defs><marker id="graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,7 L7,3.5 z" className="fill-muted-foreground" /></marker></defs>
-              <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
+              <g data-graph-viewport="true" data-scale={viewport.scale} transform={graphViewportTransform(viewport)}>
                 {visible.edges.map((edge) => {
                   const active = selectedId !== null && (edge.sourceId === selectedId || edge.targetId === selectedId);
                   return <path
                     key={`${edge.sourceId}:${edge.targetId}`}
                     d={edgePath(edge)}
                     fill="none"
+                    vectorEffect="non-scaling-stroke"
                     className={cn(
                       edge.unresolved ? 'stroke-muted-foreground/50 [stroke-dasharray:5_4]' : 'stroke-muted-foreground/45',
                       active ? 'stroke-success' : selectedId !== null ? 'opacity-20' : undefined,
@@ -279,12 +442,19 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
                     tabIndex={0}
                     aria-label={node.unresolved === true ? `Select unresolved target ${node.title}` : `Select ${node.title}`}
                     aria-pressed={nodeSelected}
-                    onClick={() => selectNode(node.id)}
-                    onDoubleClick={() => { if (node.unresolved !== true) onOpenNote(node.id); }}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) return;
+                      event.stopPropagation();
+                      const position = positionsById.get(node.id);
+                      if (position === undefined) return;
+                      interaction.current = { type: 'node', pointerId: event.pointerId, nodeId: node.id, startClientX: event.clientX, startClientY: event.clientY, originX: position.x, originY: position.y, moved: false, captureTarget: event.currentTarget };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      setDraggingNodeId(node.id);
+                    }}
                     onFocus={() => setFocusedId(node.id)}
                     onBlur={() => setFocusedId(null)}
                     onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); } }}
-                    className="cursor-pointer outline-none"
+                    className="cursor-grab outline-none active:cursor-grabbing"
                   >
                     <circle
                       cx={node.x}
@@ -294,7 +464,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
                       className={nodeSelected ? 'fill-primary stroke-ring' : neighbor && selectedId !== null ? 'fill-secondary stroke-success' : node.id === focusedId ? 'fill-secondary stroke-ring' : 'fill-secondary stroke-border'}
                       strokeWidth={node.id === focusedId ? 4 : 2}
                     />
-                    <text x={node.x} y={node.y + 25} textAnchor="middle" className={cn('fill-foreground text-[12px]', selectedId !== null && !neighbor && 'opacity-40')}>{labelFor(node.title)}</text>
+                    {viewport.scale >= 0.65 || nodeSelected || node.id === focusedId || (selectedId !== null && neighbor) ? <text x={node.x} y={node.y + 25} textAnchor="middle" className={cn('fill-foreground text-[12px]', selectedId !== null && !neighbor && 'opacity-40')}>{labelFor(node.title)}</text> : null}
                     <title>{node.unresolved === true ? `Unresolved target: ${node.title}` : `${node.title} · ${node.path} (double-click to open)`}</title>
                   </g>;
                 })}
