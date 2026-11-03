@@ -2,7 +2,7 @@
 
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-03
 **Latest verified implementation commit:** `3952db3` — Phase 18L implementation; prior integrated baseline was `a481276`.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
@@ -1324,6 +1324,34 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
+---
+
+### Phase 20 — Knowledge Graph Intelligence & Insights
+
+**Status:** **COMPLETE WITH LIMITATIONS** (feature branch `feat/phase-20-knowledge-intelligence`)
+
+**Objective:** Extend the existing resolved wiki-link graph with read-only vault-scoped analytics, connected clusters, deterministic related-note recommendations, and a knowledge-health dashboard.
+
+**Implemented functionality**
+
+- Deterministic analytics from the existing graph projection: total/linked/isolated notes, unresolved and ambiguous occurrences, distinct in/out degree, degree centrality, self-link diagnostics, connected components, and most-connected notes.
+- Knowledge clusters use weakly connected components with stable component IDs, representative notes, sizes, and deterministic member ordering. They are explicitly not semantic clusters.
+- Related-note recommendations combine shared outgoing/incoming links, common neighbours, title/alias token similarity, and same-folder context with explicit reason codes. They exclude the current note, deduplicate by stable ID, ignore ambiguous/unresolved targets, and never write Markdown.
+- `GET /api/insights` and `GET /api/notes/:id/related` reuse the shared knowledge snapshot cache. The dashboard adds Knowledge health navigation, metrics, cluster expansion, most-connected notes, recent notes, Discovery/graph links, loading/empty/error/retry states, request-generation guards, and responsive keyboard-accessible layouts.
+- No new dependency, persistent graph database, storage format, or automatic Markdown modification.
+
+**Files**
+
+- `src/links/graph-analytics.ts`, `src/links/related-notes.ts`
+- `src/ui-server/api.ts`, `src/ui-server/dto.ts`
+- `ui/src/InsightsView.tsx`, `ui/src/RelatedNotesPanel.tsx`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/CommandPalette.tsx`, `ui/src/api.ts`, `ui/src/types.ts`, `ui/src/Editor.tsx`
+- `test/graph-analytics.test.ts`, `test/related-notes.test.ts`, `test/insights-api.test.ts`, `scripts/insights-smoke.mjs`
+- `benchmark/graph.benchmark.ts`, `docs/knowledge-graph.md`, `docs/wiki-links.md`, `README.md`, this roadmap
+
+**Known limitations:** Clusters are connectivity-only; recommendations are lexical/link-based; the insights response returns at most eight clusters with 20 member previews; the existing 200-node graph display bound remains; Phase 19 move-impact work was not merged into the base branch used here.
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15, 17–34)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -2589,6 +2617,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Delivery:** A direct push to `origin/main` was rejected by the repository rule requiring a pull request. The commit was pushed to `origin/feat/phase-18-link-integrity` as the only available remote path. No pull request was opened.
 - **Remaining work:** Suggestions are lexical only; path links still break on move; repair is one occurrence per request; alias preservation depends on a successful whole-vault scan. See L-41–L-44.
 - **Notes / decisions:** The previous title is retained as an alias only when confirmed incoming title links exist, avoiding metadata churn for ordinary title edits. Repairs use the stable UUID by default and add a readable display when the original link had none. The discovery API caches ranked suggestions per missing target and applies the source exclusion afterward. The whole-vault scan for rename preservation is best-effort; a malformed unrelated note cannot block the save.
+
+### 2026-11-03 — Phase 20 — Knowledge Graph Intelligence & Insights
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added deterministic graph analytics, connected-cluster summaries, related-note recommendations, shared-cache insights/related APIs, a Knowledge health dashboard, an editor related-notes panel, and graph analytics/recommendation benchmarks. Markdown remains authoritative and all outputs are read-only.
+- **Files changed:** `src/links/graph-analytics.ts`, `src/links/related-notes.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/InsightsView.tsx`, `ui/src/RelatedNotesPanel.tsx`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/CommandPalette.tsx`, `ui/src/api.ts`, `ui/src/types.ts`, `ui/src/Editor.tsx`, focused tests, `scripts/insights-smoke.mjs`, `benchmark/graph.benchmark.ts`, `docs/knowledge-graph.md`, `docs/wiki-links.md`, `README.md`, and this roadmap.
+- **Integration note:** Built from `origin/main` at `6761324` (Phase 18L merged). Phase 19 move-impact changes remain unmerged in a separate worktree, so Phase 20 does not depend on them.
+- **Known limitations:** Connectivity is not semantic similarity; recommendation evidence is lexical/link-based; cluster/member payloads and graph rendering are bounded.
+
+---
 
 ---
 

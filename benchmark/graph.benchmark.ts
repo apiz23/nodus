@@ -3,6 +3,8 @@ import { expect, it } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { buildLinkIndex } from '../src/links/link-index.js';
 import { graphFromLinkIndex } from '../src/links/graph.js';
+import { analyzeGraph } from '../src/links/graph-analytics.js';
+import { relatedNotes } from '../src/links/related-notes.js';
 import { createLinkSuggester } from '../src/links/link-repair.js';
 
 const makeId = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -26,13 +28,14 @@ function median(values: number[]): number {
 }
 
 it('measures relationship indexing and graph projection at realistic vault sizes', () => {
-  const results: Array<{ notes: number; links: number; edges: number; unresolved: number; isolated: number; medianMs: number; indexMs: number; graphMs: number }> = [];
+  const results: Array<{ notes: number; links: number; edges: number; unresolved: number; isolated: number; medianMs: number; indexMs: number; graphMs: number; analyticsMs: number }> = [];
   for (const size of [1000, 5000]) {
     const notes = dataset(size);
     buildLinkIndex(notes); // Warm parser/module paths.
     const durations: number[] = [];
     const indexDurations: number[] = [];
     const graphDurations: number[] = [];
+    const analyticsDurations: number[] = [];
     let links = 0;
     let edges = 0;
     let unresolved = 0;
@@ -45,6 +48,9 @@ it('measures relationship indexing and graph projection at realistic vault sizes
       const graphStart = performance.now();
       const graph = graphFromLinkIndex(index);
       graphDurations.push(performance.now() - graphStart);
+      const analyticsStart = performance.now();
+      analyzeGraph(graph);
+      analyticsDurations.push(performance.now() - analyticsStart);
       durations.push(performance.now() - start);
       links = index.links.length;
       edges = graph.edges.length;
@@ -60,10 +66,11 @@ it('measures relationship indexing and graph projection at realistic vault sizes
       medianMs: Number(median(durations).toFixed(2)),
       indexMs: Number(median(indexDurations).toFixed(2)),
       graphMs: Number(median(graphDurations).toFixed(2)),
+      analyticsMs: Number(median(analyticsDurations).toFixed(2)),
     });
   }
   expect(results).toHaveLength(2);
-  console.log(JSON.stringify({ node: process.version, method: '5-run median after one warm-up; parse/index plus graph projection only, no filesystem or UI', results }, null, 2));
+  console.log(JSON.stringify({ node: process.version, method: '5-run median after one warm-up; parse/index, graph projection, and analytics only, no filesystem or UI', results }, null, 2));
 }, 120_000);
 
 it('measures repair-suggestion ranking for unique and repeated broken targets', () => {
@@ -97,4 +104,26 @@ it('measures repair-suggestion ranking for unique and repeated broken targets', 
   }
   expect(results).toHaveLength(2);
   console.log(JSON.stringify({ node: process.version, method: '5-run median after one warm-up; suggestion ranking only, no filesystem or API serialization', results }, null, 2));
+}, 120_000);
+
+
+it('measures related-note recommendations over a derived snapshot', () => {
+  const results: Array<{ notes: number; samples: number; medianMs: number; perNoteMs: number }> = [];
+  for (const size of [1000, 5000]) {
+    const notes = dataset(size);
+    const index = buildLinkIndex(notes);
+    const graph = graphFromLinkIndex(index);
+    const sampleIds = index.notes.slice(0, 100).map((note) => note.id);
+    relatedNotes(index, graph, sampleIds[0]!, { limit: 6 });
+    const durations: number[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      const start = performance.now();
+      for (const id of sampleIds) relatedNotes(index, graph, id, { limit: 6 });
+      durations.push(performance.now() - start);
+    }
+    const value = median(durations);
+    results.push({ notes: size, samples: sampleIds.length, medianMs: Number(value.toFixed(2)), perNoteMs: Number((value / sampleIds.length).toFixed(3)) });
+  }
+  expect(results).toHaveLength(2);
+  console.log(JSON.stringify({ node: process.version, method: '5-run median for 100 source notes with limit 6 over an already-built index and graph', results }, null, 2));
 }, 120_000);

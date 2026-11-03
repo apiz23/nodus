@@ -33,6 +33,8 @@ import {
 import { backlinksByTarget, outgoingLinksForNote } from '../links/backlinks.js';
 import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
+import { analyzeGraph } from '../links/graph-analytics.js';
+import { relatedNotes } from '../links/related-notes.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
 import { chooseLinkTarget, rewriteWikiLink, sanitizeLinkDisplay } from '../links/link-edit.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
@@ -151,9 +153,16 @@ export function createLocalApiMiddleware(
   };
   const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot) => {
     const links = buildLinkIndex(snapshot.notes);
+    const graph = graphFromLinkIndex(links);
     return {
       links,
-      graph: graphFromLinkIndex(links),
+      graph,
+      analytics: analyzeGraph(graph),
+      recentNotes: [...snapshot.notes]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+          || left.title.localeCompare(right.title) || left.id.localeCompare(right.id))
+        .slice(0, 6)
+        .map((note) => ({ id: note.id, title: note.title, path: note.path, updatedAt: note.updatedAt, aliases: [...note.aliases], icon: null })),
       search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue),
     };
   };
@@ -542,6 +551,41 @@ export function createLocalApiMiddleware(
     if (method === 'GET' && path === '/api/graph') {
       const { graph } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
       return sendJson(res, 200, graph);
+    }
+    if (method === 'GET' && path === '/api/insights') {
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, {
+        metrics: {
+          totalNotes: index.analytics.totalNotes,
+          linkedNotes: index.analytics.linkedNotes,
+          isolatedNotes: index.analytics.isolatedNotes,
+          unresolvedLinks: index.analytics.unresolvedLinks,
+          ambiguousLinks: index.analytics.ambiguousLinks,
+          selfLinkEdges: index.analytics.selfLinkEdges,
+          selfLinkOccurrences: index.analytics.selfLinkOccurrences,
+          componentCount: index.analytics.componentCount,
+          largestComponentSize: index.analytics.largestComponentSize,
+        },
+        mostConnected: index.analytics.mostConnected,
+        clusters: index.analytics.components.slice(0, 8).map((cluster) => ({
+          id: cluster.id,
+          size: cluster.size,
+          totalDegree: cluster.totalDegree,
+          representative: cluster.representative,
+          members: cluster.members.slice(0, 20),
+          truncated: cluster.members.length > 20,
+        })),
+        recentNotes: index.recentNotes,
+      });
+    }
+    const relatedMatch = /^\/api\/notes\/([^/]+)\/related$/.exec(path);
+    if (method === 'GET' && relatedMatch !== null) {
+      const id = requireUuid(decodeURIComponent(relatedMatch[1] ?? ''), 'note ID');
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      if (!index.links.notes.some((note) => note.id === id)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
+      const requestedLimit = Number(url.searchParams.get('limit') ?? '6');
+      const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(20, requestedLimit)) : 6;
+      return sendJson(res, 200, { noteId: id, related: relatedNotes(index.links, index.graph, id, { limit }) });
     }
     if (method === 'POST' && path === '/api/discovery/create') {
       const body = await readJson(req);

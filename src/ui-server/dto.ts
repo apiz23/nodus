@@ -441,3 +441,34 @@ export interface UiSaveNoteResponse {
 }
 
 export type UiNoteGraph = import('../links/graph.js').NoteGraph;
+export type UiGraphNoteMetric = import('../links/graph-analytics.js').GraphNoteMetric;
+export type UiRelatedNote = import('../links/related-notes.js').RelatedNote;
+
+export interface UiKnowledgeInsights {
+  metrics: {
+    totalNotes: number;
+    linkedNotes: number;
+    isolatedNotes: number;
+    unresolvedLinks: number;
+    ambiguousLinks: number;
+    selfLinkEdges: number;
+    selfLinkOccurrences: number;
+    componentCount: number;
+    largestComponentSize: number;
+  };
+  mostConnected: UiGraphNoteMetric[];
+  clusters: Array<{
+    id: string;
+    size: number;
+    totalDegree: number;
+    representative: UiGraphNoteMetric;
+    members: UiGraphNoteMetric[];
+    truncated: boolean;
+  }>;
+  recentNotes: UiNoteSummary[];
+}
+
+export interface UiRelatedNotesResponse {
+  noteId: string;
+  related: UiRelatedNote[];
+}

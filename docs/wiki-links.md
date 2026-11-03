@@ -100,6 +100,7 @@ parses while typing; discovery reflects saved notes. No persistent index or new 
 - `GET /api/notes/:id/backlinks` returns incoming source titles, snippets, counts, and ambiguity
   flags, plus outgoing link occurrences with resolved target IDs, titles, paths, and status.
 - Both GET endpoints accept `?refresh=true` to rebuild from disk.
+- `GET /api/insights` and `GET /api/notes/:id/related` reuse the same vault-scoped snapshot for read-only graph metrics, clusters, and deterministic related-note evidence.
 
 ## Not implemented
 

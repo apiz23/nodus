@@ -74,6 +74,45 @@ Duplicate links are aggregated into one edge with an occurrence count. Self-link
 - Loading, empty-vault, no-match, error, retry, truncation, and selected-node states are explicit.
 - Graph nodes are keyboard-focusable buttons with accessible names, `aria-pressed`, and visible focus treatment.
 
+## Graph analytics and knowledge health
+
+`src/links/graph-analytics.ts` derives read-only metrics from `NoteGraph`:
+
+- **Total notes** — nodes in the resolved graph.
+- **Linked / isolated** — a linked note has at least one confirmed incoming or outgoing link to another note; isolated notes have none. Self-links never make a note linked.
+- **In-degree / out-degree** — distinct source notes / distinct target notes. Duplicate wiki-link occurrences count once because `graphFromLinkIndex` already aggregates them into one edge with `linkCount`.
+- **Degree** — in-degree + out-degree. Self-links are reported separately and do not add degree.
+- **Degree centrality** — degree divided by `total notes - 1`; zero for a one-note or empty vault.
+- **Connected components** — weakly connected groups using confirmed non-self edges. Isolated notes are singleton components. Component IDs are the lexicographically smallest stable note ID in the component.
+- **Most connected** — degree descending, then incoming, outgoing, title, path, and stable ID for deterministic ties.
+
+`GET /api/insights` returns totals, the top connected notes, up to eight largest clusters with bounded member previews, and six recently modified note summaries. `?refresh=true` bypasses the shared snapshot cache.
+
+## Knowledge clusters
+
+Clusters are the connected components above, not semantic topics. There is no embedding, content similarity, or persisted cluster record. Each cluster reports size, total degree, a representative note (highest degree with deterministic tie-breaking), and members sorted by degree then title/path/ID. The dashboard exposes the first 20 members per returned cluster and can open the representative in the local graph or open individual notes. Connectivity establishes only that notes are reachable through confirmed wiki links.
+
+## Related note recommendations
+
+`src/links/related-notes.ts` returns bounded, read-only recommendations from the same link snapshot:
+
+| Evidence | Score |
+|---|---:|
+| Shared outgoing target | 3 per distinct target |
+| Shared incoming source | 3 per distinct source |
+| Common linked neighbour | 2 per distinct neighbour |
+| Title token Jaccard similarity | 2 × similarity |
+| Alias/title token Jaccard similarity | 1.5 × similarity |
+| Same parent folder | 1 |
+
+The current note is excluded, duplicate candidates are collapsed by stable ID, and only resolved graph nodes are eligible. Results sort by score descending, then title, path, and stable ID. Reason codes explain every recommendation. Ambiguous and unresolved wiki links do not contribute; matching is lexical and link-based, not semantic understanding.
+
+`GET /api/notes/:id/related?limit=6` accepts a limit from 1–20. The editor shows the recommendations under Backlinks and opens a recommended note directly.
+
+## Insights dashboard
+
+The **Knowledge health** view in the sidebar and command palette presents overview metrics, largest clusters, most connected notes, and recently modified notes. Metric actions navigate to Discovery, the local graph, or individual notes. It has loading, empty, error, and retry states, is keyboard accessible, and uses a request generation guard so older responses cannot replace a newer vault revision. Vault switching remounts the view by vault key.
+
 ## Orphans and isolated notes
 
 The legacy API `orphans` list means “no confirmed incoming link.” The graph/discovery UI uses the stricter **isolated** definition from the task: no confirmed incoming **and** no confirmed outgoing internal link. Self-links, unresolved links, and ambiguous mentions do not connect a note.
@@ -142,7 +181,8 @@ references that must remain stable.
 
 - Relationship work is `O(N + L)` in notes plus wiki-link occurrences.
 - The local API shares one derived snapshot per vault (five-second TTL), coalesces concurrent rebuilds, and invalidates on Nodus mutations and explicit refresh.
-- Graph projection is computed once when the shared knowledge index is built and reused by `/api/graph`.
+- Graph projection, analytics, and cluster components are computed once when the shared knowledge index is built and reused by `/api/graph` and `/api/insights`.
+- Related-note scoring runs only for an opened note request; it is bounded to 20 results and reuses the same index and graph.
 - UI filtering, focus, and selection never request a new snapshot; only the initial load and explicit refresh do.
 - The graph view bounds displayed nodes to 200 per render after filtering. Truncation is visible; focus is applied before the limit.
 - Local benchmark (`pnpm bench:graph`, Node 24.18.1, five-run median after warm-up) measured 1,000 notes / 3,000 occurrences at 16.16 ms total (12.37 ms index, 3.76 ms graph) and 5,000 notes / 15,000 occurrences at 81.33 ms (57.68 ms index, 21.90 ms graph). These are local development observations, not service-level guarantees.
@@ -154,6 +194,8 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 ## Known limitations
 
 - The graph uses a deterministic radial layout; there is no force simulation or persisted node position.
+- Clusters are graph connectivity, not semantic groups. Recommendations are lexical/link-based and can be noisy in large folders.
+- The insights response exposes up to eight clusters with 20 member previews each; very large clusters require graph exploration.
 - The 200-node display bound requires filtering or focusing for larger vaults.
 - Unresolved targets are literal text, not notes; they cannot be opened or edited from the graph.
 - Path links intentionally break when the target moves; use ID-pinned links or repair the link from Discovery.
