@@ -10,6 +10,7 @@ import type {
   UiRelatedNotesResponse,
   UiGraphCluster,
   UiGraphPathResult,
+  UiGraphClusterInsights,
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
@@ -260,6 +261,9 @@ export const api = {
   },
   graphClusters(refresh = false): Promise<{ clusters: UiGraphCluster[] }> {
     return request(`/api/graph/clusters${refresh ? '?refresh=true' : ''}`);
+  },
+  graphClusterInsights(id: string): Promise<UiGraphClusterInsights> {
+    return request(`/api/graph/clusters/${encodeURIComponent(id)}`);
   },
   graphPath(input: { from: string; to: string; mode?: 'directed' | 'undirected'; maxDepth?: number; maxVisited?: number }): Promise<UiGraphPathResult> {
     const params = new URLSearchParams({ from: input.from, to: input.to });

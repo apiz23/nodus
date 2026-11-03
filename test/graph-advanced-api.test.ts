@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
-import type { UiGraphCluster, UiGraphPathResult } from '../src/ui-server/dto.js';
+import type { UiGraphCluster, UiGraphClusterInsights, UiGraphPathResult } from '../src/ui-server/dto.js';
 import { withTempDir } from './tmp.js';
 
 const NOW = '2026-11-03T00:00:00Z';
@@ -46,6 +46,9 @@ describe('advanced graph API', () => {
         expect(undirected.status).toBe('found');
         expect((await fetch(`${started.base}/api/graph/path?from=${A}&to=${C}&maxDepth=1`)).status).toBe(200);
         expect((await fetch(`${started.base}/api/graph/path?from=${A}&to=${C}&mode=sideways`)).status).toBe(400);
+        const clusterInsights = await (await fetch(`${started.base}/api/graph/clusters/${A}`)).json() as UiGraphClusterInsights;
+        expect(clusterInsights).toMatchObject({ memberCount: 3, internalEdges: 2, externalIncomingEdges: 0, externalOutgoingEdges: 0 });
+        expect((await fetch(`${started.base}/api/graph/clusters/missing`)).status).toBe(404);
       } finally {
         started.server.closeAllConnections();
         await new Promise<void>((resolve, reject) => started.server.close((error) => error ? reject(error) : resolve()));

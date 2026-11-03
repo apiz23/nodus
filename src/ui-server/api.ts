@@ -36,6 +36,7 @@ import { graphFromLinkIndex } from '../links/graph.js';
 import { analyzeGraph } from '../links/graph-analytics.js';
 import { relatedNotes } from '../links/related-notes.js';
 import { shortestGraphPath, type GraphTraversalMode } from '../links/graph-paths.js';
+import { graphClusterInsights } from '../links/graph-cluster-insights.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
 import { chooseLinkTarget, rewriteWikiLink, sanitizeLinkDisplay } from '../links/link-edit.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
@@ -556,6 +557,15 @@ export function createLocalApiMiddleware(
     if (method === 'GET' && path === '/api/graph/clusters') {
       const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
       return sendJson(res, 200, { clusters: index.analytics.components });
+    }
+    const clusterInsightMatch = /^\/api\/graph\/clusters\/([^/]+)$/.exec(path);
+    if (method === 'GET' && clusterInsightMatch !== null) {
+      const clusterId = decodeURIComponent(clusterInsightMatch[1] ?? '');
+      if (!clusterId) throw new ApiError(400, 'INVALID_INPUT', 'Cluster ID is required.');
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      const insights = graphClusterInsights(index.graph, index.analytics, clusterId);
+      if (insights === undefined) throw new ApiError(404, 'NOT_FOUND', 'Knowledge cluster was not found.');
+      return sendJson(res, 200, insights);
     }
     if (method === 'GET' && path === '/api/graph/path') {
       const from = requireUuid(url.searchParams.get('from') ?? '', 'from');
