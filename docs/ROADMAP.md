@@ -180,7 +180,7 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 24 | Knowledge Retrieval | COMPLETE WITH LIMITATIONS — integrated; 24D deferred | PR #13 merged. |
 | 25 | Smart Organization | COMPLETE WITH LIMITATIONS — integrated | PR #14 merged. Folder moves remain deferred while legacy Phase 19 is pending integration. |
 | 26 | Workspace Customization | COMPLETE WITH LIMITATIONS — integrated | PR #15 merged; browser-local global theme and vault-scoped layout preferences. |
-| 27 | Task Management | COMPLETE WITH LIMITATIONS — feature branch; PR pending | Derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
+| 27 | Task Management | COMPLETE WITH LIMITATIONS — PR #16 open | Derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
 | 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
 | 29 | Advanced Import & Export | PLANNED | Preserve Markdown, metadata, and graph view portability. |
 | 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
@@ -201,7 +201,7 @@ Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**.
 
 **Architecture:** `src/tasks/extract.ts` uses the same `@lezer/markdown` GFM grammar as the editor. The projection is derived lazily from the existing knowledge snapshot and raw note hashes; no task database or second persistence layer exists. See [task management](task-management.md) for syntax, update safety, limits, and measurements.
 
-**Status:** **COMPLETE WITH LIMITATIONS — feature branch; PR pending review.** Not yet merged into `main`.
+**Status:** **COMPLETE WITH LIMITATIONS — PR #16 open for review.** Not yet merged into `main`.
 
 **Known limitations:** Metadata tokens are a visible Nodus convention, not a universal Markdown standard. One task marker per list item; multiple inline checkbox tokens are not separate tasks. No assignees, dependencies, recurrence, WIP limits, project boards, or persistent task filters.
 
@@ -2792,7 +2792,7 @@ Append a new entry after every significant task. Do not rewrite history; correct
 
 ### 2026-11-03 — Phase 27 — Task Management
 
-- **Status:** COMPLETE WITH LIMITATIONS — feature branch; PR pending review.
+- **Status:** COMPLETE WITH LIMITATIONS — PR #16 open for review.
 - **Summary:** Added a reusable Lezer/GFM task extraction module, a lazily rebuilt vault task projection with raw note hashes, a Tasks dashboard with counts, filters, sorting, grouping, metadata badges, and source navigation, and a revision-safe endpoint that changes only the selected checkbox marker. No task database or separate task persistence was introduced.
 - **Files changed:** `src/tasks/extract.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `src/storage/fs/vault.ts`, `ui/src/TasksView.tsx`, `ui/src/task-view.ts`, `ui/src/api.ts`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/CommandPalette.tsx`, `ui/src/Editor.tsx`, `ui/src/editor/CodeMirrorEditor.tsx`, `ui/src/workspacePreferences.ts`, `ui/src/WorkspaceCustomizationSettings.tsx`, tests, `scripts/tasks-smoke.mjs`, `benchmark/tasks.benchmark.ts`, docs, README, package scripts, and this roadmap.
 - **Tests executed:** Focused extraction, projection, task-view, API, and view tests passed. Full serial suite: `pnpm test --maxWorkers=1` — 122 files / 1,241 tests passed. Typecheck, build, browser, task smoke, search/editor/vault/database/graph/discovery smokes, and `pnpm bench:tasks` are recorded in the delivery report. Phase 27 task projection is observational and not a performance guarantee.
