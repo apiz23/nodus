@@ -445,6 +445,7 @@ export type UiGraphNoteMetric = import('../links/graph-analytics.js').GraphNoteM
 export type UiRelatedNote = import('../links/related-notes.js').RelatedNote;
 export type UiGraphCluster = import('../links/graph-analytics.js').GraphComponentSummary;
 export type UiGraphPathResult = import('../links/graph-paths.js').GraphPathResult;
+export type UiGraphClusterInsights = import('../links/graph-cluster-insights.js').GraphClusterInsights;
 
 export interface UiKnowledgeInsights {
   metrics: {

@@ -1,6 +1,9 @@
 import type { GraphTraversalMode } from '../../src/links/graph-paths.js';
 
 export const GRAPH_VIEWS_STORAGE_VERSION = 1;
+export const GRAPH_VIEWS_EXPORT_FORMAT = 'nodus-graph-views';
+export const GRAPH_VIEWS_EXPORT_VERSION = 1;
+export const DEFAULT_GRAPH_RENDER_LIMIT = 200;
 
 export interface GraphViewport {
   x: number;
@@ -18,6 +21,8 @@ export interface SavedGraphViewConfig {
   showUnresolved: boolean;
   pathMode: GraphTraversalMode;
   viewport: GraphViewport;
+  /** Maximum rendered graph nodes for this saved view. */
+  renderLimit: number;
 }
 
 export interface SavedGraphView {
@@ -31,6 +36,27 @@ export interface SavedGraphView {
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+}
+
+export interface GraphViewReferenceSets {
+  noteIds: ReadonlySet<string>;
+  folderPaths: ReadonlySet<string>;
+  clusterIds: ReadonlySet<string>;
+}
+
+export interface ParsedGraphViewsImport {
+  views: SavedGraphView[];
+  issues: string[];
+}
+
+export type GraphViewImportStrategy = 'replace' | 'skip' | 'rename';
+
+export interface GraphViewMergeResult {
+  views: SavedGraphView[];
+  added: number;
+  replaced: number;
+  skipped: number;
+  renamed: number;
 }
 
 export function graphViewsStorageKey(vaultKey: string): string {
@@ -65,6 +91,110 @@ export function serializeSavedGraphViews(views: readonly SavedGraphView[]): stri
       config: normalizeConfig(view.config),
     })),
   });
+}
+
+/** Portable JSON uses a named envelope and never includes a vault path. */
+export function serializeGraphViewsExport(views: readonly SavedGraphView[], exportedAt = new Date().toISOString()): string {
+  return `${JSON.stringify({
+    format: GRAPH_VIEWS_EXPORT_FORMAT,
+    version: GRAPH_VIEWS_EXPORT_VERSION,
+    exportedAt,
+    views: views.map((view) => ({
+      id: view.id,
+      name: view.name,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+      config: normalizeConfig(view.config),
+    })),
+  }, null, 2)}\n`;
+}
+
+/** Accept the portable envelope and the legacy local-storage envelope. */
+export function parseGraphViewsImport(raw: string): ParsedGraphViewsImport {
+  let envelope: unknown;
+  try { envelope = JSON.parse(raw); }
+  catch { return { views: [], issues: ['The file is not valid JSON.'] }; }
+  if (!isRecord(envelope) || !Array.isArray(envelope.views)) {
+    return { views: [], issues: ['The file must contain a views array.'] };
+  }
+  const portable = envelope.format === GRAPH_VIEWS_EXPORT_FORMAT;
+  const legacy = envelope.format === undefined && envelope.version === GRAPH_VIEWS_STORAGE_VERSION && envelope.exportedAt === undefined;
+  if (!portable && !legacy) return { views: [], issues: ['The file format is not a supported Nodus graph-view export.'] };
+  const version = portable ? envelope.version : envelope.version;
+  if (version !== GRAPH_VIEWS_EXPORT_VERSION) return { views: [], issues: [`Graph-view export version ${String(version)} is not supported.`] };
+  const issues: string[] = [];
+  const views: SavedGraphView[] = [];
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  envelope.views.forEach((value, index) => {
+    const view = parseView(value);
+    if (view === undefined) { issues.push(`View ${index + 1} is malformed and was ignored.`); return; }
+    if (ids.has(view.id)) { issues.push(`View ${index + 1} repeats ID ${view.id} and was ignored.`); return; }
+    const foldedName = view.name.toLocaleLowerCase();
+    if (names.has(foldedName)) { issues.push(`View ${index + 1} repeats name "${view.name}" and was ignored.`); return; }
+    ids.add(view.id);
+    names.add(foldedName);
+    views.push(view);
+  });
+  return { views, issues };
+}
+
+export function validateGraphViewReferences(view: SavedGraphView, references: GraphViewReferenceSets): string[] {
+  const issues: string[] = [];
+  if (view.config.folder !== null && !references.folderPaths.has(view.config.folder)) issues.push(`Folder "${view.config.folder}" is not present in this vault.`);
+  if (view.config.clusterId !== null && view.config.clusterId !== '__isolated__' && !references.clusterIds.has(view.config.clusterId)) issues.push('The selected cluster is not present in this vault.');
+  if (view.config.focusId !== null && !references.noteIds.has(view.config.focusId)) issues.push('The saved focus note is not present in this vault.');
+  if (view.config.selectedId !== null && !references.noteIds.has(view.config.selectedId)) issues.push('The saved selected note is not present in this vault.');
+  return issues;
+}
+
+/** Clear references that do not exist in the destination vault while preserving view settings. */
+export function sanitizeGraphViewReferences(view: SavedGraphView, references: GraphViewReferenceSets): SavedGraphView {
+  return {
+    ...view,
+    config: {
+      ...view.config,
+      folder: view.config.folder !== null && references.folderPaths.has(view.config.folder) ? view.config.folder : null,
+      clusterId: view.config.clusterId !== null && (view.config.clusterId === '__isolated__' || references.clusterIds.has(view.config.clusterId)) ? view.config.clusterId : null,
+      focusId: view.config.focusId !== null && references.noteIds.has(view.config.focusId) ? view.config.focusId : null,
+      selectedId: view.config.selectedId !== null && references.noteIds.has(view.config.selectedId) ? view.config.selectedId : null,
+    },
+  };
+}
+
+export function mergeImportedGraphViews(
+  existing: readonly SavedGraphView[],
+  imported: readonly SavedGraphView[],
+  strategy: GraphViewImportStrategy,
+  now = new Date().toISOString(),
+): GraphViewMergeResult {
+  let views = [...existing];
+  let added = 0;
+  let replaced = 0;
+  let skipped = 0;
+  let renamed = 0;
+  for (const incoming of imported) {
+    const idConflict = views.some((view) => view.id === incoming.id);
+    const nameConflict = views.some((view) => foldName(view.name) === foldName(incoming.name));
+    if (strategy === 'skip' && (idConflict || nameConflict)) { skipped += 1; continue; }
+    if (strategy === 'replace' && (idConflict || nameConflict)) {
+      views = views.filter((view) => view.id !== incoming.id && foldName(view.name) !== foldName(incoming.name));
+      views.push({ ...incoming, updatedAt: now });
+      replaced += 1;
+      continue;
+    }
+    if (strategy === 'rename' && (idConflict || nameConflict)) {
+      views.push({ ...incoming, id: crypto.randomUUID(), name: uniqueName(incoming.name, views), updatedAt: now });
+      renamed += 1;
+      continue;
+    }
+    views.push(incoming);
+    added += 1;
+  }
+  return {
+    views: views.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id)),
+    added, replaced, skipped, renamed,
+  };
 }
 
 export function loadSavedGraphViews(storage: StorageLike, vaultKey: string): SavedGraphView[] {
@@ -119,6 +249,7 @@ function parseConfig(value: Record<string, unknown>): SavedGraphViewConfig | und
     || !nullableString(value.focusId) || !nullableString(value.selectedId)
     || typeof value.showIsolated !== 'boolean' || typeof value.showUnresolved !== 'boolean'
     || (value.pathMode !== 'directed' && value.pathMode !== 'undirected')
+    || (value.renderLimit !== undefined && (!isInteger(value.renderLimit) || value.renderLimit < 50 || value.renderLimit > 1000))
     || !isRecord(value.viewport)
     || !finite(value.viewport.x) || !finite(value.viewport.y) || !finite(value.viewport.scale)) return undefined;
   return {
@@ -130,6 +261,7 @@ function parseConfig(value: Record<string, unknown>): SavedGraphViewConfig | und
     showIsolated: value.showIsolated,
     showUnresolved: value.showUnresolved,
     pathMode: value.pathMode,
+    renderLimit: value.renderLimit === undefined ? DEFAULT_GRAPH_RENDER_LIMIT : value.renderLimit,
     viewport: {
       x: value.viewport.x,
       y: value.viewport.y,
@@ -148,6 +280,7 @@ function normalizeConfig(config: SavedGraphViewConfig): SavedGraphViewConfig {
     showIsolated: config.showIsolated,
     showUnresolved: config.showUnresolved,
     pathMode: config.pathMode,
+    renderLimit: isInteger(config.renderLimit) ? Math.max(50, Math.min(1000, config.renderLimit)) : DEFAULT_GRAPH_RENDER_LIMIT,
     viewport: {
       x: Number.isFinite(config.viewport.x) ? config.viewport.x : 0,
       y: Number.isFinite(config.viewport.y) ? config.viewport.y : 0,
@@ -169,6 +302,24 @@ function nullableString(value: unknown): value is string | null {
 
 function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
+}
+
+function foldName(value: string): string {
+  return value.normalize('NFC').trim().toLocaleLowerCase();
+}
+
+function uniqueName(base: string, views: readonly SavedGraphView[]): string {
+  const names = new Set(views.map((view) => foldName(view.name)));
+  for (let index = 1; index < 1000; index += 1) {
+    const suffix = index === 1 ? ' (imported)' : ` (imported ${index})`;
+    const candidate = `${base}${suffix}`.slice(0, 80);
+    if (!names.has(foldName(candidate))) return candidate;
+  }
+  return `${base.slice(0, 64)} (imported ${crypto.randomUUID().slice(0, 8)})`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

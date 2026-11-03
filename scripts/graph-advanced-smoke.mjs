@@ -41,12 +41,15 @@ try {
   await page.getByRole('combobox', { name: 'Filter by knowledge cluster' }).click();
   await page.getByRole('option', { name: /3 notes/ }).click();
   await page.getByText('3 of 4 notes shown', { exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Cluster insights', exact: true }).waitFor();
+  await page.getByText('Internal links', { exact: true }).waitFor();
 
   await page.getByRole('button', { name: 'Select Graph alpha' }).click();
   await page.getByRole('button', { name: 'Choose path destination' }).click();
   await page.getByRole('option', { name: /Graph gamma/ }).click();
   await page.getByRole('button', { name: 'Find', exact: true }).click();
   await page.getByText('2 links', { exact: true }).waitFor();
+  await page.getByText(/Recent paths/).waitFor();
   await page.getByRole('button', { name: 'Select Graph beta' }).click();
   await page.getByRole('heading', { name: 'Incoming links (1)', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Explore neighbors', exact: true }).click();
@@ -72,14 +75,26 @@ try {
   await page.getByRole('option', { name: 'Smoke graph view' }).click();
   await page.waitForFunction(() => document.querySelector('#graph-filter')?.value === 'Gamma');
 
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Export saved graph views' }).click(),
+  ]);
+  const exportedPath = await download.path();
+  assert(exportedPath);
   await page.getByRole('button', { name: 'Saved view actions' }).click();
   await page.getByRole('menuitem', { name: 'Delete' }).click();
   await page.getByRole('alertdialog', { name: 'Delete this saved graph view?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await page.getByRole('combobox', { name: 'Saved graph view' }).click();
   assert.equal(await page.getByRole('option', { name: 'Smoke graph view' }).count(), 0);
   await page.keyboard.press('Escape');
+  await page.getByLabel('Choose graph views JSON file').setInputFiles(exportedPath);
+  await page.getByRole('heading', { name: 'Import graph views', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Apply import', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Saved graph view' }).click();
+  await page.getByRole('option', { name: 'Smoke graph view' }).waitFor();
+  await page.keyboard.press('Escape');
   assert.deepEqual(errors, []);
-  console.log('Advanced graph smoke passed: cluster filtering, shortest path, neighbor focus history, saved view create/update/reload/select/delete, vault-scoped localStorage, and console cleanliness.');
+  console.log('Advanced graph smoke passed: cluster filtering and insights, shortest path and history, neighbor focus history, saved view create/update/export/delete/import, vault-scoped localStorage, and console cleanliness.');
 } finally {
   await browser?.close();
   await server?.close();

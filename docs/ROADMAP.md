@@ -1381,6 +1381,35 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
+---
+
+### Phase 22G — Portable Graph Views & Deeper Exploration
+
+**Numbering note:** the roadmap reserves Phase 22 for the proposed plugin architecture. This delivered graph work is recorded as **22G** to avoid renumbering that future milestone.
+
+**Status:** **COMPLETE WITH LIMITATIONS** (feature branch `feat/phase-22-portable-graph-views`)
+
+**Implemented functionality**
+
+- Versioned `nodus-graph-views` export/import with preview, malformed-record recovery, destination-reference validation, and replace/skip/rename conflict strategies.
+- Browser-local saved views extended with a bounded render-limit display setting and backward-compatible defaults.
+- Vault-scoped shortest-path history storing stable source/destination IDs, traversal mode, path length, and timestamp; deleted endpoints are pruned and renames/moves resolve from current graph data.
+- Cluster-scoped insights for member count, internal edges/occurrences, density, internal entry/exit notes, and most connected members, linked to note opening.
+- Deterministic 100/200/400-node render limits with cluster-member priority before truncation.
+
+**Important files**
+
+- `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`
+- `ui/src/graph-path-history.ts`, `ui/src/GraphPathExplorer.tsx`
+- `src/links/graph-cluster-insights.ts`, `ui/src/GraphClusterInsights.tsx`
+- `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`
+- `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`
+- tests, advanced graph smoke, graph benchmark, docs, and this roadmap
+
+**Known limitations:** Saved view files are UI preferences, not vault backup/portable knowledge. History and local views are browser-local. Connected components cannot have cross-component entry/exit edges; entry/exit means internal directed roots/leaves. Rendering remains bounded and no force layout is used. Phase 21 merged during this work as squash commit `a1e71d5`; the Phase 22 branch was rebased onto that `origin/main`. Phase 19 remains unmerged.
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15, 17–34)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -2664,6 +2693,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Files changed:** `src/links/graph-paths.ts`, `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`, `ui/src/GraphPathExplorer.tsx`, `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`, tests, smoke, benchmark, docs, and roadmap.
 - **Integration note:** Built from `origin/main` at `fa4bb28` after Phase 20 merged. Phase 19 remains unmerged and is not a dependency; path links still break on move.
 - **Known limitations:** Browser-local views are not portable/backed up; BFS is bounded; cluster membership is graph connectivity, not semantics.
+
+---
+
+### 2026-11-03 — Phase 22G — Portable Graph Views & Deeper Exploration
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added portable graph-view export/import with preview and conflict strategies, path history, cluster-scoped insights, saved-view render limits, deterministic bounded rendering priority, tests, browser smokes, and benchmarks.
+- **Files changed:** `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`, `ui/src/graph-path-history.ts`, `ui/src/GraphPathExplorer.tsx`, `src/links/graph-cluster-insights.ts`, `ui/src/GraphClusterInsights.tsx`, `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`, tests, scripts, benchmark, docs, README, and roadmap.
+- **Integration note:** Phase 21 PR #9 merged during implementation as squash commit `a1e71d5`; the Phase 22 branch was rebased onto that `origin/main`. Phase 19 remains unmerged.
+- **Known limitations:** Portable view files contain UI preferences only. History and local views are browser-local. Graph rendering remains bounded; no force simulation.
 
 ---
 

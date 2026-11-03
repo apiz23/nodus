@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, LoaderCircle, Route } from 'lucide-react';
 import type { GraphNode } from '../../src/links/graph.js';
 import type { UiGraphPathResult } from '../../src/ui-server/dto';
 import { Button } from '@/components/ui/button';
+import { loadGraphPathHistory, pruneGraphPathHistory, recordGraphPathHistory, writeGraphPathHistory, clearGraphPathHistory, type GraphPathHistoryEntry } from './graph-path-history';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -11,6 +12,7 @@ import type { GraphTraversalMode } from '../../src/links/graph-paths.js';
 import { api } from './api';
 
 interface Props {
+  vaultKey: string;
   source: GraphNode;
   nodes: readonly GraphNode[];
   mode: GraphTraversalMode;
@@ -18,27 +20,56 @@ interface Props {
   onSelectNode: (id: string) => void;
 }
 
-export function GraphPathExplorer({ source, nodes, mode, onModeChange, onSelectNode }: Props) {
+export function GraphPathExplorer({ vaultKey, source, nodes, mode, onModeChange, onSelectNode }: Props) {
   const [targetId, setTargetId] = useState<string | null>(null);
   const [result, setResult] = useState<UiGraphPathResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [history, setHistory] = useState<GraphPathHistoryEntry[]>([]);
   const target = targetId === null ? null : nodes.find((node) => node.id === targetId) ?? null;
   const candidates = useMemo(() => nodes.filter((node) => node.id !== source.id).slice(0, 500), [nodes, source.id]);
+  const noteById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
-  async function findPath() {
-    if (targetId === null || loading) return;
+  useEffect(() => {
+    const ids = new Set(nodes.map((node) => node.id));
+    setHistory(pruneGraphPathHistory(loadGraphPathHistory(window.localStorage, vaultKey), ids));
+  }, [vaultKey, nodes]);
+
+  async function runPath(fromId: string, toId: string, traversalMode: GraphTraversalMode) {
     setLoading(true);
     setError(null);
     try {
-      setResult(await api.graphPath({ from: source.id, to: targetId, mode }));
+      const next = await api.graphPath({ from: fromId, to: toId, mode: traversalMode });
+      setResult(next);
+      if (next.status === 'found' || next.status === 'same-node') {
+        const updated = recordGraphPathHistory(history, { fromId, toId, mode: traversalMode, length: Math.max(0, next.nodes.length - 1) });
+        setHistory(updated);
+        try { writeGraphPathHistory(window.localStorage, vaultKey, updated); } catch { /* Optional preference storage. */ }
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The path could not be computed.');
       setResult(null);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function findPath() {
+    if (targetId === null || loading) return;
+    await runPath(source.id, targetId, mode);
+  }
+
+  function revisit(entry: GraphPathHistoryEntry) {
+    onSelectNode(entry.fromId);
+    setTargetId(entry.toId);
+    onModeChange(entry.mode);
+    void runPath(entry.fromId, entry.toId, entry.mode);
+  }
+
+  function clearHistory() {
+    setHistory(clearGraphPathHistory());
+    try { writeGraphPathHistory(window.localStorage, vaultKey, []); } catch { /* Optional preference storage. */ }
   }
 
   const statusText = result === null ? null
@@ -104,6 +135,25 @@ export function GraphPathExplorer({ source, nodes, mode, onModeChange, onSelectN
           </ol> : null}
         </div>
       ) : null}
+      {history.length > 0 ? <div className="border-t pt-2">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="text-[11px] font-medium text-muted-foreground">Recent paths</h4>
+          <Button variant="ghost" size="xs" onClick={clearHistory}>Clear</Button>
+        </div>
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {history.slice(0, 5).map((entry) => {
+            const from = noteById.get(entry.fromId);
+            const to = noteById.get(entry.toId);
+            if (from === undefined || to === undefined) return null;
+            return <li key={entry.id}>
+              <Button variant="ghost" size="sm" className="h-auto w-full justify-start gap-1 px-1.5 py-1 text-left text-[11px] font-normal" onClick={() => revisit(entry)}>
+                <span className="min-w-0 flex-1 truncate">{from.title} → {to.title}</span>
+                <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{entry.length} · {entry.mode === 'directed' ? 'dir' : 'undir'}</span>
+              </Button>
+            </li>;
+          })}
+        </ul>
+      </div> : null}
     </section>
   );
 }
