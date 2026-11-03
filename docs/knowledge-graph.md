@@ -181,7 +181,11 @@ references that must remain stable.
 
 ### Saved graph views
 
-Saved views are browser-local UI preferences, scoped by the active vault path. They are not notes, a new vault format, or backed-up knowledge. Each view stores the search query, folder, selected cluster, focus note, selected note, isolated/unresolved toggles, path traversal mode, and viewport. The storage envelope is versioned; malformed entries, duplicate IDs, unsupported envelope versions, and invalid timestamps or configs are dropped rather than trusted. Users can create, select, update in place, rename, and delete views. The storage key includes the vault path, so two vaults never share views.
+Saved views are browser-local UI preferences, scoped by the active vault path. They are not notes, a new vault format, or backed-up knowledge. Each view stores the search query, folder, selected cluster, focus note, selected note, isolated/unresolved toggles, path traversal mode, viewport, and render limit. The storage envelope is versioned; malformed entries, duplicate IDs, unsupported envelope versions, and invalid timestamps or configs are dropped rather than trusted. Users can create, select, update in place, rename, and delete views. The storage key includes the vault path, so two vaults never share views.
+
+### Portable graph-view files
+
+`Export` emits a versioned `nodus-graph-views` JSON document containing view IDs, names, timestamps, and configs. It never contains a vault path. The same document can be imported through a preview dialog. The preview reports malformed/duplicate records, invalid destination folders, clusters, focus notes, and selected notes; invalid references are cleared rather than guessed. Duplicate conflicts can be resolved with **replace**, **skip**, or **rename**. Rename assigns a fresh ID and a deterministic unique imported name. Legacy local-storage envelopes are accepted for backward compatibility. The export is a UI preference file, not Markdown knowledge, and is not part of vault backup/portable export.
 
 ### Shortest paths
 
@@ -190,6 +194,12 @@ Saved views are browser-local UI preferences, scoped by the active vault path. T
 ### Cluster filtering
 
 `GET /api/graph/clusters` returns all deterministic connected components. The graph can filter to one non-singleton cluster or to all isolated notes. Existing text, folder, isolated-note, and unresolved-link filters remain active. Selections are cleared when a saved cluster no longer exists after a refresh.
+
+`GET /api/graph/clusters/:clusterId` returns measured cluster statistics: member count, internal directed edges and link occurrences, density over possible directed pairs, internal entry notes (no in-cluster incoming link), internal exit notes (no in-cluster outgoing link), and the most connected members. Entry/exit here means directed source/sink position inside the component; connected components by definition have no cross-component edge. All values are graph measurements, not inferred meaning.
+
+### Path history
+
+The shortest-path panel records the last 20 successful vault-scoped paths in browser storage. Each entry stores source ID, destination ID, traversal mode, path length, and timestamp. Titles are resolved from the current graph, so renames and moves update naturally; entries with a deleted endpoint are pruned. Users can revisit or clear history. No stale path text or Markdown is stored.
 
 ### Focus history
 
@@ -214,10 +224,14 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 ## Known limitations
 
 - The graph uses a deterministic radial layout; there is no force simulation or persisted node position.
-- Saved graph views are browser-local preferences, not portable vault data, and do not survive clearing site storage or changing browser profiles.
+- Saved graph views remain browser-local preferences; portable JSON export/import is explicit and is not part of vault backup. They do not survive clearing site storage unless exported first.
+- Path history is browser-local and vault-scoped; it stores stable note IDs only and is pruned when either endpoint disappears.
 - Shortest paths are bounded BFS results over confirmed links; very large searches can return `limit` rather than an exhaustive answer.
 - Cluster filter options currently list all non-singleton clusters; extremely fragmented vaults use the separate isolated-notes option.
 - The path destination picker shows the first 500 note candidates to keep the command list bounded. Search beyond that set should use graph filtering first.
+- The graph renders a bounded set selected by explicit render limits: 100, 200, or 400 nodes, default 200. Focused neighborhoods and cluster priority are applied before truncation. The bound prevents thousands of SVG nodes and text labels from rendering; the remaining graph is reached through filters, focus, or cluster navigation.
+- Saved graph views are explicit JSON exports, but they are not vault backup/portable knowledge exports.
+- Phase 22 local benchmark, Node 24.18.1, five-run median for deterministic filtering to 200 rendered nodes plus radial positioning (excludes React/SVG paint): 1,000 notes / 2,000 edges: 1.11 ms filter + 0.07 ms position; 5,000 / 10,000: 6.05 ms + 0.03 ms; 10,000 / 20,000: 13.14 ms + 0.03 ms. Shortest-path BFS: 0.282 ms per path at 1,000 notes and 2.057 ms at 5,000. These are local observations, not enforced thresholds.
 - Saved graph views are browser-local preferences; they are not included in backups or portable exports, and clearing site storage removes them.
 - Clusters are graph connectivity, not semantic groups. Recommendations are lexical/link-based and can be noisy in large folders.
 - The insights response exposes up to eight clusters with 20 member previews each; very large clusters require graph exploration.

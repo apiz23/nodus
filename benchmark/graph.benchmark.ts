@@ -6,6 +6,7 @@ import { graphFromLinkIndex } from '../src/links/graph.js';
 import { analyzeGraph } from '../src/links/graph-analytics.js';
 import { relatedNotes } from '../src/links/related-notes.js';
 import { shortestGraphPath } from '../src/links/graph-paths.js';
+import { positionGraph, visibleGraph } from '../ui/src/graph-model.js';
 import { createLinkSuggester } from '../src/links/link-repair.js';
 
 const makeId = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -154,4 +155,35 @@ it('measures bounded shortest-path traversal', () => {
   }
   expect(results).toHaveLength(2);
   console.log(JSON.stringify({ node: process.version, method: '5-run median for 100 directed shortest-path queries, maxDepth 20, maxVisited 5000', results }, null, 2));
+}, 120_000);
+
+
+it('measures bounded graph filtering and positioning for large vaults', () => {
+  const results: Array<{ notes: number; edges: number; rendered: number; filterMs: number; positionMs: number }> = [];
+  for (const size of [1000, 5000, 10000]) {
+    const nodes = Array.from({ length: size }, (_, index) => ({ id: makeId(index + 1), title: `Render note ${index + 1}`, path: `folder-${index % 40}/note-${index + 1}.md` }));
+    const edges = Array.from({ length: size * 2 }, (_, index) => {
+      const source = (index * 7) % size;
+      const target = (index * 13 + 1) % size;
+      return { sourceId: nodes[source]!.id, targetId: nodes[target]!.id, linkCount: 1, snippets: [] };
+    });
+    const graph = { nodes, edges, unresolvedCount: 0, ambiguousCount: 0 };
+    const priorityIds = nodes.slice(0, 400).map((node) => node.id);
+    visibleGraph(graph, '', null, 200, { priorityIds });
+    const filterDurations: number[] = [];
+    const positionDurations: number[] = [];
+    let rendered = 0;
+    for (let run = 0; run < 5; run += 1) {
+      const filterStart = performance.now();
+      const visible = visibleGraph(graph, '', null, 200, { priorityIds });
+      filterDurations.push(performance.now() - filterStart);
+      const positionStart = performance.now();
+      positionGraph(visible.nodes, null);
+      positionDurations.push(performance.now() - positionStart);
+      rendered = visible.nodes.length;
+    }
+    results.push({ notes: size, edges: edges.length, rendered, filterMs: Number(median(filterDurations).toFixed(2)), positionMs: Number(median(positionDurations).toFixed(2)) });
+  }
+  expect(results).toHaveLength(3);
+  console.log(JSON.stringify({ node: process.version, method: '5-run median for deterministic filtering to 200 rendered nodes and radial positioning; excludes React/SVG paint', results }, null, 2));
 }, 120_000);
