@@ -3,6 +3,7 @@ import { readPageIcon } from '../ui-server/page-icon.js';
 import { canonicalizePropertyValue, projectPropertyValues, propertyOptionLabels, type NotePropertyValue, type PropertyCatalog } from '../properties/catalog.js';
 import { matchesNoteFilters, type NoteFilter, type NoteFilterLogic } from './note-filters.js';
 import { parseSearchQuery, type ParsedSearchQuery } from './query.js';
+import { buildRetrievalIndex, retrievalScores, type RetrievalIndex } from './retrieval.js';
 
 export type SearchField = 'title' | 'alias' | 'path' | 'content' | 'tag' | 'property' | 'date' | 'filter';
 export interface SearchMatch { field: SearchField; text: string; start: number; end: number; propertyId?: string; propertyName?: string }
@@ -25,7 +26,7 @@ interface SearchDocument {
   filterProperties: Record<string, NotePropertyValue>;
   invalidPropertyIds: Set<string>;
 }
-export interface SearchIndex { documents: SearchDocument[]; metadataIssues: SearchMetadataIssue[]; catalogIssue?: string; properties: PropertyCatalog['properties'] }
+export interface SearchIndex { documents: SearchDocument[]; retrieval?: RetrievalIndex; retrievalIssue?: string; metadataIssues: SearchMetadataIssue[]; catalogIssue?: string; properties: PropertyCatalog['properties'] }
 
 export function normalizeSearch(value: string): string {
   return value.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -46,7 +47,7 @@ function searchable(value: string): SearchText {
 }
 
 /** Pre-normalized searchable fields, rebuilt only from authoritative parsed Markdown notes. */
-export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalog = { properties: [] }, catalogIssue?: string): SearchIndex {
+export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalog = { properties: [] }, catalogIssue?: string, previous?: SearchIndex): SearchIndex {
   const metadataIssues: SearchMetadataIssue[] = [];
   const propertyById = new Map(catalog.properties.map((property) => [property.id, property] as const));
   const documents = notes.map((note) => {
@@ -76,7 +77,15 @@ export function buildSearchIndex(notes: readonly Note[], catalog: PropertyCatalo
     invalidPropertyIds,
   };
   });
-  return { documents, metadataIssues, ...(catalogIssue === undefined ? {} : { catalogIssue }), properties: catalog.properties };
+  let retrieval: RetrievalIndex | undefined;
+  let retrievalIssue: string | undefined;
+  try {
+    retrieval = buildRetrievalIndex(notes.map((note, index) => ({ id: note.id, title: note.title, body: note.body,
+      aliases: note.aliases, tags: note.tags, propertyText: documents[index]!.properties.filter((property) => !property.invalid)
+        .map((property) => `${property.nameDisplay} ${property.value.text}`).join(' ') })), previous?.retrieval);
+  } catch { retrievalIssue = 'Text recommendations are unavailable. Link suggestions and ordinary search remain available; refresh to retry.'; }
+  return { documents, ...(retrieval ? { retrieval } : {}), ...(retrievalIssue ? { retrievalIssue } : {}), metadataIssues,
+    ...(catalogIssue === undefined ? {} : { catalogIssue }), properties: catalog.properties };
 }
 
 function matchIn(value: SearchText, query: string, field: SearchField): SearchMatch | undefined {
@@ -109,6 +118,7 @@ function context(match: SearchMatch): SearchMatch {
 export function searchIndex(index: SearchIndex, rawQuery: string, limit = 50, filters: readonly NoteFilter[] = [], logic: NoteFilterLogic = 'and', parsed = parseSearchQuery(rawQuery)): SearchResult[] {
   const query = normalizeSearch(parsed.text.join(' '));
   if (!query && parsed.constraints.length === 0 && filters.length === 0) return [];
+  const scores = index.retrieval ? retrievalScores(index.retrieval, query) : new Map<string, number>();
   const ranked: { rank: number; result: SearchResult }[] = [];
   for (const doc of index.documents) {
     if (!matchesNoteFilters({ tags: doc.tagsRaw, values: doc.filterProperties, invalidPropertyIds: doc.invalidPropertyIds }, filters, logic)) continue;
@@ -139,7 +149,7 @@ export function searchIndex(index: SearchIndex, rawQuery: string, limit = 50, fi
       snippet: match.field === 'content' ? excerpt.text : `${label}: ${excerpt.text}`, match: excerpt,
       matchedFields: matchingFields(doc, terms, parsed, match.field) } });
   }
-  return ranked.sort((a, b) => a.rank - b.rank || a.result.title.localeCompare(b.result.title)
+  return ranked.sort((a, b) => a.rank - b.rank || (scores.get(b.result.id) ?? 0) - (scores.get(a.result.id) ?? 0) || a.result.title.localeCompare(b.result.title)
     || a.result.path.localeCompare(b.result.path) || a.result.id.localeCompare(b.result.id))
     .slice(0, limit).map(({ result }) => result);
 }

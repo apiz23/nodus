@@ -8,7 +8,7 @@ pnpm bench:search
 
 The benchmark invokes the production `/api/search` handler and the real filesystem vault scanner/parser. It creates synthetic Markdown files in an OS temporary directory, validates each result set against deterministic expected IDs, then removes the temporary vaults and closes its loopback servers.
 
-Default datasets contain 100, 1,000, and 10,000 notes. They use deterministic IDs and content, nested directories, Nodus frontmatter with optional tags and aliases, paragraphs of varied counts, wiki links, a common term in every note, a rare term every 997 notes, a multi-word phrase every 13 notes, and a frequent phrase in two out of three notes. Search results remain capped by the production API at 50.
+Default datasets contain 1,000, 5,000, and 10,000 notes. They use deterministic IDs and content, nested directories, Nodus frontmatter with optional tags and aliases, paragraphs of varied counts, wiki links, a common term in every note, a rare term every 997 notes, a multi-word phrase every 13 notes, and a frequent phrase in two out of three notes. Search results remain capped by the production API at 50.
 
 Scenarios measure common-term, rare-term, no-result, multiple-term, many-match, and repeated identical queries. Each scenario has one warm-up query by default and five measured queries. Results include returned and total expected matches plus median, p95, minimum, and maximum latency. The timed interval includes localhost HTTP, in-memory matching and ranking, and JSON response handling. Vault traversal, file reads, and Markdown parsing occur on the first request, after snapshot expiry (five seconds), or after invalidation; warm queries reuse the derived snapshot. A timing that crosses expiry includes a rebuild. Query-result IDs are checked on warm-up and measured requests.
 
@@ -37,3 +37,5 @@ For the editor's focused large-document/large-vault diagnostic, run
 It reports editor-state creation plus collection of 40 visible links in a roughly 920 KB document
 with 10,000 note summaries. The regression checks bounded title-lookup work and source fidelity,
 not a machine-dependent time limit; it does not claim to measure browser typing latency.
+
+Phase 24 adds BM25 ordering within existing match tiers. The benchmark retains exact result-ID assertions using fixture-derived term statistics and an independent reference score calculation. `pnpm bench:retrieval` separately measures in-memory projection construction/reuse, queries, recommendations, approximate encoded projection size and process memory; see [Knowledge retrieval](knowledge-retrieval.md).

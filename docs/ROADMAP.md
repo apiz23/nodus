@@ -2766,3 +2766,7 @@ Append a new entry after every significant task. Do not rewrite history; correct
 ---
 
 **End of roadmap.**
+
+## Phase 24 — Knowledge Retrieval delivery
+
+Implemented local term-frequency projection reuse within the existing Markdown snapshot, BM25 ordering within search tiers, and content/tag/heading explanations in the existing related-note panel with capped graph evidence. See [architecture and limitations](knowledge-retrieval.md). Phase 24A–24C and 24E are implemented; 24F adds diagnostic 1k/5k/10k benchmarks and regression/smoke coverage. Phase 24D semantic hybrid retrieval is deferred: no local model or embedding dependency has been justified. This delivery does not integrate Phase 19. Phase 23 was merged as PR #12 before this implementation. Older numbered proposals above retain their historical labels.

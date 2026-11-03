@@ -272,10 +272,10 @@ export const api = {
     if (input.maxVisited !== undefined) params.set('maxVisited', String(input.maxVisited));
     return request(`/api/graph/path?${params.toString()}`);
   },
-  relatedNotes(id: string, limit = 6, refresh = false): Promise<UiRelatedNotesResponse> {
+  relatedNotes(id: string, limit = 6, refresh = false, signal?: AbortSignal): Promise<UiRelatedNotesResponse> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (refresh) params.set('refresh', 'true');
-    return request(`/api/notes/${encodeURIComponent(id)}/related?${params.toString()}`);
+    return request(`/api/notes/${encodeURIComponent(id)}/related?${params.toString()}`, { ...(signal ? { signal } : {}) });
   },
   createLinkTarget(target: string): Promise<{ note: UiNote }> {
     return request('/api/discovery/create', { method: 'POST', body: jsonBody({ target }) });

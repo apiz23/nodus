@@ -1,5 +1,6 @@
 import type { LinkIndex, IndexedNote } from './link-index.js';
 import type { NoteGraph } from './graph.js';
+import { recommendByText, type RetrievalIndex } from '../search/retrieval.js';
 
 export type RelatedReasonCode =
   | 'shared-outgoing'
@@ -7,11 +8,15 @@ export type RelatedReasonCode =
   | 'common-neighbours'
   | 'similar-title'
   | 'similar-alias'
-  | 'same-folder';
+  | 'same-folder'
+  | 'similar-content'
+  | 'shared-tags'
+  | 'related-headings';
 
 export interface RelatedReason {
   code: RelatedReasonCode;
   count: number;
+  terms?: string[];
 }
 
 export interface RelatedNote {
@@ -22,6 +27,7 @@ export interface RelatedNote {
 
 export interface RelatedNotesOptions {
   limit?: number;
+  retrieval?: RetrievalIndex | undefined;
 }
 
 /**
@@ -51,6 +57,7 @@ export function relatedNotes(index: LinkIndex, graph: NoteGraph, noteId: string,
   const sourceFolder = folderOf(source.path);
   const sourceTokens = new Set([...tokenize(source.title), ...source.aliases.flatMap(tokenize)]);
 
+  const textMatches = new Map((options.retrieval ? recommendByText(options.retrieval, noteId) : []).map((item) => [item.id, item]));
   const candidates: RelatedNote[] = [];
   for (const note of index.notes) {
     if (note.id === noteId) continue;
@@ -73,8 +80,18 @@ export function relatedNotes(index: LinkIndex, graph: NoteGraph, noteId: string,
     if (titleSimilarity > 0) reasons.push({ code: 'similar-title', count: titleSimilarity });
     if (aliasSimilarity > 0) reasons.push({ code: 'similar-alias', count: aliasSimilarity });
     if (sameFolder) reasons.push({ code: 'same-folder', count: 1 });
-    const score = sharedOutgoing * 3 + sharedIncoming * 3 + commonNeighbours * 2
+    let score = sharedOutgoing * 3 + sharedIncoming * 3 + commonNeighbours * 2
       + titleSimilarity * 2 + aliasSimilarity * 1.5 + (sameFolder ? 1 : 0);
+    if (options.retrieval) {
+      const text = textMatches.get(note.id);
+      const meaningfulLink = sharedOutgoing + sharedIncoming + commonNeighbours > 0;
+      if (!meaningfulLink && titleSimilarity === 0 && aliasSimilarity === 0 && !text) continue;
+      // Text similarity is normalized; graph popularity and folder proximity cannot dominate it.
+      score = Math.min(2, score / 4) + (text?.terms.length ? text.similarity * 8 : 0) + Math.min(2, text?.tags.length ?? 0);
+      if (text?.terms.length) reasons.unshift({ code: 'similar-content', count: text.similarity, terms: text.terms });
+      if (text?.tags.length) reasons.push({ code: 'shared-tags', count: text.tags.length, terms: text.tags });
+      if (text?.headings.length) reasons.push({ code: 'related-headings', count: text.headings.length, terms: text.headings });
+    }
     if (score <= 0) continue;
     candidates.push({ note, score: Number(score.toFixed(3)), reasons });
   }

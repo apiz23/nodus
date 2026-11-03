@@ -271,3 +271,7 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 - No link extraction from frontmatter, heading/block targets, or automatic link rewriting.
 - Graph and backlink data are derived in memory; there is no cross-process invalidation beyond the existing snapshot TTL/refresh behavior.
 - Ambiguous targets are counted and omitted from confirmed edges; the source Markdown must be edited or repaired to choose a candidate.
+
+## Content-assisted related notes (Phase 24)
+
+Related notes now combine bounded text similarity, shared tags/headings and capped graph evidence from the shared Markdown snapshot. Folder proximity alone no longer qualifies a recommendation. See [Knowledge retrieval](knowledge-retrieval.md) for evidence labels, thresholds, privacy and lifecycle details. No links are modified automatically.

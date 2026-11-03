@@ -50,7 +50,7 @@ phrase and are ranked by the strongest individual field match after contiguous p
 `matchedFields` identifies all matched fields and constraints; result snippets highlight one primary
 context. This is lexical ranking only, not semantic relevance.
 
-Ties sort by title, path, then stable ID. Duplicate titles remain distinct notes. Up to 50 results
+Within each match tier, BM25 term relevance now refines ordering; remaining ties sort by title, path, then stable ID. See [Knowledge retrieval](knowledge-retrieval.md) for weights, bounds and limitations. Duplicate titles remain distinct notes. Up to 50 results
 are returned. Results show their path and matching field with a contextual excerpt and highlight;
 Markdown is displayed as escaped text. Each note appears once even if several fields match.
 
@@ -89,13 +89,13 @@ bytes reuse a parsed note; changed/new paths are parsed again and removed paths 
 parsed cache is published only after a successful complete snapshot. Normal storage reads, writes,
 backups, and restores continue to validate Markdown directly.
 
-The Node 24 benchmark on an Intel i5-8257U (8 reported CPUs) measured the instrumented first
+The Phase 23 baseline (before content-assisted retrieval) Node 24 benchmark on an Intel i5-8257U (8 reported CPUs) measured the instrumented first
 snapshot at 1.22 s / 2.20 s / 3.92 s for 1k / 5k / 10k notes; explicit rebuild at 321 ms / 696 ms /
 2.44 s; warm query at 4.7 ms / 27 ms / 36 ms; and query after one-note creation invalidation at
 230 ms / 853 ms / 1.00 s. These are single-run observations, not performance guarantees. The
 benchmark reports first-request and warm timings separately; OS file-cache state and host load are
 uncontrolled, and per-operation profile durations aggregate work across files, so they can exceed
-wall-clock phase time. Run `pnpm bench:search` to reproduce current measurements at 1k, 5k and 10k.
+wall-clock phase time. Run `pnpm bench:search` for current measurements at 1k, 5k and 10k; see [Knowledge retrieval](knowledge-retrieval.md) for Phase 24 results.
 
 ## Metadata filters
 

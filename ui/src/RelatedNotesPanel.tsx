@@ -1,5 +1,5 @@
 import { RefreshCw, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { UiRelatedNote } from '../../src/ui-server/dto';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,21 +15,25 @@ interface Props {
 type State =
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
-  | { phase: 'ready'; related: UiRelatedNote[] };
+  | { phase: 'ready'; related: UiRelatedNote[]; issue?: string };
 
 export function RelatedNotesPanel({ noteId, revision, onOpenNote }: Props) {
   const [refresh, setRefresh] = useState(0);
   const [state, setState] = useState<State>({ phase: 'loading' });
+  const lastRefresh = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const forceRefresh = refresh !== lastRefresh.current;
+    lastRefresh.current = refresh;
     setState({ phase: 'loading' });
-    api.relatedNotes(noteId, 6, refresh > 0)
-      .then((result) => { if (!cancelled) setState({ phase: 'ready', related: result.related }); })
+    api.relatedNotes(noteId, 6, forceRefresh, controller.signal)
+      .then((result) => { if (!cancelled) setState({ phase: 'ready', related: result.related, ...(result.retrievalIssue ? { issue: result.retrievalIssue } : {}) }); })
       .catch((error: unknown) => {
         if (!cancelled) setState({ phase: 'error', message: error instanceof Error ? error.message : 'Could not load related notes.' });
       });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [noteId, revision, refresh]);
 
   return (
@@ -45,6 +49,8 @@ export function RelatedNotesPanel({ noteId, revision, onOpenNote }: Props) {
         </Button>
       </div>
 
+      {state.phase === 'ready' && state.issue ? <p className="mt-2 text-xs text-muted-foreground" role="status">{state.issue}</p> : null}
+
       {state.phase === 'loading' ? (
         <div className="mt-3 space-y-2" aria-busy="true">
           <Skeleton className="h-10 w-full" />
@@ -57,7 +63,7 @@ export function RelatedNotesPanel({ noteId, revision, onOpenNote }: Props) {
         </div>
       ) : state.related.length === 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">
-          No link or lexical overlap found yet. Connect this note with wiki links to surface related notes.
+          No strong text, tag, or link connections found yet. Recommendations use saved notes and refresh after saving.
         </p>
       ) : (
         <ul className="mt-3 min-w-0 space-y-1.5">
@@ -75,7 +81,7 @@ export function RelatedNotesPanel({ noteId, revision, onOpenNote }: Props) {
                 <span className="mt-1 flex flex-wrap gap-1">
                   {item.reasons.map((reason) => (
                     <Badge key={reason.code} variant="outline" className="font-normal text-[10px] text-muted-foreground">
-                      {reasonLabel(reason.code, reason.count)}
+                      {reasonLabel(reason.code, reason.count, reason.terms)}
                     </Badge>
                   ))}
                 </span>
@@ -89,10 +95,10 @@ export function RelatedNotesPanel({ noteId, revision, onOpenNote }: Props) {
 }
 
 function reasonText(item: UiRelatedNote): string {
-  return item.reasons.map((reason) => reasonLabel(reason.code, reason.count)).join(', ');
+  return item.reasons.map((reason) => reasonLabel(reason.code, reason.count, reason.terms)).join(', ');
 }
 
-function reasonLabel(code: UiRelatedNote['reasons'][number]['code'], count: number): string {
+function reasonLabel(code: UiRelatedNote['reasons'][number]['code'], count: number, terms?: string[]): string {
   switch (code) {
     case 'shared-outgoing': return `${count} shared outgoing ${count === 1 ? 'link' : 'links'}`;
     case 'shared-incoming': return `${count} shared incoming ${count === 1 ? 'link' : 'links'}`;
@@ -100,5 +106,8 @@ function reasonLabel(code: UiRelatedNote['reasons'][number]['code'], count: numb
     case 'similar-title': return 'similar title';
     case 'similar-alias': return 'similar alias';
     case 'same-folder': return 'same folder';
+    case 'similar-content': return `Similar text: ${terms?.join(', ') ?? 'shared terms'}`;
+    case 'shared-tags': return `Shared tags: ${terms?.join(', ') ?? count}`;
+    case 'related-headings': return `Related headings: ${terms?.join(', ') ?? count}`;
   }
 }

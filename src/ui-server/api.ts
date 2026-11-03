@@ -154,7 +154,7 @@ export function createLocalApiMiddleware(
       return { notes, catalog: { properties: [] }, catalogIssue: error instanceof Error ? error.message : 'Property catalog could not be read.' };
     }
   };
-  const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot) => {
+  const buildKnowledgeIndex = (snapshot: KnowledgeSnapshot, previousSearch?: ReturnType<typeof buildSearchIndex>) => {
     const links = buildLinkIndex(snapshot.notes);
     const graph = graphFromLinkIndex(links);
     return {
@@ -166,13 +166,21 @@ export function createLocalApiMiddleware(
           || left.title.localeCompare(right.title) || left.id.localeCompare(right.id))
         .slice(0, 6)
         .map((note) => ({ id: note.id, title: note.title, path: note.path, updatedAt: note.updatedAt, aliases: [...note.aliases], icon: null })),
-      search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue),
+      search: buildSearchIndex(snapshot.notes, snapshot.catalog, snapshot.catalogIssue, previousSearch),
     };
   };
   const indexes = new Map<FileSystemVault, ReturnType<typeof createSnapshotCache<KnowledgeSnapshot, ReturnType<typeof buildKnowledgeIndex>>>>();
   const indexFor = (vault: FileSystemVault) => {
     let index = indexes.get(vault);
-    if (!index) { index = createSnapshotCache(() => loadKnowledgeSnapshot(vault), buildKnowledgeIndex); indexes.set(vault, index); }
+    if (!index) {
+      let previousSearch: ReturnType<typeof buildSearchIndex> | undefined;
+      index = createSnapshotCache(() => loadKnowledgeSnapshot(vault), (snapshot) => {
+        const built = buildKnowledgeIndex(snapshot, previousSearch);
+        previousSearch = built.search;
+        return built;
+      });
+      indexes.set(vault, index);
+    }
     return index;
   };
   type RelationSnapshot = { notes: Note[]; schemas: Map<string, DatabaseDefinition> };
@@ -611,7 +619,8 @@ export function createLocalApiMiddleware(
       if (!index.links.notes.some((note) => note.id === id)) throw new ApiError(404, 'NOT_FOUND', 'Note was not found.');
       const requestedLimit = Number(url.searchParams.get('limit') ?? '6');
       const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(20, requestedLimit)) : 6;
-      return sendJson(res, 200, { noteId: id, related: relatedNotes(index.links, index.graph, id, { limit }) });
+      return sendJson(res, 200, { noteId: id, related: relatedNotes(index.links, index.graph, id, { limit, ...(index.search.retrieval ? { retrieval: index.search.retrieval } : {}) }),
+        ...(index.search.retrievalIssue ? { retrievalIssue: index.search.retrievalIssue } : {}) });
     }
     if (method === 'POST' && path === '/api/discovery/create') {
       const body = await readJson(req);
