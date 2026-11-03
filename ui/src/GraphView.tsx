@@ -1,23 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Network, Plus, RefreshCw, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Minus, Network, Plus, RefreshCw, RotateCcw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { GraphEdge } from '../../src/links/graph.js';
-import type { UiNoteGraph } from '../../src/ui-server/dto.js';
+import type { UiGraphCluster, UiNoteGraph } from '../../src/ui-server/dto.js';
+import type { GraphTraversalMode } from '../../src/links/graph-paths.js';
+import type { SavedGraphViewConfig } from './graph-saved-views';
+import { GraphSavedViews } from './GraphSavedViews';
+import { GraphPathExplorer } from './GraphPathExplorer';
 import { api } from './api';
 import { graphConnections, graphFolders, positionGraph, visibleGraph } from './graph-model';
 import { cn } from '@/lib/utils';
 
-interface Props { revision: number; initialNoteId: string | null; onOpenNote: (id: string) => void }
+interface Props { revision: number; initialNoteId: string | null; vaultKey: string; onOpenNote: (id: string) => void }
 interface Viewport { x: number; y: number; scale: number }
 const GRAPH_NODE_LIMIT = 200;
 const ALL_FOLDERS = '__all__';
+const ALL_CLUSTERS = '__all__';
+const ISOLATED_CLUSTER = '__isolated__';
 
-export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
+export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Props) {
   const [graph, setGraph] = useState<UiNoteGraph | null>(null);
+  const [clusters, setClusters] = useState<UiGraphCluster[]>([]);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const [clusterId, setClusterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -27,6 +36,8 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(initialNoteId);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [focusHistory, setFocusHistory] = useState<string[]>([]);
+  const [pathMode, setPathMode] = useState<GraphTraversalMode>('directed');
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const request = useRef(0);
   const mounted = useRef(true);
@@ -37,11 +48,23 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.graph(refresh);
+      const [graphResult, clusterResult] = await Promise.allSettled([api.graph(refresh), api.graphClusters(refresh)]);
       if (!mounted.current || current !== request.current) return;
+      if (graphResult.status === 'rejected') throw graphResult.reason;
+      const result = graphResult.value;
       setGraph(result);
+      if (clusterResult.status === 'fulfilled') {
+        setClusters(clusterResult.value.clusters);
+        setClusterError(null);
+        setClusterId((id) => id === null || id === ISOLATED_CLUSTER || clusterResult.value.clusters.some((cluster) => cluster.id === id && cluster.size > 1) ? id : null);
+      } else {
+        setClusters([]);
+        setClusterId(null);
+        setClusterError(clusterResult.reason instanceof Error ? clusterResult.reason.message : 'Clusters could not be loaded.');
+      }
       setSelectedId((id) => id && result.nodes.some((node) => node.id === id) ? id : null);
       setFocusId((id) => id && result.nodes.some((node) => node.id === id) ? id : null);
+      setFocusHistory((history) => history.filter((id) => result.nodes.some((node) => node.id === id)));
     } catch (reason) {
       if (mounted.current && current === request.current) setError(reason instanceof Error ? reason.message : 'Could not load the local note graph.');
     } finally {
@@ -56,9 +79,17 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
   }, [revision]);
 
   const folders = useMemo(() => graphFolders(graph?.nodes ?? []), [graph]);
+  const selectedCluster = clusterId === ISOLATED_CLUSTER
+    ? null
+    : clusters.find((cluster) => cluster.id === clusterId) ?? null;
+  const clusterNodeIds = useMemo(() => {
+    if (clusterId === null) return null;
+    if (clusterId === ISOLATED_CLUSTER) return new Set(graph?.isolatedNodeIds ?? []);
+    return new Set(selectedCluster?.members.map((member) => member.id) ?? []);
+  }, [clusterId, selectedCluster, graph]);
   const visible = useMemo(
-    () => graph ? visibleGraph(graph, query, focusId, GRAPH_NODE_LIMIT, { folder, showIsolated, showUnresolved }) : null,
-    [graph, query, focusId, folder, showIsolated, showUnresolved],
+    () => graph ? visibleGraph(graph, query, focusId, GRAPH_NODE_LIMIT, { folder, showIsolated, showUnresolved, clusterNodeIds }) : null,
+    [graph, query, focusId, folder, showIsolated, showUnresolved, clusterNodeIds],
   );
   const positions = useMemo(() => visible ? positionGraph(visible.nodes, focusId) : [], [visible, focusId]);
   const positionsById = useMemo(() => new Map(positions.map((node) => [node.id, node])), [positions]);
@@ -77,14 +108,51 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
   function selectNode(id: string) { setSelectedId(id); }
   function zoom(factor: number) { setViewport((current) => ({ ...current, scale: Math.max(0.5, Math.min(2.5, current.scale * factor)) })); }
   function resetViewport() { setViewport({ x: 0, y: 0, scale: 1 }); }
+  function focusGraph(id: string) {
+    if (focusId !== null && focusId !== id) setFocusHistory((history) => [...history.slice(-9), focusId]);
+    setFocusId(id);
+    setSelectedId(id);
+    resetViewport();
+  }
+  function clearFocus() {
+    if (focusId !== null) setFocusHistory((history) => [...history.slice(-9), focusId]);
+    setFocusId(null);
+    resetViewport();
+  }
+  function backFocus() {
+    const previous = focusHistory.at(-1) ?? null;
+    setFocusHistory((history) => history.slice(0, -1));
+    setFocusId(previous);
+    if (previous !== null) setSelectedId(previous);
+    resetViewport();
+  }
   function resetFilters() {
     setQuery('');
     setFolder(null);
+    setClusterId(null);
     setShowIsolated(true);
     setShowUnresolved(true);
     setFocusId(null);
+    setFocusHistory([]);
     setSelectedId(null);
+    setPathMode('directed');
     resetViewport();
+  }
+  function captureConfig(): SavedGraphViewConfig {
+    return { query, folder, clusterId, focusId, selectedId, showIsolated, showUnresolved, pathMode, viewport };
+  }
+  function applySavedConfig(config: SavedGraphViewConfig) {
+    setQuery(config.query);
+    setFolder(config.folder);
+    setClusterId(config.clusterId === null || config.clusterId === ISOLATED_CLUSTER || clusters.some((cluster) => cluster.id === config.clusterId && cluster.size > 1) ? config.clusterId : null);
+    setShowIsolated(config.showIsolated);
+    setShowUnresolved(config.showUnresolved);
+    setPathMode(config.pathMode);
+    setViewport(config.viewport);
+    setFocusHistory([]);
+    const existing = new Set(graph?.nodes.map((node) => node.id) ?? []);
+    setFocusId(config.focusId !== null && existing.has(config.focusId) ? config.focusId : null);
+    setSelectedId(config.selectedId !== null && existing.has(config.selectedId) ? config.selectedId : null);
   }
   function edgePath(edge: GraphEdge) {
     const source = positionsById.get(edge.sourceId), target = positionsById.get(edge.targetId);
@@ -114,6 +182,18 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
             {folders.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
           </SelectContent>
         </Select>
+        <Select value={clusterId ?? ALL_CLUSTERS} onValueChange={(value) => { setClusterId(value === ALL_CLUSTERS ? null : value); setSelectedId(null); setFocusId(null); setFocusHistory([]); }}>
+          <SelectTrigger className="w-52" aria-label="Filter by knowledge cluster">
+            <SelectValue placeholder="All clusters" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_CLUSTERS}>All clusters</SelectItem>
+            {graph?.isolatedNodeIds?.length ? <SelectItem value={ISOLATED_CLUSTER}>Isolated notes ({graph.isolatedNodeIds.length})</SelectItem> : null}
+            {clusters.filter((cluster) => cluster.size > 1).map((cluster) => (
+              <SelectItem key={cluster.id} value={cluster.id}>{cluster.representative.title} · {cluster.size} notes</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Checkbox checked={showIsolated} onCheckedChange={(checked) => setShowIsolated(checked === true)} aria-label="Show isolated notes" />
           Isolated notes
@@ -126,7 +206,8 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
         <Button variant="outline" size="sm" onClick={() => zoom(1 / 1.2)} aria-label="Zoom out"><Minus /></Button>
         <Button variant="outline" size="sm" onClick={resetViewport}><RotateCcw data-icon="inline-start" />Reset viewport</Button>
         <Button variant="ghost" size="sm" onClick={resetFilters}>Reset filters</Button>
-        {focusId ? <Button variant="ghost" size="sm" onClick={() => setFocusId(null)}>Show full graph</Button> : null}
+        {focusHistory.length > 0 ? <Button variant="ghost" size="sm" onClick={backFocus}><ArrowLeft data-icon="inline-start" />Previous focus</Button> : null}
+        {focusId ? <Button variant="ghost" size="sm" onClick={clearFocus}>Show full graph</Button> : null}
       </div>
 
       {error ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive"><span>{error}</span><Button variant="outline" size="sm" onClick={() => void load(true)}>Retry</Button></div> : null}
@@ -142,6 +223,10 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
           {graph.unresolvedCount ? <Badge variant="secondary">{graph.unresolvedCount} unresolved excluded</Badge> : null}
           {graph.ambiguousCount ? <Badge variant="secondary">{graph.ambiguousCount} ambiguous occurrences excluded</Badge> : null}
           {visible.truncated ? <span>Showing the first {GRAPH_NODE_LIMIT}; filter or focus a note to explore more.</span> : null}
+          {clusterError ? <span role="alert" className="text-destructive">Cluster filter unavailable: {clusterError}</span> : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+          <GraphSavedViews vaultKey={vaultKey} captureConfig={captureConfig} onApply={applySavedConfig} />
         </div>
         <div className="grid min-h-[26rem] flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="min-h-[24rem] overflow-hidden rounded-md border bg-card">
@@ -211,10 +296,11 @@ export function GraphView({ revision, initialNoteId, onOpenNote }: Props) {
               </div>
               <div className="flex flex-wrap gap-2">
                 {!selectedIsUnresolved ? <Button size="sm" onClick={() => onOpenNote(selected.id)}>Open note</Button> : null}
-                <Button size="sm" variant="outline" onClick={() => { setFocusId(selected.id); resetViewport(); }}>Explore neighbors</Button>
+                <Button size="sm" variant="outline" onClick={() => focusGraph(selected.id)}>Explore neighbors</Button>
               </div>
               <ConnectionList title={selectedIsUnresolved ? 'Referenced by' : 'Incoming links'} edges={connections.incoming} endpoint="sourceId" nodeById={nodeById} onSelect={selectNode} />
               {selectedIsUnresolved ? null : <ConnectionList title="Outgoing links" edges={connections.outgoing} endpoint="targetId" nodeById={nodeById} onSelect={selectNode} />}
+              {selectedIsUnresolved || graph === null ? null : <GraphPathExplorer source={selected} nodes={graph.nodes} mode={pathMode} onModeChange={setPathMode} onSelectNode={selectNode} />}
             </> : <p className="text-sm text-muted-foreground">Select a note node to inspect its incoming and outgoing links. Unresolved targets are shown as dashed nodes.</p>}
           </aside>
         </div>

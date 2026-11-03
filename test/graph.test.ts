@@ -47,6 +47,18 @@ describe('local note graph projection', () => {
     expect(deleted.unresolvedCount).toBe(1);
   });
 
+  it('filters by selected cluster while preserving other graph filters', () => {
+    const graph = {
+      nodes: [{ id: 'a', title: 'A', path: 'notes/a.md' }, { id: 'b', title: 'B', path: 'notes/b.md' }, { id: 'c', title: 'C', path: 'work/c.md' }],
+      edges: [{ sourceId: 'a', targetId: 'b', linkCount: 1, snippets: [] }, { sourceId: 'b', targetId: 'c', linkCount: 1, snippets: [] }],
+      unresolvedCount: 0,
+      ambiguousCount: 0,
+    };
+    const visible = visibleGraph(graph, '', null, 200, { clusterNodeIds: new Set(['a', 'b']), folder: 'notes' });
+    expect(visible.nodes.map((node) => node.id)).toEqual(['a', 'b']);
+    expect(visible.edges).toHaveLength(1);
+  });
+
   it('filters by title and path, focuses on one-hop neighbors and bounds displayed nodes for large vaults', () => {
     const nodes = Array.from({ length: 501 }, (_, i) => ({ id: `${i}`, title: `Note ${i}`, path: `folder/${i}.md` }));
     const edges = [{ sourceId: '0', targetId: '1', linkCount: 1, snippets: [] }, { sourceId: '2', targetId: '0', linkCount: 1, snippets: [] }];

@@ -35,6 +35,7 @@ import { buildLinkIndex, type LinkIndex } from '../links/link-index.js';
 import { graphFromLinkIndex } from '../links/graph.js';
 import { analyzeGraph } from '../links/graph-analytics.js';
 import { relatedNotes } from '../links/related-notes.js';
+import { shortestGraphPath, type GraphTraversalMode } from '../links/graph-paths.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
 import { chooseLinkTarget, rewriteWikiLink, sanitizeLinkDisplay } from '../links/link-edit.js';
 import { createSnapshotCache } from '../indexing/snapshot-cache.js';
@@ -551,6 +552,20 @@ export function createLocalApiMiddleware(
     if (method === 'GET' && path === '/api/graph') {
       const { graph } = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
       return sendJson(res, 200, graph);
+    }
+    if (method === 'GET' && path === '/api/graph/clusters') {
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, { clusters: index.analytics.components });
+    }
+    if (method === 'GET' && path === '/api/graph/path') {
+      const from = requireUuid(url.searchParams.get('from') ?? '', 'from');
+      const to = requireUuid(url.searchParams.get('to') ?? '', 'to');
+      const mode = url.searchParams.get('mode') ?? 'directed';
+      if (mode !== 'directed' && mode !== 'undirected') throw new ApiError(400, 'INVALID_INPUT', 'mode must be directed or undirected.');
+      const maxDepth = parseBoundedInteger(url.searchParams.get('maxDepth'), 20, 1, 100, 'maxDepth');
+      const maxVisited = parseBoundedInteger(url.searchParams.get('maxVisited'), 5000, 1, 50000, 'maxVisited');
+      const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
+      return sendJson(res, 200, shortestGraphPath(index.graph, from, to, { mode: mode as GraphTraversalMode, maxDepth, maxVisited }));
     }
     if (method === 'GET' && path === '/api/insights') {
       const index = await indexFor(await getVault()).get(url.searchParams.get('refresh') === 'true');
@@ -2286,4 +2301,14 @@ export function storageStatus(code: string): number {
     default:
       return 500;
   }
+}
+
+
+function parseBoundedInteger(value: string | null, fallback: number, min: number, max: number, field: string): number {
+  if (value === null) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new ApiError(400, 'INVALID_INPUT', `${field} must be an integer from ${min} to ${max}.`);
+  }
+  return parsed;
 }

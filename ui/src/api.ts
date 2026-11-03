@@ -8,6 +8,8 @@ import type {
   UiNoteGraph,
   UiKnowledgeInsights,
   UiRelatedNotesResponse,
+  UiGraphCluster,
+  UiGraphPathResult,
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
@@ -255,6 +257,16 @@ export const api = {
   },
   insights(refresh = false): Promise<UiKnowledgeInsights> {
     return request(`/api/insights${refresh ? '?refresh=true' : ''}`);
+  },
+  graphClusters(refresh = false): Promise<{ clusters: UiGraphCluster[] }> {
+    return request(`/api/graph/clusters${refresh ? '?refresh=true' : ''}`);
+  },
+  graphPath(input: { from: string; to: string; mode?: 'directed' | 'undirected'; maxDepth?: number; maxVisited?: number }): Promise<UiGraphPathResult> {
+    const params = new URLSearchParams({ from: input.from, to: input.to });
+    if (input.mode !== undefined) params.set('mode', input.mode);
+    if (input.maxDepth !== undefined) params.set('maxDepth', String(input.maxDepth));
+    if (input.maxVisited !== undefined) params.set('maxVisited', String(input.maxVisited));
+    return request(`/api/graph/path?${params.toString()}`);
   },
   relatedNotes(id: string, limit = 6, refresh = false): Promise<UiRelatedNotesResponse> {
     const params = new URLSearchParams({ limit: String(limit) });

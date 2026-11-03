@@ -5,6 +5,7 @@ import { buildLinkIndex } from '../src/links/link-index.js';
 import { graphFromLinkIndex } from '../src/links/graph.js';
 import { analyzeGraph } from '../src/links/graph-analytics.js';
 import { relatedNotes } from '../src/links/related-notes.js';
+import { shortestGraphPath } from '../src/links/graph-paths.js';
 import { createLinkSuggester } from '../src/links/link-repair.js';
 
 const makeId = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -126,4 +127,31 @@ it('measures related-note recommendations over a derived snapshot', () => {
   }
   expect(results).toHaveLength(2);
   console.log(JSON.stringify({ node: process.version, method: '5-run median for 100 source notes with limit 6 over an already-built index and graph', results }, null, 2));
+}, 120_000);
+
+
+it('measures bounded shortest-path traversal', () => {
+  const results: Array<{ notes: number; samples: number; medianMs: number; perPathMs: number }> = [];
+  for (const size of [1000, 5000]) {
+    const notes = dataset(size);
+    const index = buildLinkIndex(notes);
+    const graph = graphFromLinkIndex(index);
+    const samplePairs: Array<[string, string]> = [];
+    for (let i = 0; i < 100; i += 1) {
+      const from = index.notes[(i * 7) % index.notes.length]!;
+      const to = index.notes[(i * 131 + 17) % index.notes.length]!;
+      samplePairs.push([from.id, to.id]);
+    }
+    shortestGraphPath(graph, samplePairs[0]![0], samplePairs[0]![1], { maxDepth: 20, maxVisited: 5000 });
+    const durations: number[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      const start = performance.now();
+      for (const [from, to] of samplePairs) shortestGraphPath(graph, from, to, { maxDepth: 20, maxVisited: 5000 });
+      durations.push(performance.now() - start);
+    }
+    const value = median(durations);
+    results.push({ notes: size, samples: samplePairs.length, medianMs: Number(value.toFixed(2)), perPathMs: Number((value / samplePairs.length).toFixed(3)) });
+  }
+  expect(results).toHaveLength(2);
+  console.log(JSON.stringify({ node: process.version, method: '5-run median for 100 directed shortest-path queries, maxDepth 20, maxVisited 5000', results }, null, 2));
 }, 120_000);

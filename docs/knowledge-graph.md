@@ -177,12 +177,32 @@ retained as an alias on the renamed note. This is a single note metadata change,
 vault-wide rewrite. Path links are still not rewritten on move; use ID-pinned links for
 references that must remain stable.
 
+## Advanced graph exploration
+
+### Saved graph views
+
+Saved views are browser-local UI preferences, scoped by the active vault path. They are not notes, a new vault format, or backed-up knowledge. Each view stores the search query, folder, selected cluster, focus note, selected note, isolated/unresolved toggles, path traversal mode, and viewport. The storage envelope is versioned; malformed entries, duplicate IDs, unsupported envelope versions, and invalid timestamps or configs are dropped rather than trusted. Users can create, select, update in place, rename, and delete views. The storage key includes the vault path, so two vaults never share views.
+
+### Shortest paths
+
+`GET /api/graph/path?from=<id>&to=<id>&mode=directed|undirected&maxDepth=20&maxVisited=5000` runs BFS over confirmed resolved edges. Directed mode follows wiki-link source → target; undirected mode follows either direction. Self-links never advance a path. Ties between equal-length paths are resolved by target title, path, and stable ID. The response contains the actual note and edge sequence, visited count, and the applied bounds. Identical, missing, disconnected, and bound-limited searches have explicit statuses. Unresolved and ambiguous links are excluded because they are not confirmed graph edges.
+
+### Cluster filtering
+
+`GET /api/graph/clusters` returns all deterministic connected components. The graph can filter to one non-singleton cluster or to all isolated notes. Existing text, folder, isolated-note, and unresolved-link filters remain active. Selections are cleared when a saved cluster no longer exists after a refresh.
+
+### Focus history
+
+Neighbor exploration records the previous focus. **Previous focus** restores it without recomputing graph data. Selection and focus are cleared when a note is deleted or no longer present; renamed or moved notes retain their stable ID and current path from the refreshed projection.
+
 ## Performance and caching
 
 - Relationship work is `O(N + L)` in notes plus wiki-link occurrences.
 - The local API shares one derived snapshot per vault (five-second TTL), coalesces concurrent rebuilds, and invalidates on Nodus mutations and explicit refresh.
-- Graph projection, analytics, and cluster components are computed once when the shared knowledge index is built and reused by `/api/graph` and `/api/insights`.
+- Graph projection, analytics, and cluster components are computed once when the shared knowledge index is built and reused by `/api/graph`, `/api/graph/clusters`, `/api/insights`, and related-note requests.
 - Related-note scoring runs only for an opened note request; it is bounded to 20 results and reuses the same index and graph.
+- Shortest paths run only on demand with BFS, `maxDepth` 20, and `maxVisited` 5,000 defaults. This keeps a single search bounded without persisting traversal state.
+- Phase 21 local benchmark, Node 24.18.1, five-run median: 1,000 notes / 3,000 links: 18.30 ms indexing/projection total (11.52 ms index, 4.41 ms graph, 3.33 ms analytics/clusters); 5,000 / 15,000: 134.80 ms total (69.51 ms index, 24.29 ms graph, 37.84 ms analytics/clusters). Directed shortest-path BFS for 100 sampled pairs: 33 ms total / 0.33 ms per path at 1,000 notes and 220.34 ms / 2.203 ms per path at 5,000 notes. These are local observations, not enforced thresholds.
 - UI filtering, focus, and selection never request a new snapshot; only the initial load and explicit refresh do.
 - The graph view bounds displayed nodes to 200 per render after filtering. Truncation is visible; focus is applied before the limit.
 - Local benchmark (`pnpm bench:graph`, Node 24.18.1, five-run median after warm-up) measured 1,000 notes / 3,000 occurrences at 16.16 ms total (12.37 ms index, 3.76 ms graph) and 5,000 notes / 15,000 occurrences at 81.33 ms (57.68 ms index, 21.90 ms graph). These are local development observations, not service-level guarantees.
@@ -194,6 +214,11 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 ## Known limitations
 
 - The graph uses a deterministic radial layout; there is no force simulation or persisted node position.
+- Saved graph views are browser-local preferences, not portable vault data, and do not survive clearing site storage or changing browser profiles.
+- Shortest paths are bounded BFS results over confirmed links; very large searches can return `limit` rather than an exhaustive answer.
+- Cluster filter options currently list all non-singleton clusters; extremely fragmented vaults use the separate isolated-notes option.
+- The path destination picker shows the first 500 note candidates to keep the command list bounded. Search beyond that set should use graph filtering first.
+- Saved graph views are browser-local preferences; they are not included in backups or portable exports, and clearing site storage removes them.
 - Clusters are graph connectivity, not semantic groups. Recommendations are lexical/link-based and can be noisy in large folders.
 - The insights response exposes up to eight clusters with 20 member previews each; very large clusters require graph exploration.
 - The 200-node display bound requires filtering or focusing for larger vaults.

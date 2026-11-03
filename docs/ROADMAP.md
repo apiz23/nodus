@@ -1352,6 +1352,35 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ---
 
+---
+
+### Phase 21 — Advanced Graph Exploration
+
+**Status:** **COMPLETE WITH LIMITATIONS** (feature branch `feat/phase-21-advanced-graph-exploration`)
+
+**Objective:** Add saved graph configurations, bounded shortest-path exploration, cluster filtering, focus history, and large-graph safeguards on top of the Phase 17 graph and Phase 20 analytics.
+
+**Implemented functionality**
+
+- Browser-local, vault-scoped saved graph views with versioned validation, create/select/update/rename/delete, and safe recovery from malformed local data.
+- Deterministic BFS shortest paths over confirmed resolved edges with directed and undirected traversal, explicit statuses, actual edge sequences, and bounded `maxDepth`/`maxVisited`.
+- Cluster API and graph filter integrated with the existing text, folder, isolated-note, and unresolved-link filters.
+- Previous-focus history for neighbor exploration; stale selections and focus are cleared after refresh or deletion.
+- Added graph path/cluster APIs and advanced browser smoke coverage. No new dependency, persistent graph database, Markdown format change, or automatic link rewrite.
+
+**Important source files**
+
+- `src/links/graph-paths.ts`, `ui/src/graph-saved-views.ts`
+- `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`
+- `ui/src/GraphView.tsx`, `ui/src/GraphSavedViews.tsx`, `ui/src/GraphPathExplorer.tsx`, `ui/src/graph-model.ts`
+- `test/graph-paths.test.ts`, `test/graph-saved-views.test.ts`, `test/graph-advanced-api.test.ts`
+- `scripts/graph-advanced-smoke.mjs`, `benchmark/graph.benchmark.ts`
+- `docs/knowledge-graph.md`, `README.md`, this roadmap
+
+**Known limitations:** Saved views are local browser preferences and are not part of backup/portable export. Paths are bounded and use deterministic BFS, not weighted or semantic routing. Cluster filtering uses connectivity clusters and the existing 200-node render bound remains. Phase 19 was not merged into the base branch used here.
+
+---
+
 ## 4. Proposed Future Milestones (Phases 15, 17–34)
 
 These milestones are **proposals, not commitments**. They are ordered by likely dependency, not by promised delivery date. Do not start a phase until its prerequisites are complete and its acceptance criteria are reviewed.
@@ -2625,6 +2654,16 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Files changed:** `src/links/graph-analytics.ts`, `src/links/related-notes.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/InsightsView.tsx`, `ui/src/RelatedNotesPanel.tsx`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/CommandPalette.tsx`, `ui/src/api.ts`, `ui/src/types.ts`, `ui/src/Editor.tsx`, focused tests, `scripts/insights-smoke.mjs`, `benchmark/graph.benchmark.ts`, `docs/knowledge-graph.md`, `docs/wiki-links.md`, `README.md`, and this roadmap.
 - **Integration note:** Built from `origin/main` at `6761324` (Phase 18L merged). Phase 19 move-impact changes remain unmerged in a separate worktree, so Phase 20 does not depend on them.
 - **Known limitations:** Connectivity is not semantic similarity; recommendation evidence is lexical/link-based; cluster/member payloads and graph rendering are bounded.
+
+---
+
+### 2026-11-03 — Phase 21 — Advanced Graph Exploration
+
+- **Status:** COMPLETE WITH LIMITATIONS
+- **Summary:** Added vault-scoped saved graph views, bounded directed/undirected shortest-path exploration, cluster filtering, focus history, advanced graph APIs, browser smoke coverage, and pathfinding benchmarks.
+- **Files changed:** `src/links/graph-paths.ts`, `ui/src/graph-saved-views.ts`, `ui/src/GraphSavedViews.tsx`, `ui/src/GraphPathExplorer.tsx`, `ui/src/GraphView.tsx`, `ui/src/graph-model.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `ui/src/api.ts`, tests, smoke, benchmark, docs, and roadmap.
+- **Integration note:** Built from `origin/main` at `fa4bb28` after Phase 20 merged. Phase 19 remains unmerged and is not a dependency; path links still break on move.
+- **Known limitations:** Browser-local views are not portable/backed up; BFS is bounded; cluster membership is graph connectivity, not semantics.
 
 ---
 
