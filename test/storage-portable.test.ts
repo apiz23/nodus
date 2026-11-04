@@ -48,7 +48,7 @@ describe('exportVault', () => {
       const target = join(dir, 'export');
       const report = await exportVault(vault, target);
 
-      expect(report).toEqual({ targetDir: target, notes: 1, databases: 1, databaseViews: 0 });
+      expect(report).toMatchObject({ targetDir: target, notes: 1, databases: 1, databaseViews: 0, manifest: 'nodus-export.json', manifestVersion: 1, excluded: [] });
       expect(await readFile(join(target, 'notes/a.md'), 'utf8')).toBe(await readFile(join(vault.root, 'notes/a.md'), 'utf8'));
       expect(await readFile(join(target, 'databases', `${DB1}.json`), 'utf8')).toBe(serializeDatabase(database));
     });
@@ -108,6 +108,7 @@ describe('exportVault', () => {
       await writeFile(join(vault.root, 'broken.md'), '---\ntitle: [broken\nnodus:\n  version: 1\n---\nBody\n', 'utf8');
 
       expect(await storageErrorCode(() => exportVault(vault, join(dir, 'export')))).toBe('INVALID_CONTENT');
+      expect(await readdir(dir)).not.toContain('export');
     });
   });
 });
@@ -125,7 +126,7 @@ describe('planImport', () => {
 
       expect(plan.notes.map((entry) => entry.id)).toEqual([N1]);
       expect(plan.databases.map((entry) => entry.id)).toEqual([DB1]);
-      expect(await readdir(source)).toEqual(['databases', 'notes']);
+      expect(await readdir(source)).toEqual(['databases', 'nodus-export.json', 'notes']);
     });
   });
 

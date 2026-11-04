@@ -81,6 +81,8 @@ import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } fr
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
 import { DatabaseAutomations } from './DatabaseAutomations';
+import { projectCalendarEvents } from '../../src/calendar/events';
+import type { UiTasksResponse } from '../../src/ui-server/dto';
 
 const SEARCHABLE_OPTIONS_THRESHOLD = 8;
 const NO_GROUP_PROPERTY = '__no_group__';
@@ -414,6 +416,10 @@ export function DatabasesView({
 }: DatabasesViewProps) {
   const selected = databases.find((database) => database.id === selectedId) ?? databases[0] ?? null;
   const [rowData, setRowData] = useState<UiDatabaseRowsResponse | null>(null);
+  const [taskProjection, setTaskProjection] = useState<UiTasksResponse | null>(null);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [tasksReloadVersion, setTasksReloadVersion] = useState(0);
   const [rowsLoading, setRowsLoading] = useState(false);
   const [rowsError, setRowsError] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditingProperty | null>(null);
@@ -455,7 +461,16 @@ export function DatabasesView({
   const mounted = useRef(true);
   const cardEditorRef = useRef<HTMLElement | null>(null);
   const datedTriggerRef = useRef<HTMLElement | null>(null);
+  const preserveRowsForCalendarRefresh = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    let active = true;
+    setTasksLoading(true); setTasksError(null);
+    void api.tasks().then((result) => { if (active) setTaskProjection(result); }).catch((error: unknown) => {
+      if (active) setTasksError(error instanceof Error ? error.message : String(error));
+    }).finally(() => { if (active) setTasksLoading(false); });
+    return () => { active = false; };
+  }, [tasksReloadVersion, vaultKey]);
   useEffect(() => {
     if (editing?.source === 'row' && savedPresentation?.type && savedPresentation.type !== 'table') cardEditorRef.current?.focus();
   }, [editing?.noteId, editing?.propertyId, editing?.source, savedPresentation?.type]);
@@ -504,7 +519,10 @@ export function DatabasesView({
       return undefined;
     }
     let current = true;
-    setRowData(null);
+    // A confirmed Calendar date write may refresh rows without unmounting the
+    // Calendar. Other reloads keep the existing clear-and-refetch behavior.
+    if (preserveRowsForCalendarRefresh.current) preserveRowsForCalendarRefresh.current = false;
+    else setRowData(null);
     setRowsLoading(true);
     setRowsError(null);
     setActionError(null);
@@ -548,6 +566,16 @@ export function DatabasesView({
     ? []
     : selectDatabaseRows(currentRowData.rows, selected.properties, filters, sorts),
   [filters, currentRowData, selected, sorts]);
+  const calendarEvents = useMemo(() => {
+    if (selected === null || savedPresentation?.type !== 'calendar') return [];
+    const startDatePropertyId = savedPresentation?.settings?.startDatePropertyId ?? savedPresentation?.settings?.datePropertyId;
+    if (!startDatePropertyId) return [];
+    return projectCalendarEvents({
+      databaseSources: [{ databaseId: selected.id, startDatePropertyId, ...(savedPresentation?.settings?.endDatePropertyId ? { endDatePropertyId: savedPresentation.settings.endDatePropertyId } : {}) }],
+      databaseRows: displayRows.map((row) => ({ databaseId: selected.id, noteId: row.noteId, title: row.title, path: row.path, values: row.values, issues: row.issues })),
+      tasks: taskProjection?.tasks ?? [],
+    });
+  }, [displayRows, savedPresentation, selected, taskProjection]);
   const visibleProperties = useMemo(
     () => selected === null ? [] : [
       ...(savedPresentation?.visiblePropertyIds ?? []).flatMap((id) => selected.properties.find((property) => property.id === id) ?? []),
@@ -564,7 +592,9 @@ export function DatabasesView({
   const hiddenPropertyCount = selected === null ? 0 : selected.properties.length - visibleProperties.length;
   const activeViewType = savedPresentation?.type ?? 'table';
   const viewSettings = activeViewType === 'calendar'
-    ? { datePropertyId: savedPresentation?.settings?.datePropertyId }
+    ? savedPresentation?.settings?.startDatePropertyId !== undefined
+      ? { startDatePropertyId: savedPresentation.settings.startDatePropertyId, endDatePropertyId: savedPresentation.settings.endDatePropertyId }
+      : { datePropertyId: savedPresentation?.settings?.datePropertyId }
     : activeViewType === 'kanban'
       ? { groupPropertyId: groupPropertyId ?? savedPresentation?.settings?.groupPropertyId }
       : groupPropertyId === undefined ? {} : { groupPropertyId };
@@ -580,7 +610,8 @@ export function DatabasesView({
   };
   const viewIssues = selected === null || savedPresentation === null ? [] : diagnoseDatabaseView({ id: '', databaseId: selected.id, name: '', ...viewConfiguration }, selected);
   const layoutProperty = selected?.properties.find((property) => property.id === (viewConfiguration.type === 'kanban'
-    ? viewConfiguration.settings?.groupPropertyId : viewConfiguration.type === 'calendar' ? viewConfiguration.settings?.datePropertyId : undefined));
+    ? viewConfiguration.settings?.groupPropertyId : viewConfiguration.type === 'calendar' ? viewConfiguration.settings?.startDatePropertyId ?? viewConfiguration.settings?.datePropertyId : undefined));
+  const calendarEndProperty = selected?.properties.find((property) => property.id === viewConfiguration.settings?.endDatePropertyId && property.type === 'date');
   const groupProperty = (viewConfiguration.type === 'table' || viewConfiguration.type === 'list')
     ? selected?.properties.find((property) => property.id === viewConfiguration.settings?.groupPropertyId && (property.type === 'select' || property.type === 'checkbox' || property.type === 'formula'))
     : undefined;
@@ -1188,17 +1219,17 @@ export function DatabasesView({
 
                 <SavedViewControls key={`${vaultKey}:${selected.id}`} database={selected} vaultKey={vaultKey} configuration={viewConfiguration} onApply={applySavedView} onReady={() => setViewsLoading(false)} busy={saving || schemaSaving || newDatedEntry !== null} hasNoteDraft={editing !== null || candidateId !== null} />
                 {viewConfiguration.type === 'kanban' || viewConfiguration.type === 'calendar' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
-                  <span>{viewConfiguration.type === 'kanban' ? 'Group by Select property' : 'Calendar Date property'}</span>
+                  <span>{viewConfiguration.type === 'kanban' ? 'Group by Select property' : 'Start date property'}</span>
                   <Select
                     value={layoutProperty?.id}
                     disabled={saving || editing !== null}
                     onValueChange={(id) => {
                       setGroupPropertyId(id);
-                      setSavedPresentation((previous) => previous === null ? previous : { ...previous, settings: viewConfiguration.type === 'kanban' ? { groupPropertyId: id } : { datePropertyId: id } });
+                      setSavedPresentation((previous) => previous === null ? previous : { ...previous, settings: viewConfiguration.type === 'kanban' ? { groupPropertyId: id } : { startDatePropertyId: id, ...(viewConfiguration.settings?.endDatePropertyId ? { endDatePropertyId: viewConfiguration.settings.endDatePropertyId } : {}) } });
                       setEditing(null);
                     }}
                   >
-                    <SelectTrigger className="h-7 w-44" aria-label={viewConfiguration.type === 'kanban' ? 'Kanban grouping property' : 'Calendar date property'}>
+                    <SelectTrigger className="h-7 w-44" aria-label={viewConfiguration.type === 'kanban' ? 'Kanban grouping property' : 'Calendar start date property'}>
                       <SelectValue placeholder="Choose a property" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1207,6 +1238,30 @@ export function DatabasesView({
                       ))}
                     </SelectContent>
                   </Select>
+                  {viewConfiguration.type === 'calendar' ? <>
+                    <span>End date property (optional)</span>
+                    <Select
+                      value={viewConfiguration.settings?.endDatePropertyId ?? NO_GROUP_PROPERTY}
+                      disabled={saving || editing !== null}
+                      onValueChange={(id) => setSavedPresentation((previous) => previous === null ? previous : {
+                        ...previous,
+                        settings: {
+                          startDatePropertyId: viewConfiguration.settings?.startDatePropertyId ?? viewConfiguration.settings?.datePropertyId,
+                          ...(id === NO_GROUP_PROPERTY ? {} : { endDatePropertyId: id }),
+                        },
+                      })}
+                    >
+                      <SelectTrigger className="h-7 w-44" aria-label="Calendar end date property">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_GROUP_PROPERTY}>No end date</SelectItem>
+                        {selected.properties.filter((property) => property.type === 'date').map((property) => (
+                          <SelectItem key={property.id} value={property.id}>{property.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </> : null}
                 </div> : null}
                 {viewConfiguration.type === 'table' || viewConfiguration.type === 'list' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
                   <label htmlFor="database-group-property">Group by</label>
@@ -1571,7 +1626,23 @@ export function DatabasesView({
                 ) : viewConfiguration.type === 'list' ? (
                   <ListView key={`${savedPresentation?.id ?? 'draft'}:${groupProperty?.id ?? 'ungrouped'}`} rows={displayRows} groupProperty={groupProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
                 ) : viewConfiguration.type === 'calendar' && layoutProperty?.type === 'date' ? (
-                  <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
+                  <CalendarView key={savedPresentation?.id} rows={displayRows} property={layoutProperty} endProperty={calendarEndProperty} events={calendarEvents} eventsLoading={tasksLoading || rowsLoading} eventsError={tasksError ?? rowsError} onRetryEvents={() => { setTasksReloadVersion((value) => value + 1); setReloadVersion((value) => value + 1); }} onOpenEvent={(event) => openLayoutNote(event.navigation.noteId)} onEditCalendarEvent={async (event, start, end) => {
+                    if (event.source.kind !== 'database-record' || currentRowData === null) throw new Error('Database event is no longer available. Refresh the Calendar.');
+                    if (!savedPresentation) throw new Error('Saved Calendar configuration is unavailable. Refresh the view.');
+                    const source = event.source;
+                    const row = currentRowData.rows.find((item) => item.noteId === source.recordId);
+                    if (!row) throw new Error('Database record was removed. Refresh the Calendar.');
+                    await api.updateCalendarRange(row.noteId, { databaseId: source.databaseId, viewId: savedPresentation.id, startDatePropertyId: source.startDatePropertyId, startDate: start, ...(source.endDatePropertyId ? { endDatePropertyId: source.endDatePropertyId, endDate: end ?? null } : {}), baseHash: row.contentHash });
+                    preserveRowsForCalendarRefresh.current = true;
+                    setReloadVersion((value) => value + 1);
+                  }} onScheduleTask={async (event, date) => {
+                    if (event.source.kind !== 'markdown-task') throw new Error('This is not a task.');
+                    const source = event.source;
+                    const task = taskProjection?.tasks.find((item) => item.noteId === source.noteId && item.id === source.taskId);
+                    if (!task) throw new Error('Task changed or was removed. Refresh the Calendar.');
+                    await api.scheduleTask(task.noteId, { taskId: task.id, scheduledDate: date, baseHash: task.noteContentHash });
+                    setTasksReloadVersion((value) => value + 1);
+                  }} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null || rowsLoading} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
                 ) : viewConfiguration.type === 'gallery' ? (
                   <GalleryView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
                 ) : displayRows.length ? (

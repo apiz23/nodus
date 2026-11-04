@@ -21,6 +21,7 @@ import type {
   VaultAttachment,
   PropertyCatalogSnapshot,
   PropertyCatalogFile,
+  PortableExportSnapshot,
   NotePropertyWrite,
   VaultStorage,
   TemplateStore,
@@ -34,7 +35,7 @@ import { parseDatabase, serializeDatabase } from '../../database/schema.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
 import { parseDatabaseViewOrder, resolveDatabaseViewOrder, serializeDatabaseViewOrder } from '../../database/database-view-order.js';
 import { resolveLink } from '../../links/wikilink.js';
-import { addNoteDatabaseMembership, setNotePropertyValue, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
+import { addNoteDatabaseMembership, setNotePropertyValue, setNotePropertyValuesAtomically, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
 import { relationWriteIssue } from '../../database/relations.js';
 import {
   mutatePropertyCatalog as applyPropertyCatalogMutation,
@@ -335,14 +336,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return withVaultRootLock(this.root, () => this.createNoteUnlocked(note));
   }
 
-  /** Root-locked, byte-verified snapshot for derived search/discovery indexes. */
-  async snapshotNotes(): Promise<Note[]> {
+  /** Root-locked note snapshot with raw hashes for revision-safe projections. */
+  async snapshotNotesWithHashes(): Promise<Array<{ note: Note; hash: string }>> {
     return withVaultRootLock(this.root, async () => {
       const { entries } = await walkVault(this.root);
       const notes = entries.filter((entry) => entry.kind === 'note');
       const next = new Map<string, { hash: string; note: Note }>();
       const seen = new Map<string, string>();
-      const result: Note[] = [];
+      const result: Array<{ note: Note; hash: string }> = [];
       // Bound open files and memory, overlap I/O, and drain a whole batch before
       // throwing so no reads outlive the root lock. Errors stay in path order.
       for (let offset = 0; offset < notes.length; offset += 8) {
@@ -351,9 +352,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         for (const [index, read] of reads.entries()) {
           const entry = batch[index]!;
           let note: Note;
+          let hash = '';
           try {
             if (read.status === 'rejected') throw read.reason;
-            const hash = sha256Hex(read.value);
+            hash = sha256Hex(read.value);
             const previous = this.noteSnapshot.get(entry.path);
             // Always re-read/hash bytes: same-size edits with preserved timestamps
             // must not be hidden, even after an explicit refresh or restore.
@@ -365,13 +367,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
             { details: { ids: [note.id], paths: [duplicate, entry.path] } });
           seen.set(note.id, entry.path);
           // Callers cannot mutate the parsed cache through returned arrays/metadata.
-          result.push(structuredClone(note));
+          result.push({ note: structuredClone(note), hash });
         }
       }
       // Publish only complete successful snapshots; removed paths are evicted.
       this.noteSnapshot = next;
       return result;
     });
+  }
+
+  /** Root-locked, byte-verified snapshot for derived search/discovery indexes. */
+  async snapshotNotes(): Promise<Note[]> {
+    return (await this.snapshotNotesWithHashes()).map(({ note }) => note);
   }
 
   /** Relation target validation and the conditional source write share one root lock. */
@@ -391,6 +398,44 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       const notes = snapshot.notes.map(({ note }) => note.id === id ? updated : note);
       const problem = property && 'propertyId' in input ? relationWriteIssue(property, notes, schemas, input.remove ? null : input.value) : undefined;
       if (problem) return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: property!.id, code: problem.code, message: problem.message }] };
+      const absolute = await this.validateNoteTarget(updated.path);
+      await this.assertUnchanged(absolute, updated.path, options.expectedHash);
+      await this.writeDocument(updated.path, this.serializeNoteInput(updated));
+      return result;
+    });
+  }
+
+  /** Apply a related property group under one root lock and publish one note revision. */
+  async setNotePropertiesAtomically(id: string, inputs: readonly SetNotePropertyInput[], options: {
+    expectedHash: string;
+    now: string;
+    calendarView: { databaseId: string; viewId: string; startDatePropertyId: string; endDatePropertyId?: string; expectedViewHash: string };
+  }): Promise<SetNotePropertyResult> {
+    return withVaultRootLock(this.root, async () => {
+      const snapshot = await this.databaseRowsSnapshotUnlocked();
+      const current = snapshot.notes.find(({ note }) => note.id === id);
+      if (!current) throw NOTE_NOT_FOUND(id);
+      if (current.hash !== options.expectedHash) throw staleWrite(current.note.path, current.hash);
+      const savedView = (await this.parseDatabaseViewsStrict()).find(({ view }) => view.databaseId === options.calendarView.databaseId && view.id === options.calendarView.viewId);
+      if (!savedView) throw staleWrite(databaseViewPath(options.calendarView.databaseId, options.calendarView.viewId));
+      const savedViewHash = sha256Hex(savedView.bytes);
+      const configuredStart = savedView.view.settings?.startDatePropertyId ?? savedView.view.settings?.datePropertyId;
+      const configuredEnd = savedView.view.settings?.endDatePropertyId;
+      if (savedViewHash !== options.calendarView.expectedViewHash) throw staleWrite(savedView.path, savedViewHash);
+      if (savedView.view.type !== 'calendar' || configuredStart !== options.calendarView.startDatePropertyId || configuredEnd !== options.calendarView.endDatePropertyId) {
+        throw new StorageError('STALE_WRITE', 'Saved Calendar configuration changed before the date write; no note update occurred.', {
+          path: savedView.path, details: { paths: [savedView.path], currentHash: savedViewHash },
+        });
+      }
+      const schemas = new Map(snapshot.databases.map(({ database }) => [database.id, database]));
+      for (const input of inputs) {
+        const property = schemas.get(input.databaseId)?.properties.find((candidate) => candidate.id === input.propertyId);
+        if (!property) return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: input.propertyId, code: 'MISSING_PROPERTY', message: 'Configured Calendar property is missing.' }] };
+        if (property.type !== 'date') return { ok: false, issues: [{ noteId: id, path: current.note.path, databaseId: input.databaseId, propertyId: input.propertyId, code: 'TYPE_MISMATCH', message: `Calendar property "${property.name}" must be a date.` }] };
+      }
+      const result = setNotePropertyValuesAtomically(current.note, schemas, inputs);
+      if (!result.ok) return result;
+      const updated = { ...current.note, extraFrontmatter: result.extraFrontmatter, updatedAt: options.now };
       const absolute = await this.validateNoteTarget(updated.path);
       await this.assertUnchanged(absolute, updated.path, options.expectedHash);
       await this.writeDocument(updated.path, this.serializeNoteInput(updated));
@@ -1226,6 +1271,48 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       entries: await this.snapshotUnlocked(),
       propertyCatalog: await this.readPropertyCatalogFileUnlocked(),
     }));
+  }
+
+  /** Captures every Nodus-managed portable resource while holding one root lock. */
+  async snapshotForPortableExport(): Promise<PortableExportSnapshot> {
+    return withVaultRootLock(this.root, async () => {
+      const entries = await this.snapshotUnlocked();
+      const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
+      const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
+      const automationFiles = await this.listDatabaseAutomationFilesUnlocked();
+      const templateFiles = await this.listTemplateFilesUnlocked();
+      const represented = new Set([
+        ...entries.map((entry) => entry.path),
+        ...databaseViewOrders.map((entry) => entry.path),
+        ...automationFiles.map((entry) => entry.path),
+        ...templateFiles.map((entry) => entry.path),
+        ...(propertyCatalog ? [propertyCatalog.path] : []),
+      ]);
+      const excluded: Array<{ path: string; reason: string }> = [];
+      await this.collectPortableExclusions(this.root, '', represented, excluded);
+      return { entries, propertyCatalog, databaseViewOrders, automationFiles, templateFiles, folders: (await walkVault(this.root)).folders, excluded };
+    });
+  }
+
+  /** Inventory non-portable paths under the same lock; never follows symlinks. */
+  private async collectPortableExclusions(root: string, relative: string, represented: Set<string>, excluded: Array<{ path: string; reason: string }>): Promise<void> {
+    const children = await readdir(root, { withFileTypes: true });
+    children.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const child of children) {
+      const path = relative === '' ? child.name : `${relative}/${child.name}`;
+      if (path === '.nodus-vault-write.lock' || path.startsWith(`${TEMPLATE_APPLY_TRANSACTION_PREFIX}`)) continue;
+      if (child.isSymbolicLink()) { excluded.push({ path, reason: 'Symbolic links are not followed by portable export.' }); continue; }
+      if (child.isDirectory()) {
+        if (child.name.startsWith('.') && ![DATABASE_VIEW_ORDER_DIR, '.nodus-automations', '.nodus-templates'].includes(path)) {
+          excluded.push({ path, reason: 'Hidden user data is not part of the portable resource contract.' });
+          continue;
+        }
+        await this.collectPortableExclusions(join(root, child.name), path, represented, excluded);
+        continue;
+      }
+      if (!child.isFile()) { excluded.push({ path, reason: 'Unsupported filesystem entry type.' }); continue; }
+      if (!represented.has(path)) excluded.push({ path, reason: 'File type is not supported by the portable export format.' });
+    }
   }
 
   async readPropertyCatalogFile(): Promise<PropertyCatalogFile | null> {

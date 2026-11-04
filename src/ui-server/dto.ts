@@ -5,7 +5,7 @@
  * deliberately contain no filesystem, Node, or relay types.
  */
 
-import type { BackupManifest, FolderImpact, VaultAttachment } from '../storage/contracts.js';
+import type { BackupManifest, ExportReport, FolderImpact, ImportPreview, VaultAttachment } from '../storage/contracts.js';
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
 import type { AutomationExecution, DatabaseAutomation } from '../database/automations.js';
 import type {
@@ -21,11 +21,14 @@ import type {
 } from '../properties/catalog.js';
 import type { TagOperation } from '../domain/tags.js';
 import type { OrganizationAnalysis, OrganizationMovePreview } from '../organization/analysis.js';
+import type { ExtractedTask, TaskCounts, TaskProjection } from '../tasks/extract.js';
 
 export type {
   BackupManifest,
   BackupReport,
+  ExportReport,
   ImportReport,
+  ImportPreview,
   RestorePreview,
 } from '../storage/contracts.js';
 
@@ -165,6 +168,24 @@ export interface UiSearchMetadataResponse {
   metadataIssueCount: number;
   catalogIssue?: string;
 }
+
+export type UiTask = ExtractedTask;
+
+export type UiTasksResponse = TaskProjection;
+
+export interface UiToggleTaskInput {
+  taskId: string;
+  checked: boolean;
+  /** Raw note hash from the task projection. */
+  baseHash: string;
+}
+
+export interface UiToggleTaskResponse {
+  task: UiTask;
+  note: UiNoteSummary;
+}
+
+export type { TaskCounts };
 
 export interface UiHealthIssue {
   code: string;

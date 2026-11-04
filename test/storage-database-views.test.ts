@@ -1,7 +1,7 @@
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseDatabaseView, serializeDatabaseView, diagnoseDatabaseView, type DatabaseView } from '../src/database/database-view.js';
+import { parseDatabaseView, serializeDatabaseView, diagnoseDatabaseView, validateViewReferences, type DatabaseView } from '../src/database/database-view.js';
 import type { DatabaseDefinition } from '../src/database/schema.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { exportVault } from '../src/storage/portable/export.js';
@@ -15,10 +15,16 @@ const PROP = '1f0c7d2a-0b1e-4c3d-9a8f-5e6d7c8b9a01';
 const OPTION = '58decd03-02bd-4c70-b14f-76d04e4e99d8';
 const VIEW = '665f1175-2b7a-4a21-9b2d-657bb79fa9a1';
 const VIEW2 = 'a21215fb-6d5c-49a8-9ceb-7e389695bc4e';
+const START = 'ddddd1a1-1111-4111-8111-111111111111';
+const END = 'ddddd2a2-2222-4222-8222-222222222222';
 const db: DatabaseDefinition = { id: DB, name: 'Reading', properties: [
   { id: PROP, name: 'Status', type: 'select', options: [{ id: OPTION, name: 'Ready' }] },
 ] };
+const calendarDb: DatabaseDefinition = { id: DB, name: 'Reading', properties: [
+  { id: START, name: 'Start', type: 'date' }, { id: END, name: 'End', type: 'date' }, { id: PROP, name: 'Status', type: 'select', options: [{ id: OPTION, name: 'Ready' }] },
+] };
 const view: DatabaseView = { id: VIEW, databaseId: DB, name: 'Ready to read', sort: { propertyId: PROP, direction: 'asc' }, filters: [{ id: 'f12000f2-065d-4ccb-8b5a-37a22b724dc8', propertyId: PROP, operator: 'is', value: OPTION }], visiblePropertyIds: [PROP] };
+const rangeView: DatabaseView = { ...view, type: 'calendar', settings: { startDatePropertyId: START, endDatePropertyId: END }, sorts: [view.sort] };
 
 describe('database view format', () => {
   it('round-trips stable IDs and strictly rejects unknown and future fields', () => {
@@ -43,6 +49,28 @@ describe('database view format', () => {
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, type: 'timeline' }))).toThrow();
     expect(diagnoseDatabaseView({ ...board, type: 'calendar', settings: { datePropertyId: PROP } }, db)).toMatchObject([{ code: 'INVALID_REFERENCE' }]);
     expect(diagnoseDatabaseView({ ...board, settings: { groupPropertyId: VIEW2 } }, db)).toMatchObject([{ code: 'MISSING_PROPERTY' }]);
+  });
+
+  it('preserves legacy Calendar settings and validates new range settings in the existing v3 envelope', () => {
+    const legacy: DatabaseView = { ...view, type: 'calendar', settings: { datePropertyId: START } };
+    const legacyText = serializeDatabaseView(legacy);
+    expect(JSON.parse(legacyText).version).toBe(2);
+    expect(parseDatabaseView(legacyText)).toEqual(legacy);
+    const rangedText = serializeDatabaseView(rangeView);
+    expect(JSON.parse(rangedText).version).toBe(3);
+    expect(parseDatabaseView(rangedText)).toEqual(rangeView);
+    expect(serializeDatabaseView(parseDatabaseView(rangedText))).toBe(rangedText);
+    expect(diagnoseDatabaseView(rangeView, calendarDb)).toEqual([]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: START, endDatePropertyId: START } }, calendarDb)).toMatchObject([{ code: 'INVALID_REFERENCE', propertyId: START }]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: START } }, calendarDb)).toEqual([]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: VIEW2 } }, calendarDb)).toMatchObject([{ code: 'MISSING_PROPERTY', propertyId: VIEW2 }]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: START, endDatePropertyId: VIEW2 } }, calendarDb)).toMatchObject([{ code: 'MISSING_PROPERTY', propertyId: VIEW2 }]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: PROP } }, calendarDb)).toMatchObject([{ code: 'INVALID_REFERENCE', propertyId: PROP }]);
+    expect(diagnoseDatabaseView({ ...rangeView, settings: { startDatePropertyId: START, endDatePropertyId: PROP } }, calendarDb)).toMatchObject([{ code: 'INVALID_REFERENCE', propertyId: PROP }]);
+    expect(() => validateViewReferences({ ...rangeView, settings: { startDatePropertyId: START, endDatePropertyId: PROP } }, calendarDb)).toThrow(/requires a Date property/);
+    const encoded = JSON.parse(rangedText);
+    expect(() => parseDatabaseView(JSON.stringify({ ...encoded, settings: { endDatePropertyId: END } }))).toThrow(/require either/);
+    expect(() => parseDatabaseView(JSON.stringify({ ...encoded, settings: { datePropertyId: START, startDatePropertyId: START } }))).toThrow(/either datePropertyId or startDatePropertyId/);
   });
 
   it('reads v2 and round-trips deterministic v3 sorts and valueless empty filters', () => {
@@ -147,6 +175,30 @@ describe('saved-view storage and portability', () => {
       expect(validated.databaseViews).toEqual([view]);
       const restored = await FileSystemVault.open(join(dir, 'restored'));
       expect(await restoreBackup(backupDir, restored.root)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });
+      expect(await readFile(join(restored.root, path))).toEqual(original);
+    });
+  });
+
+  it('round-trips Calendar range settings through export/import and backup/restore', async () => {
+    await withTempDir(async (dir) => {
+      const source = await FileSystemVault.open(join(dir, 'range-source'));
+      await source.createDatabase(calendarDb);
+      await source.createDatabaseView(rangeView);
+      const path = databaseViewPath(DB, VIEW);
+      const original = await readFile(join(source.root, path));
+      const exportDir = join(dir, 'range-export');
+      await exportVault(source, exportDir);
+      const imported = await FileSystemVault.open(join(dir, 'range-imported'));
+      const plan = await planImport(exportDir);
+      expect(plan.databaseViews).toEqual([rangeView]);
+      await applyImport(imported, plan);
+      expect(await readFile(join(imported.root, path))).toEqual(original);
+
+      const backupDir = join(dir, 'range-backup');
+      await createBackup(source, backupDir);
+      expect((await validateBackup(backupDir)).databaseViews).toEqual([rangeView]);
+      const restored = await FileSystemVault.open(join(dir, 'range-restored'));
+      await restoreBackup(backupDir, restored.root);
       expect(await readFile(join(restored.root, path))).toEqual(original);
     });
   });

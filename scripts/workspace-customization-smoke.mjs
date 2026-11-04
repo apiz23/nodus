@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 
 const root = await mkdtemp(join(tmpdir(), 'nodus-workspace-'));
+const exportParent = await mkdtemp(join(tmpdir(), 'nodus-portable-export-'));
+const exportTarget = join(exportParent, 'package');
 process.env.NODUS_VAULT = root;
 let server;
 let browser;
@@ -97,10 +99,92 @@ try {
   });
   assert(splitPanels && splitPanels.preview.y >= splitPanels.editor.bottom - 1, 'Mobile split layout stacks preview below editor');
   assert((await mobileSeparator.getAttribute('aria-orientation')) === 'horizontal', 'Mobile split separator follows the stacked panel orientation');
+
+  await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const backupRegion = page.getByRole('region', { name: 'Backup and restore', exact: true });
+  const exportPath = backupRegion.getByRole('textbox', { name: 'Export folder', exact: true });
+  await exportPath.fill(exportTarget);
+  await page.route('**/api/export', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_FAILURE', message: 'Injected portable export failure.' } }) }));
+  await backupRegion.getByRole('button', { name: 'Export workspace', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Injected portable export failure.' }).waitFor();
+  await page.unroute('**/api/export');
+
+  let releaseExport;
+  let exportReached;
+  const exportPending = new Promise((resolve) => { exportReached = resolve; });
+  const release = new Promise((resolve) => { releaseExport = resolve; });
+  await page.route('**/api/export', async (route) => {
+    const response = await route.fetch();
+    exportReached();
+    await release;
+    await route.fulfill({ response });
+  });
+  const exportButton = backupRegion.getByRole('button', { name: 'Export workspace', exact: true });
+  await exportButton.click();
+  await exportPending;
+  await backupRegion.getByRole('button', { name: 'Exporting…', exact: true }).waitFor();
+  releaseExport();
+  await backupRegion.getByText(`Portable export completed at ${exportTarget}.`, { exact: false }).waitFor();
+  const portableManifest = JSON.parse(await readFile(join(exportTarget, 'nodus-export.json'), 'utf8'));
+  assert(portableManifest.format === 'nodus-portable-export' && portableManifest.version === 1, 'Settings export creates a versioned portable manifest');
+  assert(portableManifest.resources.some((resource) => resource.path === 'workspace-note.md'), 'Settings export includes the source note');
+  await page.unroute('**/api/export');
+  const importPath = backupRegion.getByRole('textbox', { name: 'Source folder', exact: true });
+  await importPath.fill(join(exportParent, 'missing-source'));
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: /not found|does not exist/i }).waitFor();
+  await importPath.fill(exportTarget);
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await backupRegion.getByRole('status').filter({ hasText: 'Validated portable export v1' }).waitFor();
+  let releasePreview;
+  let previewReached;
+  const previewPending = new Promise((resolve) => { previewReached = resolve; });
+  const previewGate = new Promise((resolve) => { releasePreview = resolve; });
+  await page.route('**/api/import/preview', async (route) => {
+    previewReached();
+    await previewGate;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      source: exportTarget, format: 'nodus-portable-export', manifestVersion: 1,
+      counts: { notes: 3, databases: 1, databaseViews: 1, attachments: 0, otherResources: 0 },
+      resources: [
+        { kind: 'note', id: 'new-id', path: 'new.md', status: 'new', safeChoices: ['skip'] },
+        { kind: 'note', id: 'same-id', path: 'same.md', status: 'identical', safeChoices: ['skip'] },
+        { kind: 'database', id: 'conflict-id', path: 'databases/conflict.json', status: 'conflict', reason: 'ID already exists with different content', safeChoices: ['skip', 'replace'] },
+      ],
+      warnings: ['Database db-id property prop-id targets a missing database.'], errors: [],
+      conflicts: [{ kind: 'database', id: 'conflict-id', path: 'databases/conflict.json', status: 'conflict', reason: 'ID already exists with different content', safeChoices: ['skip', 'replace'] }],
+    }) });
+  });
+  await importPath.fill(exportTarget);
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await previewPending;
+  await backupRegion.getByRole('button', { name: 'Checking…', exact: true }).waitFor();
+  releasePreview();
+  const previewStatus = backupRegion.getByRole('status');
+  await previewStatus.getByText('1 new · 1 identical · 1 conflicts', { exact: true }).waitFor();
+  await previewStatus.getByText(/ID already exists with different content/).waitFor();
+  await previewStatus.getByText('Database db-id property prop-id targets a missing database.').waitFor();
+  await page.unroute('**/api/import/preview');
+  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INVALID_CONTENT', message: 'Portable package failed validation.', paths: ['databases/broken.json'], issues: ['Invalid database schema.'] } }) }));
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  const importError = page.getByRole('alert').filter({ hasText: 'Portable package failed validation.' });
+  await importError.getByText('databases/broken.json').waitFor();
+  await page.unroute('**/api/import/preview');
+  await importPath.fill(exportTarget);
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await backupRegion.getByRole('status').filter({ hasText: 'Validated portable export v1' }).waitFor();
+  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: exportTarget, format: 'legacy-directory', counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 }, resources: [], warnings: [], errors: [], conflicts: [] }) }));
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await backupRegion.getByRole('status').filter({ hasText: 'Validated legacy directory' }).waitFor();
+  await page.unroute('**/api/import/preview');
+  assert.equal(await page.getByRole('button', { name: /^(Import|Apply import|Execute import)$/i }).count(), 0, 'Preview UI exposes no import execution action');
   assert.equal(errors.length, 0, errors.join('\n'));
-  console.log('Workspace customization browser smoke passed (preset preview/apply/undo, draft-preserving editor layouts, keyboard split resizing, sidebar visibility/width persistence, mobile stacked layout, reset cancellation).');
+  console.log('Workspace customization browser smoke passed (workspace settings plus import preview loading, portable/legacy success, status/conflict/diagnostic rendering, structured API error, retry, and no-apply).');
 } finally {
   if (browser) await browser.close();
   if (server) await server.close();
   await rm(root, { recursive: true, force: true });
+  await rm(exportParent, { recursive: true, force: true });
 }

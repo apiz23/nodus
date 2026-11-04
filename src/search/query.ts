@@ -1,6 +1,8 @@
 /** Small, deterministic search grammar shared by API and search execution.
  * Examples: planning tag:research folder:Projects before:2026-01-01 title:"weekly review"
  */
+import { isDateOnly } from '../temporal/date.js';
+
 export type SearchOperator = 'tag' | 'folder' | 'type' | 'before' | 'after' | 'created-before' | 'created-after' | 'modified-before' | 'modified-after' | 'title' | 'alias' | 'path';
 export interface SearchConstraint { operator: SearchOperator; value: string; start: number; end: number }
 export interface ParsedSearchQuery { raw: string; text: string[]; constraints: SearchConstraint[] }
@@ -71,7 +73,5 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
 }
 
 function validDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+  return isDateOnly(value);
 }

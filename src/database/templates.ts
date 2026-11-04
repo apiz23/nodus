@@ -5,6 +5,7 @@ import { parseDatabase, serializeDatabase } from './schema.js';
 import type { DatabaseView } from './database-view.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences } from './database-view.js';
 import { projectNoteProperties } from './note-properties.js';
+import { isDateOnly } from '../temporal/date.js';
 
 export const TEMPLATE_FORMAT = 'nodus-templates';
 export const TEMPLATE_VERSION = 1;
@@ -84,7 +85,7 @@ export function resolveNoteTemplate(template: NoteTemplate, supplied: Record<str
     if (value === undefined || value === '') { if (variable.required) throw invalid(`Template variable "${variable.name}" is required.`); values[variable.name] = ''; continue; }
     if (variable.type === 'text') { if (!string(value) || value.length > 10000) throw invalid(`Template variable "${variable.name}" must be text up to 10000 characters.`); values[variable.name] = value; }
     else if (variable.type === 'number') { const n = typeof value === 'number' ? value : Number(value); if (!Number.isFinite(n)) throw invalid(`Template variable "${variable.name}" must be a finite number.`); values[variable.name] = String(n); }
-    else { if (!string(value) || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) throw invalid(`Template variable "${variable.name}" must be a date in YYYY-MM-DD format.`); values[variable.name] = value; }
+    else { if (!string(value) || !isDateOnly(value)) throw invalid(`Template variable "${variable.name}" must be a date in YYYY-MM-DD format.`); values[variable.name] = value; }
   }
   const render = (text: string) => {
     const result = text.replace(/\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g, (_match, key: string) => { if (!vars.has(key)) throw invalid(`Unknown placeholder "${key}".`); return values[key]!; });
@@ -121,7 +122,7 @@ function parseTemplateView(value: unknown): DatabaseView {
   if (!Array.isArray(value.visiblePropertyIds)) throw invalid('Database template visiblePropertyIds must be an array.');
   if (value.settings !== undefined) {
     if (!object(value.settings)) throw invalid('Database template view settings must be an object.');
-    exact(value.settings, ['groupPropertyId', 'datePropertyId'], 'database template view settings');
+    exact(value.settings, ['groupPropertyId', 'datePropertyId', 'startDatePropertyId', 'endDatePropertyId'], 'database template view settings');
   }
   return parseDatabaseView(serializeDatabaseView(value as DatabaseView));
 }

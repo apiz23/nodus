@@ -1,4 +1,5 @@
 import { isUuidV4 } from '../../src/domain/ids.js';
+import { isDateOnly } from '../../src/temporal/date.js';
 import type { Property } from '../../src/database/schema.js';
 import type { UiDatabaseRow } from '../../src/ui-server/dto.js';
 import type { UiDatabase } from '../../src/ui-server/dto.js';
@@ -206,9 +207,7 @@ function sortableAccessor(property: Property | undefined, field: DatabaseSortFie
 }
 
 function isCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  return isDateOnly(value);
 }
 function compareFormulaValues(a:unknown,b:unknown):number{if(typeof a!==typeof b)return Number.NaN;if(typeof a==='number'&&typeof b==='number')return a-b;if(typeof a==='string'&&typeof b==='string')return a.localeCompare(b);return Number.NaN;}
 

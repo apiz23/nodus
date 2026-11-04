@@ -1,5 +1,6 @@
 import { DEFAULT_FORMULA_EVALUATION_LIMITS, type FormulaErrorCode, type FormulaEvaluationLimits, type FormulaExpression, type FormulaType, type FormulaValue } from './formula-contract.js';
 import { tokenizeFormula, type FormulaParseDiagnostic, type FormulaToken } from './formula-tokenizer.js';
+import { isDateOnly } from '../temporal/date.js';
 
 export type FormulaDiagnostic = Omit<FormulaParseDiagnostic, 'code'> & { code: FormulaErrorCode; propertyId?: string; functionName?: string; relatedPropertyIds?: readonly string[] };
 export type FormulaResult<T> = { ok: true; value: T } | { ok: false; diagnostics: FormulaDiagnostic[] };
@@ -274,6 +275,6 @@ function formulaPropertyType(property: FormulaProperty): FormulaType | undefined
   if (property.type === 'formula') return property.valueType;
   return undefined;
 }
-function isDate(s: string): boolean { if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false; const d = new Date(`${s}T00:00:00Z`); return !isNaN(d.valueOf()) && d.toISOString().slice(0,10) === s; }
+function isDate(s: string): boolean { return isDateOnly(s); }
 function compareCodePoints(a:string,b:string):number{const x=Array.from(a,character=>character.codePointAt(0)!),y=Array.from(b,character=>character.codePointAt(0)!);for(let i=0;i<Math.min(x.length,y.length);i++)if(x[i]!==y[i])return x[i]!-y[i]!;return x.length-y.length;}
 function validValue(value: unknown, maxStringLength: number): value is FormulaValue { if(!value||typeof value!=='object'||!('type' in value))return false; const v=value as FormulaValue; switch(v.type){case 'null': return true;case 'string':return typeof v.value==='string'&&v.value.length<=maxStringLength;case 'number':return typeof v.value==='number'&&Number.isFinite(v.value);case 'boolean':return typeof v.value==='boolean';case 'date':return typeof v.value==='string'&&isDate(v.value);case 'error':return !!v.error&&typeof v.error.code==='string'&&typeof v.error.message==='string';default:return false;} }

@@ -1,7 +1,8 @@
 import { NodusError } from '../domain/errors.js';
 import { isUuidV4 } from '../domain/ids.js';
+import { isDateOnly } from '../temporal/date.js';
 
-/** Canonical vault location; portable backup/export integration is a later milestone. */
+/** Canonical vault location, included in backup and portable export when present. */
 export const PROPERTY_CATALOG_PATH = 'properties/catalog.json';
 export const PROPERTY_CATALOG_FORMAT = 'nodus-property-catalog';
 export const PROPERTY_CATALOG_VERSION = 1;
@@ -147,7 +148,7 @@ export function validateNotePropertyValue(
       return typeof value === 'boolean' ? { ok: true, value } : mismatch('a boolean');
     case 'date':
       if (typeof value !== 'string') return mismatch('a YYYY-MM-DD string');
-      return isCalendarDate(value) ? { ok: true, value } : invalid('must be a valid YYYY-MM-DD calendar date');
+      return isDateOnly(value) ? { ok: true, value } : invalid('must be a valid YYYY-MM-DD calendar date');
     case 'select':
       if (typeof value !== 'string') return mismatch('a configured option string');
       return optionForValue(property, value) ? { ok: true, value } : invalid('must match a configured option label');
@@ -355,12 +356,6 @@ function assertUnique(values: readonly string[], label: string): void {
 function optionForValue(property: NotePropertyDefinition, value: string): PropertyOption | undefined {
   const normalized = fold(value);
   return property.options?.find((option) => fold(option.label) === normalized || option.aliases?.some((alias) => fold(alias) === normalized));
-}
-
-function isCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function isPermittedUrl(value: string): boolean {

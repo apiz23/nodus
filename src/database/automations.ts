@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isUuidV4 } from '../domain/ids.js';
+import { isDateOnly } from '../temporal/date.js';
 import type { DatabaseDefinition, Property } from './schema.js';
 import { inferFormulaPropertyTypes } from './formula-engine.js';
 
@@ -224,9 +225,9 @@ function conditionFitsType(type: string | undefined, op: AutomationOperator, val
   if (type === 'boolean') return ['equals', 'not-equals'].includes(op) && typeof value === 'boolean';
   return false;
 }
-function validateDate(value: unknown): void { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) throw new Error('Condition date must be a valid YYYY-MM-DD date.'); }
+function validateDate(value: unknown): void { if (!isDateOnly(value)) throw new Error('Condition date must be a valid YYYY-MM-DD date.'); }
 function equalValue(left: unknown, right: unknown): boolean { if (Array.isArray(left)) return typeof right === 'string' ? left.includes(right) : Array.isArray(right) && left.length === right.length && left.every((item, index) => item === right[index]); return left === right; }
-function requiredDate(value: unknown): string { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) !== value) throw new Error('Date must be a valid YYYY-MM-DD date.'); return value; }
+function requiredDate(value: unknown): string { if (!isDateOnly(value)) throw new Error('Date must be a valid YYYY-MM-DD date.'); return value; }
 function scalar(value: unknown, label: string): string | number | boolean { if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') throw new Error(`${label} must be a scalar.`); if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`${label} must be finite.`); return value; }
 function uuid(value: unknown, label: string): string { if (typeof value !== 'string' || !isUuidV4(value)) throw new Error(`${label} must be a lowercase UUID v4.`); return value; }
 function iso(value: unknown, label: string): string { if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || (new Date(value).toISOString() !== value && new Date(value).toISOString().replace(/\.000Z$/, 'Z') !== value)) throw new Error(`${label} must be an ISO timestamp.`); return value; }

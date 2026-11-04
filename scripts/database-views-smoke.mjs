@@ -69,13 +69,24 @@ try {
   }
   const alpha = await fixture('Alpha card', [[STATUS, READY], [DATE, '2026-10-28'], [NUMBER, 3]]);
   const beta = await fixture('Beta card', [[NUMBER, 2]]);
+  await Promise.all(['Overflow A', 'Overflow B', 'Overflow C'].map((title) => fixture(title, [[DATE, '2026-10-28']])));
+  const calendarTasks = await request('/api/notes', 'POST', { title: 'Calendar tasks', body: '- [ ] Plan deployment [scheduled:2026-10-28] [due:2026-11-30]\n- [x] Completed deployment [scheduled:2026-10-28]\n- [ ] Invalid duplicate [scheduled:2026-10-28] [scheduled:2026-10-29]\n' });
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext();
   const page = await context.newPage();
   const errors = [], failures = [], expectedFailures = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('console', (message) => { if (message.type() === 'error' && !/(409 \(Conflict\)|500 \(Internal Server Error\))/.test(message.text())) errors.push(message.text()); });
+  page.on('console', (message) => { if (message.type() === 'error' && !/(404 \(Not Found\)|409 \(Conflict\)|422 \(Unprocessable Entity\)|500 \(Internal Server Error\))/.test(message.text())) errors.push(message.text()); });
   page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/api/') && response.status() >= 400) failures.push([response.request().method(), new URL(response.url()).pathname, response.status()]); });
+  let releaseTasks;
+  const tasksGate = new Promise((resolveGate) => { releaseTasks = resolveGate; });
+  let failTasks = true;
+  await page.route('**/api/tasks', async (route) => {
+    if (!failTasks) return route.continue();
+    await tasksGate;
+    expectedFailures.push(['GET', '/api/tasks', 500]);
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEST_FAILURE', message: 'Injected task loading failure' } }) });
+  });
   await page.goto(`${base}/app`);
   await page.getByRole('heading', { name: 'Getting started', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Got it', exact: true }).click();
@@ -322,15 +333,83 @@ try {
   await controls.getByText('View deleted. Notes were kept.', { exact: true }).waitFor();
 
   const calendarId = await createView('My calendar', 'calendar');
+  await page.getByText('Loading calendar events…', { exact: true }).waitFor();
+  failTasks = false;
+  releaseTasks();
+  await page.getByRole('alert').filter({ hasText: 'Injected task loading failure' }).waitFor();
+  await page.getByRole('alert').filter({ hasText: 'Injected task loading failure' }).getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByText('Loading calendar events…', { exact: true }).waitFor({ state: 'hidden' });
   await page.getByLabel('Month', { exact: true }).fill('2026-10');
   const calendar = page.getByRole('region', { name: 'Calendar by Due' });
-  await calendar.getByRole('table').getByRole('article', { name: alpha.title }).waitFor();
-  await calendar.getByRole('region', { name: 'Undated notes' }).getByRole('article', { name: beta.title }).waitFor();
-  await calendar.getByRole('button', { name: `Change date for ${beta.title}`, exact: true }).click();
-  await editor.getByLabel('Edit card Due', { exact: true }).fill('2026-10-29');
-  await editor.getByRole('button', { name: 'Save card', exact: true }).click();
-  await calendar.getByRole('table').getByRole('article', { name: beta.title }).waitFor();
+  await calendar.getByRole('button', { name: '+3 more', exact: true }).waitFor();
+  const undated = calendar.getByRole('region', { name: 'Undated calendar events' });
+  await undated.getByRole('button', { name: /Beta card — Missing start date/ }).waitFor();
+  await undated.getByRole('button', { name: /Invalid duplicate.*Invalid start date/ }).waitFor();
+  await calendar.getByText('No events on this day.', { exact: true }).waitFor();
+  const oct28 = calendar.getByRole('button', { name: /Select .*Oct 28/ });
+  await oct28.click();
+  await oct28.press('ArrowRight');
+  assert.equal(await calendar.getByRole('button', { name: /Select .*Oct 29/ }).getAttribute('aria-pressed'), 'true');
+  await calendar.getByRole('button', { name: 'Next month', exact: true }).click();
+  assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-11');
+  await calendar.getByRole('button', { name: 'Previous month', exact: true }).click();
+  assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-10');
+  await calendar.getByRole('button', { name: /Select .*Oct 28/ }).click();
+  const agenda = calendar.getByRole('region', { name: /Agenda for/ });
+  await agenda.getByText(alpha.title, { exact: true }).waitFor();
+  await agenda.getByText('Plan deployment', { exact: true }).waitFor();
+  await agenda.getByText('Completed deployment', { exact: true }).waitFor();
+  await calendar.getByRole('button', { name: '+3 more', exact: true }).click();
+  await calendar.getByRole('article', { name: 'Overflow C', exact: true }).waitFor();
+  assert.equal((await request(`/api/notes/${calendarTasks.note.id}`)).note.body.includes('[due:2026-11-30]'), true, 'Calendar placement modified the task due date');
+  await calendar.getByRole('button', { name: 'Week', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Next week', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Previous week', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Day', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Next day', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Previous day', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Month', exact: true }).click();
+  await calendar.getByRole('button', { name: /Select .*Oct 28/ }).waitFor();
+
+  await calendar.getByRole('button', { name: 'Timeline', exact: true }).click();
+  const timeline = calendar.getByRole('list', { name: '2026-10 timeline', exact: true });
+  assert.equal(await timeline.getByRole('listitem').count(), 31);
+  const timelineDay = timeline.getByRole('listitem', { name: /Oct 28/ });
+  const timelineOverflow = timelineDay.getByRole('button', { name: '+3 more', exact: true });
+  if (await timelineOverflow.getAttribute('aria-expanded') !== 'true') await timelineOverflow.click();
+  await timelineDay.getByRole('article', { name: alpha.title, exact: true }).waitFor();
+  await timelineDay.getByRole('button', { name: 'Scheduled task: Plan deployment', exact: true }).waitFor();
+  await timelineDay.getByRole('button', { name: 'Scheduled task: Completed deployment', exact: true }).waitFor();
+  await calendar.getByRole('button', { name: 'Next timeline', exact: true }).click();
+  await calendar.getByRole('list', { name: '2026-11 timeline', exact: true }).waitFor();
+  await calendar.getByText('No events on this day.', { exact: true }).waitFor();
+  await undated.getByRole('button', { name: /Beta card/ }).waitFor();
+  await calendar.getByRole('button', { name: 'Previous timeline', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Month', exact: true }).click();
+
+  await undated.getByRole('button', { name: 'Edit date', exact: true }).click();
+  const calendarEditor = page.getByRole('dialog', { name: 'Edit Calendar dates' });
+  assert.equal(await calendarEditor.getByLabel('Start date', { exact: true }).evaluate((input) => input === document.activeElement), true, 'Date editor did not move keyboard focus into the dialog');
+  await calendarEditor.getByLabel('Start date', { exact: true }).fill('2026-10-30');
+  await calendarEditor.getByRole('button', { name: 'Cancel', exact: true }).click();
+  assert.equal((await request(`/api/notes/${beta.id}/properties`)).rows[0].values[DATE], undefined, 'Cancel changed the source date');
+  const invalidTask = undated.getByRole('button', { name: /Invalid duplicate.*Invalid start date/ });
+  await invalidTask.locator('..').getByRole('button', { name: 'Schedule', exact: true }).click();
+  const taskDateEditor = page.getByRole('dialog', { name: 'Schedule task' });
+  await taskDateEditor.getByLabel('Scheduled date', { exact: true }).fill('2026-10-28');
+  expectedFailures.push(['PUT', `/api/notes/${calendarTasks.note.id}/tasks/schedule`, 422]);
+  await taskDateEditor.getByRole('button', { name: 'Save dates', exact: true }).click();
+  await taskDateEditor.getByRole('alert').filter({ hasText: /duplicate|invalid/i }).waitFor();
+  assert((await request(`/api/notes/${calendarTasks.note.id}`)).note.body.includes('[scheduled:2026-10-28] [scheduled:2026-10-29]'), 'Rejected duplicate metadata was rewritten');
+  await taskDateEditor.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await undated.getByRole('button', { name: 'Edit date', exact: true }).click();
+  await calendarEditor.getByLabel('Start date', { exact: true }).fill('2026-10-29');
+  await calendarEditor.getByRole('button', { name: 'Save dates', exact: true }).click();
+  await calendarEditor.waitFor({ state: 'hidden' });
   assert.equal((await request(`/api/notes/${beta.id}/properties`)).rows[0].values[DATE], '2026-10-29');
+  await calendar.locator(`[data-note-open="${beta.id}"]`).waitFor({ timeout: 5000 }).catch(async () => {
+    assert.fail(`Calendar projection did not refresh after a successful write. Calendar text: ${await calendar.innerText()}; row projection: ${JSON.stringify((await request(`/api/databases/${DB}/rows`)).rows.find((row) => row.noteId === beta.id))}`);
+  });
   await page.getByRole('button', { name: 'Create note on 2026-10-30', exact: true }).click();
   const create = page.getByRole('dialog', { name: 'Create a dated note' });
   await create.getByLabel('Title', { exact: true }).fill('Created from calendar');
@@ -341,20 +420,17 @@ try {
   assert(created);
   assert.equal((await request(`/api/notes/${created.id}/properties`)).rows[0].values[DATE], '2026-10-30');
 
-  // A real external note edit must reject the stale card hash and keep its draft.
-  await calendar.getByRole('button', { name: `Change date for ${beta.title}`, exact: true }).click();
-  await editor.getByLabel('Edit card Due', { exact: true }).fill('2026-11-01');
+  // A real external note edit must reject the stale Calendar date draft.
+  await calendar.getByRole('article', { name: beta.title }).getByRole('button', { name: 'Edit date', exact: true }).click();
+  await calendarEditor.getByLabel('Start date', { exact: true }).fill('2026-11-01');
   const latestBeta = (await request(`/api/notes/${beta.id}`)).note;
   await request(`/api/notes/${beta.id}`, 'PUT', { title: latestBeta.title, body: 'External body edit is preserved.', baseHash: latestBeta.contentHash });
-  expectedFailures.push(['PUT', `/api/notes/${beta.id}/properties`, 409]);
-  await editor.getByRole('button', { name: 'Save card', exact: true }).click();
-  await page.getByRole('button', { name: 'Reload latest note, keep draft', exact: true }).click();
-  await page.getByText('Latest stored values loaded. Your draft is still here; review it and save again.', { exact: true }).waitFor();
-  assert.equal(await editor.getByLabel('Edit card Due', { exact: true }).inputValue(), '2026-11-01');
-  await editor.getByRole('button', { name: 'Save card', exact: true }).click();
-  await editor.waitFor({ state: 'hidden' });
+  expectedFailures.push(['PUT', `/api/notes/${beta.id}/calendar-range`, 409]);
+  await calendarEditor.getByRole('button', { name: 'Save dates', exact: true }).click();
+  await calendarEditor.getByRole('alert').filter({ hasText: /changed|conflict|refresh/i }).waitFor();
+  await calendarEditor.getByRole('button', { name: 'Cancel', exact: true }).click();
   assert.equal((await request(`/api/notes/${beta.id}`)).note.body, 'External body edit is preserved.');
-  assert.equal((await request(`/api/notes/${beta.id}/properties`)).rows[0].values[DATE], '2026-11-01');
+  assert.equal((await request(`/api/notes/${beta.id}/properties`)).rows[0].values[DATE], '2026-10-29');
 
   // A failed second API operation keeps the created note and retries its ID.
   let injected = false;
@@ -500,7 +576,10 @@ try {
   assert.match(await boardCard.innerText(), /Related count\s+1/);
   await createView('Rollup calendar', 'calendar');
   await page.getByLabel('Month', { exact: true }).fill('2026-10');
-  const calendarCard = page.getByRole('region', { name: 'Calendar by Due' }).getByRole('article', { name: alpha.title });
+  const rollupCalendar = page.getByRole('region', { name: 'Calendar by Due' });
+  const rollupOverflow = rollupCalendar.getByRole('button', { name: '+3 more', exact: true });
+  if (await rollupOverflow.count()) await rollupOverflow.click();
+  const calendarCard = rollupCalendar.getByRole('article', { name: alpha.title });
   await calendarCard.getByRole('button', { name: /^Open related record Related target/ }).waitFor();
   assert.match(await calendarCard.innerText(), /Related count\s+1/);
   await selectView('Rollup table');
@@ -514,9 +593,85 @@ try {
   assert.equal((await request(`/api/databases/${DB}/views`)).views.some((view) => view.view.id === relationTableId), true);
   assert.equal((await request(`/api/databases/${DB}/views`)).views.some((view) => view.view.id === rollupTableId), true);
 
-  assert.deepEqual(failures, expectedFailures);
+  await selectView('Rollup calendar');
+  await page.getByLabel('Month', { exact: true }).fill('2026-10');
+  await page.getByRole('button', { name: /Select .*Oct 28/ }).click();
+  const sourceBefore = (await request(`/api/notes/${alpha.id}`)).note;
+  await page.getByRole('region', { name: /Agenda for/ }).getByRole('button', { name: new RegExp(`Database.*${alpha.title}`) }).click();
+  await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, alpha.title);
+  assert.equal((await request(`/api/notes/${alpha.id}`)).note.contentHash, sourceBefore.contentHash, 'Navigation changed source Markdown');
+  async function calendarAgain() {
+    await page.getByRole('button', { name: 'Databases', exact: true }).click();
+    await page.getByLabel('Month', { exact: true }).fill('2026-10');
+    await page.getByRole('button', { name: /Select .*Oct 28/ }).click();
+  }
+  const sourceUrl = `**/api/notes/${alpha.id}`;
+  for (const message of ['Source deleted after Calendar projection', 'Stale source identity is unavailable']) {
+    await calendarAgain();
+    await page.route(sourceUrl, (route) => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'NOT_FOUND', message } }) }));
+    expectedFailures.push(['GET', `/api/notes/${alpha.id}`, 404]);
+    await page.getByRole('region', { name: /Agenda for/ }).getByRole('button', { name: new RegExp(`Database.*${alpha.title}`) }).click();
+    await page.getByText(message, { exact: true }).waitFor();
+    assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).count(), 0, 'Unavailable source showed another note editor');
+    await page.unroute(sourceUrl);
+    assert.equal((await request(`/api/notes/${alpha.id}`)).note.contentHash, sourceBefore.contentHash);
+  }
+  // Hold requests across remounts: the newer Calendar must own loading,
+  // projection and error state even when an obsolete response completes later.
+  await page.unroute('**/api/tasks');
+  const authoritativeTasks = await request('/api/tasks');
+  for (const obsoleteFails of [false, true]) {
+    let resolveA, enteredA, finishedA;
+    const completedA = new Promise((resolve) => { finishedA = resolve; });
+    const gateA = new Promise((resolve) => { resolveA = resolve; });
+    const startedA = new Promise((resolve) => { enteredA = resolve; });
+    let newer = false;
+    await page.route('**/api/tasks', async (route) => {
+      if (!newer) {
+        enteredA(); await gateA;
+        await route.fulfill({ status: obsoleteFails ? 500 : 200, contentType: 'application/json', body: JSON.stringify(obsoleteFails ? { error: { code: 'OLD_FAILURE', message: 'Obsolete response failure' } } : { ...authoritativeTasks, tasks: [] }) }).catch(() => {});
+        finishedA();
+      } else await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authoritativeTasks) });
+    });
+    await calendarAgain();
+    await startedA;
+    await page.getByText('Loading calendar events…', { exact: true }).waitFor();
+    await page.getByRole('region', { name: /Agenda for/ }).getByRole('button', { name: new RegExp(`Database.*${alpha.title}`) }).click();
+    await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, alpha.title);
+    newer = true;
+    await calendarAgain();
+    await page.getByRole('region', { name: /Agenda for/ }).getByText('Plan deployment', { exact: true }).waitFor();
+    await page.getByText('Loading calendar events…', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Next month', exact: true }).click();
+    resolveA();
+    await completedA;
+    // Flush rendering after the obsolete request has completed.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-11');
+    assert.equal(await page.getByText('Obsolete response failure', { exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Previous month', exact: true }).click();
+    await page.getByRole('button', { name: /Select .*Oct 28/ }).click();
+    await page.getByRole('region', { name: /Agenda for/ }).getByText('Plan deployment', { exact: true }).waitFor();
+    await page.unroute('**/api/tasks');
+    await page.getByRole('region', { name: /Agenda for/ }).getByRole('button', { name: new RegExp(`Database.*${alpha.title}`) }).click();
+    await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, alpha.title);
+  }
+  await calendarAgain();
+  await page.getByRole('button', { name: /Select .*Oct 29/ }).click();
+  const deletedSource = (await request(`/api/notes/${beta.id}`)).note;
+  const beforeDeletion = (await request('/api/notes')).notes.length;
+  await request(`/api/notes/${beta.id}`, 'DELETE', { baseHash: deletedSource.contentHash });
+  expectedFailures.push(['GET', `/api/notes/${beta.id}`, 404]);
+  await page.getByRole('region', { name: /Agenda for/ }).getByRole('button', { name: new RegExp(`Database.*${beta.title}`) }).click();
+  await page.getByText(/not found/i).first().waitFor();
+  assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).count(), 0);
+  assert.equal((await request('/api/notes')).notes.length, beforeDeletion - 1, 'Unavailable navigation created a note');
+  assert.equal((await request(`/api/notes/${alpha.id}`)).note.contentHash, sourceBefore.contentHash);
+  assert(failures.some(([method, path, status]) => method === 'GET' && path === '/api/tasks' && status === 500), 'Injected task failure was not observed');
+  const nonTaskFailures = (items) => items.filter(([, path]) => path !== '/api/tasks');
+  assert.deepEqual(nonTaskFailures(failures), nonTaskFailures(expectedFailures));
   assert.deepEqual(errors, []);
-  console.log('Database views smoke passed: formula authoring/autocomplete/preview/cancel, schema reload and derived values/errors, saved table reload/filter/columns/sort, table/list grouping and collapse, gallery cards and record opening, keyboard view reordering and manifest reload, board moves and clearing, duplicate/rename/delete, calendar assignment/creation, relation property creation/linking/opening/removal, rollup creation and computed counts across all layouts, stale note/view drafts, failed creation recovery, deferred save selection isolation.');
+  console.log('Database views and Calendar browser smoke passed: date dialog focus/cancel/save, duplicate-task metadata validation, keyboard date movement, month/week/day navigation, database/task agenda, completed tasks, overflow, undated items, source/view conflicts, and database formula/table/list/gallery/board/relation/rollup regressions.');
 } finally {
   await context?.close().catch(() => {});
   await browser?.close().catch(() => {});

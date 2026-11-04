@@ -56,10 +56,24 @@ describe('database view layouts', () => {
     expect(result.undated.map((row) => row.noteId)).toEqual(['2', '3']);
   });
 
+  it('projects inclusive date ranges only into the visible month and treats missing, invalid, and reversed values explicitly', () => {
+    const result = calendarRows([
+      makeRow('span', 'Spanning', { start: '2026-10-30', end: '2026-11-02' }),
+      makeRow('single', 'Single', { start: '2026-10-31', end: '' }),
+      makeRow('missing', 'Missing start', { end: '2026-10-31' }),
+      makeRow('invalid', 'Invalid end', { start: '2026-10-30', end: '2026-11-31' }),
+      makeRow('reversed', 'Reversed', { start: '2026-10-31', end: '2026-10-30' }),
+    ], 'start', 'end', '2026-10');
+    expect([...result.dated].map(([date, rows]) => [date, rows.map((row) => row.noteId)])).toEqual([
+      ['2026-10-30', ['span']], ['2026-10-31', ['span', 'single']],
+    ]);
+    expect(result.undated.map((row) => row.noteId)).toEqual(['missing', 'invalid', 'reversed']);
+  });
+
   it('defaults new views to title sorting, all columns, no filters and typed setting IDs', () => {
     const database = { id: 'db', name: 'Tasks', path: 'db.json', contentHash: '', properties };
     expect(defaultView(database, 'table')).toMatchObject({ type: 'table', sort: { propertyId: 'title', direction: 'asc' }, filters: [], visiblePropertyIds: ['status', 'date'], settings: {} });
     expect(defaultView(database, 'kanban').settings).toEqual({ groupPropertyId: 'status' });
-    expect(defaultView(database, 'calendar').settings).toEqual({ datePropertyId: 'date' });
+    expect(defaultView(database, 'calendar').settings).toEqual({ startDatePropertyId: 'date' });
   });
 });
