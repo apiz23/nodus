@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, stat } from 'node:fs/promises';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { DatabaseDefinition } from '../../database/schema.js';
 import { parseDatabase } from '../../database/schema.js';
@@ -19,10 +19,13 @@ import { DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH } from '../
 import { parseAutomationHistory, parseAutomations } from '../../database/automations.js';
 import { parseTemplates } from '../../database/templates.js';
 import { TEMPLATE_CATALOG_PATH } from '../fs/layout.js';
-import { PORTABLE_EXPORT_MANIFEST, validatePortableExport, type PortableExportManifest } from './manifest.js';
+import { PORTABLE_EXPORT_MANIFEST, readPortableExportManifest, validatePortableExportInventory, sha256, type PortableExportManifest } from './manifest.js';
 import { projectRelations } from '../../database/relations.js';
 import { diagnoseDatabaseView } from '../../database/database-view.js';
-import type { ImportPreview, ImportPreviewResource } from '../contracts.js';
+import type { ImportPreview, ImportPreviewResource, PortableExportSnapshot } from '../contracts.js';
+import type { ImportPreviewBinding } from './preview-session.js';
+import { byteLength, fingerprintPlan, fingerprintSnapshot } from './fingerprints.js';
+import { IMPORT_MAX_FILESYSTEM_ENTRIES, IMPORT_MAX_PATH_DEPTH, IMPORT_MAX_RESOURCE_BYTES, readBoundedImportFile, validateImportResourceLimits } from './limits.js';
 
 /**
  * Reads and fully validates a portable import directory.
@@ -52,11 +55,17 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
   }
 
   let portableManifest: PortableExportManifest | undefined;
+  let sourceManifestSha256: string | undefined;
   const manifestPath = join(source, PORTABLE_EXPORT_MANIFEST);
-  try { await lstat(manifestPath); portableManifest = await validatePortableExport(source); }
+  try {
+    await lstat(manifestPath);
+    const loaded = await readPortableExportManifest(source);
+    portableManifest = loaded.manifest;
+    sourceManifestSha256 = sha256(loaded.rawBytes);
+  }
   catch (error) { if (!isMissing(error)) throw error; }
 
-  const walk = await walkVault(source);
+  const walk = await walkVault(source, { maxDepth: IMPORT_MAX_PATH_DEPTH, maxEntries: IMPORT_MAX_FILESYSTEM_ENTRIES });
   if (walk.issues.length > 0) {
     throw new StorageError('INVALID_CONTENT', 'Import source contains unsupported entries', {
       details: { issues: walk.issues.map((issue) => `${issue.path}: ${issue.message}`) },
@@ -68,6 +77,14 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
       'Import source contains leftover temporary files; remove them before importing',
     );
   }
+
+  const visibleSizes: Array<{ path: string; bytes: number }> = [];
+  for (const entry of walk.entries.filter((candidate) => candidate.kind !== 'temp')) {
+    const entryInfo = await lstat(entry.absolute);
+    if (!entryInfo.isFile() || entryInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', `Import resource is not a regular file: ${entry.path}.`, { path: entry.path });
+    visibleSizes.push({ path: entry.path, bytes: entryInfo.size });
+  }
+  validateImportResourceLimits(visibleSizes, walk.folders);
 
   const propertyCatalog = await readImportPropertyCatalog(source);
   const notes: Note[] = [];
@@ -159,7 +176,7 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
   for (const entry of walk.entries) {
     if (entry.kind !== 'attachment') continue;
     let bytes: Buffer;
-    try { bytes = await readFile(entry.absolute); }
+    try { bytes = await readBoundedImportFile(entry.absolute, entry.path, IMPORT_MAX_RESOURCE_BYTES); }
     catch (error) { throw storageFailure(error, 'Read import attachment', entry.path); }
     if (bytes.byteLength > ATTACHMENT_MAX_BYTES) throw new StorageError('INVALID_CONTENT', `Attachment "${entry.path}" exceeds the 10 MiB limit`, { path: entry.path });
     const valid = validateAttachmentBytes(entry.path, bytes);
@@ -174,12 +191,33 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
   entries.push(...await readImportDatabaseAutomationFiles(source));
   entries.push(...await readImportTemplateFiles(source));
   const databaseViewOrders = await readImportDatabaseViewOrders(source);
-  if (portableManifest) validateManifestResources(portableManifest, entries, propertyCatalog, databaseViewOrders);
-  return { entries, notes, databases, databaseViews, databaseViewOrders, ...(propertyCatalog === undefined ? {} : { propertyCatalog }), ...(portableManifest === undefined ? {} : { portableManifest, excluded: portableManifest.excluded }) };
+  const actualSizes = entries.map((entry) => ({ path: entry.path, bytes: byteLength(entry.rawBytes ?? entry.text) }));
+  if (propertyCatalog) actualSizes.push({ path: propertyCatalog.path, bytes: propertyCatalog.rawBytes.byteLength });
+  for (const order of databaseViewOrders) actualSizes.push({ path: order.path, bytes: order.rawBytes.byteLength });
+  validateImportResourceLimits(actualSizes, walk.folders);
+  if (portableManifest) {
+    validateManifestResources(portableManifest, entries, propertyCatalog, databaseViewOrders);
+    await validatePortableExportInventory(source, portableManifest);
+    let finalManifestBytes: Buffer;
+    try { finalManifestBytes = await readBoundedImportFile(manifestPath, PORTABLE_EXPORT_MANIFEST); }
+    catch (error) { throw new StorageError('INVALID_CONTENT', 'Portable manifest changed or disappeared while the import plan was being read.', { path: PORTABLE_EXPORT_MANIFEST, cause: error }); }
+    if (!sourceManifestSha256 || sha256(finalManifestBytes) !== sourceManifestSha256) throw new StorageError('INVALID_CONTENT', 'Portable manifest changed while the import plan was being read.', { path: PORTABLE_EXPORT_MANIFEST });
+  }
+  return { entries, notes, databases, databaseViews, databaseViewOrders, sourceFolders: walk.folders, ...(propertyCatalog === undefined ? {} : { propertyCatalog }), ...(portableManifest === undefined ? {} : { portableManifest, sourceManifestSha256, excluded: portableManifest.excluded }) };
 }
 
 /** Read-only comparison of a validated directory against the active vault. */
 export async function previewImport(sourceDir: string, vault: VaultStorage): Promise<ImportPreview> {
+  return (await createImportPreviewSnapshot(sourceDir, vault)).preview;
+}
+
+export interface ImportPreviewSnapshot {
+  preview: ImportPreview;
+  binding: ImportPreviewBinding;
+}
+
+/** Creates the read-only preview plus deterministic source and destination fingerprints. */
+export async function createImportPreviewSnapshot(sourceDir: string, vault: VaultStorage): Promise<ImportPreviewSnapshot> {
   const source = resolve(sourceDir);
   const plan = await planImport(source);
   const target = await vault.snapshotForPortableExport?.();
@@ -199,16 +237,72 @@ export async function previewImport(sourceDir: string, vault: VaultStorage): Pro
     attachments: resources.filter((item) => item.kind === 'attachment').length,
     otherResources: resources.filter((item) => !['note','database','database-view','attachment'].includes(item.kind)).length,
   };
-  return { source, format: plan.portableManifest ? 'nodus-portable-export' : 'legacy-directory', ...(plan.portableManifest ? { manifestVersion: plan.portableManifest.version } : {}), counts, resources, warnings, errors: [], conflicts: resources.filter((item) => item.status === 'conflict') };
+  const preview = { source, format: plan.portableManifest ? 'nodus-portable-export' as const : 'legacy-directory' as const, ...(plan.portableManifest ? { manifestVersion: plan.portableManifest.version } : {}), counts, resources, warnings, errors: [], conflicts: resources.filter((item) => item.status === 'conflict') };
+  const binding: ImportPreviewBinding = {
+    sourcePath: source,
+    destinationPath: resolve(vault.root),
+    sourceFingerprint: fingerprintPlan(plan),
+    destinationFingerprint: fingerprintSnapshot(target),
+    resourceBindings: resources.map((item) => {
+      const incomingItem = incoming.find((candidate) => candidate.kind === item.kind && candidate.id === item.id && candidate.path === item.path)!;
+      const existingItem = existing.find((candidate) => candidate.kind === item.kind && candidate.id === item.id)
+        ?? existing.find((candidate) => candidate.path.normalize('NFC').toLowerCase() === item.path.normalize('NFC').toLowerCase());
+      return { kind: item.kind, id: item.id, path: item.path, status: item.status, sourceSha256: sha256Entry(incomingItem), ...(existingItem === undefined ? {} : { destinationSha256: sha256Entry(existingItem) }), safeChoices: item.safeChoices };
+    }),
+    conflicts: resources.filter((item) => item.status === 'conflict').map((item) => {
+      const incomingItem = incoming.find((candidate) => candidate.kind === item.kind && candidate.id === item.id && candidate.path === item.path)!;
+      const existingItem = existing.find((candidate) => candidate.kind === item.kind && candidate.id === item.id);
+      return { kind: item.kind, id: item.id, path: item.path, sourceSha256: sha256Entry(incomingItem), ...(existingItem === undefined ? {} : { destinationSha256: sha256Entry(existingItem) }), safeChoices: item.safeChoices };
+    }),
+  };
+  return { preview, binding };
 }
 
+/** Rebuilds both fingerprints; callers must perform this while holding the publication lock. */
+export async function validateImportPreviewFreshness(sourceDir: string, vault: VaultStorage, expected: ImportPreviewBinding): Promise<void> {
+  const source = resolve(sourceDir);
+  if (source !== expected.sourcePath || resolve(vault.root) !== expected.destinationPath) throw stalePreview();
+  let currentPlan: ImportPlan;
+  try { currentPlan = await planImport(source); }
+  catch (error) { throw new StorageError('STALE_PREVIEW', 'The import source changed or is no longer valid after preview. Create a new preview and review its diagnostics.', { cause: error }); }
+  const currentTarget = await vault.snapshotForPortableExport?.();
+  if (!currentTarget) throw new StorageError('INVALID_INPUT', 'The active storage adapter cannot validate an import preview.');
+  if (fingerprintPlan(currentPlan) !== expected.sourceFingerprint || fingerprintSnapshot(currentTarget) !== expected.destinationFingerprint) throw stalePreview();
+}
+
+/** Selects only resources explicitly approved in the reviewed preview. */
+export function selectImportPlan(plan: ImportPlan, decisions: Array<{ kind: string; id: string; path: string; choice: 'add' | 'skip' | 'replace' }>): ImportPlan {
+  const selected = new Set(decisions.filter((item) => item.choice === 'add' || item.choice === 'replace').map((item) => JSON.stringify([item.kind, item.id, item.path])));
+  const keep = (kind: string, id: string, path: string) => selected.has(JSON.stringify([kind, id, path]));
+  const entries = plan.entries.filter((entry) => keep(entry.kind, entry.id, entry.path));
+  const notes = plan.notes.filter((note) => keep('note', note.id, note.path));
+  const databases = plan.databases.filter((database) => keep('database', database.id, `databases/${database.id}.json`));
+  const databaseViews = (plan.databaseViews ?? []).filter((view) => keep('database-view', view.id, `database-views/${view.databaseId}/${view.id}.json`));
+  const databaseViewOrders = (plan.databaseViewOrders ?? []).filter((order) => keep('database-view-order', order.databaseId, order.path));
+  const propertyCatalog = plan.propertyCatalog && keep('property-catalog', 'property-catalog', plan.propertyCatalog.path) ? plan.propertyCatalog : undefined;
+  return { entries, notes, databases, databaseViews, databaseViewOrders, ...(propertyCatalog ? { propertyCatalog } : {}), ...(plan.portableManifest ? { portableManifest: plan.portableManifest } : {}), ...(plan.sourceManifestSha256 ? { sourceManifestSha256: plan.sourceManifestSha256 } : {}), ...(plan.sourceFolders ? { sourceFolders: plan.sourceFolders } : {}), ...(plan.excluded ? { excluded: plan.excluded } : {}) };
+}
+
+function stalePreview(): StorageError { return new StorageError('STALE_PREVIEW', 'The import source or destination changed after preview. Create a new preview before continuing.'); }
+
+function compareText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
 function validateManifestResources(manifest: PortableExportManifest, entries: VaultEntry[], catalog: PropertyCatalogFile | undefined, orders: DatabaseViewOrderFileSnapshot[]): void {
-  const actual: Array<{ kind: string; id: string; path: string; ownerId?: string }> = entries.map((entry) => ({ kind: entry.kind, id: entry.id, path: entry.path, ...(entry.kind === 'database-view' ? { ownerId: entry.path.split('/')[1] } : {}) }));
-  if (catalog) actual.push({ kind: 'property-catalog', id: 'property-catalog', path: catalog.path });
-  for (const order of orders) actual.push({ kind: 'database-view-order', id: order.databaseId, path: order.path });
-  const expected = manifest.resources.map(({ kind, id, path, ownerId }) => ({ kind, id, path, ...(ownerId === undefined ? {} : { ownerId }) }));
+  const actual: Array<{ kind: string; id: string; path: string; bytes: Uint8Array | string; ownerId?: string }> = entries.map((entry) => ({ kind: entry.kind, id: entry.id, path: entry.path, bytes: entry.rawBytes ?? entry.text, ...(entry.kind === 'database-view' ? { ownerId: entry.path.split('/')[1] } : {}) }));
+  if (catalog) actual.push({ kind: 'property-catalog', id: 'property-catalog', path: catalog.path, bytes: catalog.rawBytes });
+  for (const order of orders) actual.push({ kind: 'database-view-order', id: order.databaseId, path: order.path, bytes: order.rawBytes });
+  const expected = manifest.resources;
   const key = (r: { kind: string; id: string; path: string; ownerId?: string }) => JSON.stringify([r.kind, r.id, r.path, r.ownerId ?? null]);
-  if (actual.length !== expected.length || actual.some((resource) => !expected.some((candidate) => key(candidate) === key(resource)))) throw new StorageError('INVALID_CONTENT', 'Portable manifest resources do not match parsed resource identities, types, or paths.', { details: { paths: expected.map((item) => item.path) } });
+  if (actual.length < expected.length) {
+    const absent = expected.filter((candidate) => !actual.some((resource) => key(resource) === key(candidate)));
+    throw new StorageError('INVALID_CONTENT', `Portable manifest resource is missing: ${absent.map((item) => item.path).join(', ')}`, { details: { paths: absent.map((item) => item.path), ids: absent.map((item) => item.id) } });
+  }
+  if (actual.length > expected.length) throw new StorageError('INVALID_CONTENT', 'Portable manifest contains fewer resources than the parsed source.', { details: { paths: actual.map((item) => item.path) } });
+  for (const resource of actual) {
+    const candidate = expected.find((item) => key(item) === key(resource));
+    if (!candidate) throw new StorageError('INVALID_CONTENT', 'Portable manifest resources do not match parsed resource identities, types, or paths.', { path: resource.path, details: { paths: expected.map((item) => item.path), ids: [resource.id] } });
+    if (byteLength(resource.bytes) !== candidate.bytes || sha256Entry({ ...resource, bytes: resource.bytes }) !== candidate.sha256) throw new StorageError('INVALID_CONTENT', `Portable resource changed while it was being planned: ${resource.path}`, { path: resource.path, details: { paths: [resource.path], ids: [resource.id] } });
+  }
 }
 
 interface PreviewSourceResource { kind: string; id: string; path: string; bytes: Uint8Array | string }
@@ -218,7 +312,7 @@ function classifyResource(incoming: PreviewSourceResource, existing: PreviewSour
   const byPath = existing.find((entry) => entry.path.normalize('NFC').toLowerCase() === incoming.path.normalize('NFC').toLowerCase());
   if (byId && byId.path === incoming.path && sha256Entry(byId) === sha256Entry(incoming)) return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'identical', safeChoices: ['skip'] };
   if (byId || byPath) return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'conflict', reason: byId ? `ID already exists at ${byId.path}${byId.path !== incoming.path ? '; source path differs' : ' with different content'}` : `Path is already owned by ${byPath!.kind} ${byPath!.id}`, safeChoices: ['skip', ...(byId && byId.path === incoming.path ? ['replace' as const] : [])] };
-  return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'new', safeChoices: ['skip'] };
+  return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'new', safeChoices: ['add', 'skip'] };
 }
 
 function sha256Entry(entry: PreviewSourceResource): string { return createHash('sha256').update(entry.bytes).digest('hex'); }
@@ -245,7 +339,7 @@ async function readImportTemplateFiles(source: string): Promise<VaultEntry[]> {
   const absolute = join(root, 'templates.json');
   const info = await lstat(absolute);
   if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Template catalog must be a regular file', { path });
-  const bytes = await readFile(absolute);
+  const bytes = await readBoundedImportFile(absolute, path, IMPORT_MAX_RESOURCE_BYTES);
   let text: string;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); parseTemplates(text); }
   catch (error) { throw wrapContentError(error, path); }
@@ -268,7 +362,7 @@ async function readImportDatabaseAutomationFiles(source: string): Promise<VaultE
     if (!children.includes(name)) continue;
     const absolute = join(root, name); const info = await lstat(absolute);
     if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', `Automation file must be a regular file: ${path}`, { path });
-    let bytes: Buffer; try { bytes = await readFile(absolute); } catch (error) { throw storageFailure(error, 'Read import automation file', path); }
+    let bytes: Buffer; try { bytes = await readBoundedImportFile(absolute, path, IMPORT_MAX_RESOURCE_BYTES); } catch (error) { throw storageFailure(error, 'Read import automation file', path); }
     const text = bytes.toString('utf8');
     try { if (kind === 'automation-definitions') parseAutomations(text); else parseAutomationHistory(text); }
     catch (error) { throw wrapContentError(error, path); }
@@ -322,7 +416,7 @@ async function readImportDatabaseViewOrders(source: string): Promise<DatabaseVie
     const databaseId = match[1]!;
     const path = databaseViewOrderPath(databaseId);
     let bytes: Buffer;
-    try { bytes = await readFile(join(directory, dirent.name)); }
+    try { bytes = await readBoundedImportFile(join(directory, dirent.name), path, IMPORT_MAX_RESOURCE_BYTES); }
     catch (error) { throw storageFailure(error, 'Read import ordering manifest', path); }
     let text: string;
     try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
@@ -374,7 +468,7 @@ async function readImportPropertyCatalog(source: string): Promise<PropertyCatalo
 
   let bytes: Buffer;
   try {
-    bytes = await readFile(catalogPath);
+    bytes = await readBoundedImportFile(catalogPath, PROPERTY_CATALOG_PATH, IMPORT_MAX_RESOURCE_BYTES);
   } catch (error) {
     throw storageFailure(error, 'Read import property catalog', PROPERTY_CATALOG_PATH);
   }
@@ -432,7 +526,7 @@ function assertNoPathCollision(path: string, seen: Map<string, string>): void {
 async function readText(absolute: string, relativePath: string): Promise<string> {
   let bytes: Buffer;
   try {
-    bytes = await readFile(absolute);
+    bytes = await readBoundedImportFile(absolute, relativePath, IMPORT_MAX_RESOURCE_BYTES);
   } catch (error) {
     throw storageFailure(error, 'Read import file', relativePath);
   }

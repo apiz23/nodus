@@ -26,6 +26,7 @@
     "test:organization": "node scripts/organization-smoke.mjs",
     "test:tasks": "node scripts/tasks-smoke.mjs",
     "test:workspace": "node scripts/workspace-customization-smoke.mjs",
+    "test:import-recovery": "node scripts/import-recovery-process-smoke.mjs",
     "bench:organization": "vitest run --config vitest.organization-benchmark.config.ts",
     "bench:tasks": "vitest run --config vitest.tasks-benchmark.config.ts",
     "test:graph-advanced": "node scripts/graph-advanced-smoke.mjs",

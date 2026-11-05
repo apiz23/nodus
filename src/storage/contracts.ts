@@ -246,6 +246,10 @@ export interface ImportPlan {
   propertyCatalog?: PropertyCatalogFile;
   /** Present only for v1 manifest-based portable packages. */
   portableManifest?: import('./portable/manifest.js').PortableExportManifest;
+  /** SHA-256 of the exact portable manifest bytes read during planning. */
+  sourceManifestSha256?: string;
+  /** Import-relevant visible folder inventory captured with the plan. */
+  sourceFolders?: string[];
   excluded?: Array<{ path: string; reason: string }>;
 }
 
@@ -255,7 +259,7 @@ export interface ImportPreviewResource {
   path: string;
   status: 'new' | 'identical' | 'conflict' | 'invalid';
   reason?: string;
-  safeChoices: Array<'skip' | 'replace'>;
+  safeChoices: Array<'add' | 'skip' | 'replace'>;
 }
 
 export interface ImportPreview {
@@ -267,6 +271,42 @@ export interface ImportPreview {
   warnings: string[];
   errors: string[];
   conflicts: ImportPreviewResource[];
+}
+
+/** HTTP preview response; the opaque handle binds later execution to this preview. */
+export interface ImportPreviewResponse extends ImportPreview {
+  previewId: string;
+  expiresAt: string;
+}
+
+export interface ImportExecutionResourceResult {
+  kind: string;
+  id: string;
+  path: string;
+  decision: 'add' | 'skip' | 'replace';
+  status: 'skipped' | 'published' | 'restored' | 'failed';
+  sha256?: string;
+  message?: string;
+}
+
+export interface ImportExecutionReport {
+  operationId: string;
+  state: 'completed' | 'rolled-back' | 'recovery-required';
+  startedAt: string;
+  completedAt: string;
+  resources: ImportExecutionResourceResult[];
+  counts: ImportReport;
+  recoveryPath?: string;
+  error?: { code: string; message: string };
+}
+
+export interface ImportOperationStatus {
+  operationId: string;
+  state: 'staging' | 'staged' | 'publishing' | 'committed' | 'rolled-back' | 'recovery-required' | 'corrupt';
+  startedAt: string;
+  updatedAt: string;
+  resources: Array<{ kind: string; id: string; path: string; decision: 'add' | 'skip' | 'replace'; publication: 'staged' | 'pending' | 'published' | 'restored' | 'skipped' }>;
+  failure?: { code: string; message: string };
 }
 
 export interface TemplateStore {

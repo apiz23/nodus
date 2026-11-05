@@ -3,7 +3,9 @@ import { AlertCircle, Archive, CheckCircle2, Loader2 } from 'lucide-react';
 import type {
   BackupReport,
   ExportReport,
-  ImportPreview,
+  ImportPreviewResponse,
+  ImportExecutionReport,
+  ImportOperationStatus,
   RestorePreview,
   UiBackupValidationResult,
 } from '../../src/ui-server/dto';
@@ -81,6 +83,10 @@ function PathList({ paths }: { paths: string[] }) {
   );
 }
 
+function importResourceKey(resource: { kind: string; id: string; path: string }): string {
+  return JSON.stringify([resource.kind, resource.id, resource.path]);
+}
+
 export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRestoreSectionProps) {
   const validateRequestRef = useRef(0);
   const previewRequestRef = useRef(0);
@@ -94,9 +100,17 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
   const [portableResult, setPortableResult] = useState<ExportReport | null>(null);
   const [portableError, setPortableError] = useState<unknown>(null);
   const [importSource, setImportSource] = useState('');
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreviewResponse | null>(null);
   const [importPreviewError, setImportPreviewError] = useState<unknown>(null);
   const [importPreviewing, setImportPreviewing] = useState(false);
+  const [importDecisionChoices, setImportDecisionChoices] = useState<Record<string, 'add' | 'skip' | 'replace'>>({});
+  const [importReplacingConfirmed, setImportReplacingConfirmed] = useState(false);
+  const [importExecuting, setImportExecuting] = useState(false);
+  const [importExecution, setImportExecution] = useState<ImportExecutionReport | null>(null);
+  const [importExecutionError, setImportExecutionError] = useState<unknown>(null);
+  const [importOperations, setImportOperations] = useState<ImportOperationStatus[]>([]);
+  const [importRecoveryBusy, setImportRecoveryBusy] = useState<string | null>(null);
+  const [importRecoveryResult, setImportRecoveryResult] = useState<string | null>(null);
 
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<UiBackupValidationResult | null>(null);
@@ -108,13 +122,19 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
 
   const [state, dispatch] = useReducer(restoreFlowReducer, initialRestoreFlow);
   const busy = state.phase === 'restoring';
-  const active = creating || exporting || validating || previewing || importPreviewing || busy;
+  const active = creating || exporting || validating || previewing || importPreviewing || importExecuting || importRecoveryBusy !== null || busy;
   const source = state.source.trim();
 
   useEffect(() => {
     onActivityChange?.(active);
     return () => onActivityChange?.(false);
   }, [active, onActivityChange]);
+
+  useEffect(() => {
+    let current = true;
+    void api.listImportOperations().then(({ operations }) => { if (current) setImportOperations(operations); }).catch((error: unknown) => { if (current) setImportExecutionError(error); });
+    return () => { current = false; };
+  }, []);
 
   useEffect(() => {
     if (state.phase === 'confirming' || state.phase === 'failed') {
@@ -169,10 +189,60 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
   async function runImportPreview(): Promise<void> {
     const source = importSource.trim();
     if (!source || importPreviewing) return;
-    setImportPreviewing(true); setImportPreviewError(null); setImportPreview(null);
-    try { setImportPreview(await api.previewImport({ dir: source })); }
+    setImportPreviewing(true); setImportPreviewError(null); setImportPreview(null); setImportExecution(null); setImportExecutionError(null); setImportDecisionChoices({}); setImportReplacingConfirmed(false);
+    try {
+      const preview = await api.previewImport({ dir: source });
+      setImportPreview(preview);
+      setImportDecisionChoices(Object.fromEntries(preview.resources.map((resource) => [importResourceKey(resource), resource.status === 'new' ? 'add' : 'skip'])));
+    }
     catch (error) { setImportPreviewError(error); }
     finally { setImportPreviewing(false); }
+  }
+
+  async function refreshImportOperations(): Promise<void> {
+    try { setImportOperations((await api.listImportOperations()).operations); }
+    catch { /* Preserve the primary execution/recovery error; the next panel mount retries. */ }
+  }
+
+  async function runImportExecution(): Promise<void> {
+    if (!importPreview || importExecuting || !importPreview.previewId) return;
+    const decisions = importPreview.resources.map((resource) => ({ ...resource, choice: importDecisionChoices[importResourceKey(resource)] }));
+    if (decisions.some((decision) => decision.choice === undefined) || decisions.some((decision) => decision.choice === 'replace') && !importReplacingConfirmed) return;
+    setImportExecuting(true); setImportExecutionError(null); setImportExecution(null);
+    try {
+      const report = await api.executeImport({ previewId: importPreview.previewId, confirm: true, decisions: decisions.map(({ kind, id, path, choice }) => ({ kind, id, path, choice: choice! })) });
+      setImportExecution(report);
+      setImportOperations((previous) => [{ operationId: report.operationId, state: report.state === 'completed' ? 'committed' : report.state, startedAt: report.startedAt, updatedAt: report.completedAt, resources: report.resources.filter((resource) => resource.status !== 'skipped').map(({ kind, id, path, decision }) => ({ kind, id, path, decision: decision as 'add' | 'replace', publication: 'published' })) }, ...previous.filter((item) => item.operationId !== report.operationId)]);
+      setImportPreview(null);
+      onRestored();
+    } catch (error) { setImportExecutionError(error); setImportPreview(null); await refreshImportOperations(); }
+    finally { setImportExecuting(false); }
+  }
+
+  async function runImportRecovery(operationId: string): Promise<void> {
+    if (importRecoveryBusy) return;
+    setImportRecoveryBusy(operationId); setImportExecutionError(null); setImportRecoveryResult(null);
+    try {
+      const status = await api.recoverImportOperation(operationId);
+      setImportOperations((previous) => previous.map((item) => item.operationId === operationId ? status : item));
+      setImportRecoveryResult(status.failure?.code === 'STAGING_INTERRUPTED'
+        ? `Import recovery ${status.state} · operation ${operationId}. The interruption happened before publication; no destination resources were changed.`
+        : `Import recovery ${status.state} · operation ${operationId}. Files changed outside this operation were preserved.`);
+      onRestored();
+    } catch (error) { setImportExecutionError(error); await refreshImportOperations(); }
+    finally { setImportRecoveryBusy(null); }
+  }
+
+  async function runImportRetry(operationId: string): Promise<void> {
+    if (importRecoveryBusy) return;
+    setImportRecoveryBusy(operationId); setImportExecutionError(null);
+    try {
+      const report = await api.retryImportOperation(operationId);
+      setImportExecution(report);
+      setImportOperations((previous) => previous.map((item) => item.operationId === operationId ? { ...item, state: 'committed', updatedAt: report.completedAt, resources: item.resources.map((resource) => ({ ...resource, publication: resource.decision === 'skip' ? 'skipped' : 'published' })) } : item));
+      onRestored();
+    } catch (error) { setImportExecutionError(error); await refreshImportOperations(); }
+    finally { setImportRecoveryBusy(null); }
   }
 
   async function runValidate(): Promise<void> {
@@ -254,12 +324,24 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
         </div>
 
         <div className="space-y-2.5 rounded-md border p-3">
-          <h3 className="text-xs font-semibold">Preview import</h3>
-          <p className="text-[11px] text-muted-foreground">Read-only validation and conflict preview. No files will be imported.</p>
+          <h3 className="text-xs font-semibold">Import workspace</h3>
+          <p className="text-[11px] text-muted-foreground">Preview the package, review each resource, then confirm. The server validates the preview again before writing.</p>
           <label className="text-[11px] font-medium text-muted-foreground" htmlFor="portable-import-source">Source folder</label>
-          <div className="flex flex-col gap-2 sm:flex-row"><Input id="portable-import-source" value={importSource} onChange={(event) => { setImportSource(event.target.value); setImportPreview(null); setImportPreviewError(null); }} placeholder="/absolute/path/to/export" disabled={importPreviewing || busy} className="h-8 font-mono text-[11px]" /><Button type="button" size="sm" onClick={() => void runImportPreview()} disabled={importPreviewing || busy || importSource.trim() === ''}>{importPreviewing ? 'Checking…' : 'Preview import'}</Button></div>
+          <div className="flex flex-col gap-2 sm:flex-row"><Input id="portable-import-source" value={importSource} onChange={(event) => { setImportSource(event.target.value); setImportPreview(null); setImportPreviewError(null); setImportExecution(null); setImportExecutionError(null); setImportDecisionChoices({}); }} placeholder="/absolute/path/to/export" disabled={importPreviewing || importExecuting || busy} className="h-8 font-mono text-[11px]" /><Button type="button" size="sm" onClick={() => void runImportPreview()} disabled={importPreviewing || importExecuting || busy || importSource.trim() === ''}>{importPreviewing ? <><Loader2 className="animate-spin" data-icon="inline-start" />Previewing…</> : 'Preview import'}</Button></div>
+          {importPreviewing && <p role="status" className="text-[11px] text-muted-foreground">Validating package and comparing resources…</p>}
           {importPreviewError !== null && <AlertBlock><span>{errorMessage(importPreviewError)}</span>{issuesOf(importPreviewError) === undefined ? null : <IssueList issues={issuesOf(importPreviewError)!} />}{pathsOf(importPreviewError) === undefined ? null : <PathList paths={pathsOf(importPreviewError)!} />}</AlertBlock>}
-          {importPreview && <div role="status" className="space-y-1 text-[11px]"><p>Validated {importPreview.format === 'legacy-directory' ? 'legacy directory' : `portable export v${importPreview.manifestVersion}`} — {importPreview.counts.notes} notes, {importPreview.counts.databases} databases, {importPreview.counts.databaseViews} views, {importPreview.counts.attachments} attachments.</p><p>{importPreview.resources.filter((resource) => resource.status === 'new').length} new · {importPreview.resources.filter((resource) => resource.status === 'identical').length} identical · {importPreview.conflicts.length} conflicts</p>{importPreview.conflicts.map((conflict) => <p key={`${conflict.kind}:${conflict.id}`} className="text-destructive">{conflict.kind} {conflict.id}: {conflict.reason} (available: {conflict.safeChoices.join(', ')})</p>)}{importPreview.warnings.map((warning) => <p key={warning} className="text-amber-700 dark:text-amber-300">{warning}</p>)}</div>}
+          {importPreview && <div className="space-y-3 text-[11px]"><div role="status" className="space-y-1"><p>Validated {importPreview.format === 'legacy-directory' ? 'legacy directory' : `portable export v${importPreview.manifestVersion}`} — {importPreview.counts.notes} notes, {importPreview.counts.databases} databases, {importPreview.counts.databaseViews} views, {importPreview.counts.attachments} attachments, {importPreview.counts.otherResources} other resources.</p><p>{importPreview.resources.filter((resource) => resource.status === 'new').length} new · {importPreview.resources.filter((resource) => resource.status === 'identical').length} identical · {importPreview.conflicts.length} conflicts</p><p>Preview valid until {new Date(importPreview.expiresAt).toLocaleTimeString()}.</p></div>
+            {importPreview.resources.length > 0 && <ul aria-label="Import resource decisions" className="max-h-72 space-y-2 overflow-auto rounded-md border p-2">{importPreview.resources.map((resource) => { const key = importResourceKey(resource); const choice = importDecisionChoices[key] ?? 'skip'; return <li key={key} className="rounded border p-2"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{resource.kind} · {resource.status}</span><span className="break-all font-mono text-muted-foreground">{resource.path}</span></div>{resource.reason && <p className="mt-1 text-destructive">{resource.reason}</p>}<div className="mt-2 flex flex-wrap gap-1" aria-label={`Actions for ${resource.kind} ${resource.id}`}>{resource.safeChoices.map((option) => <Button key={option} type="button" size="sm" variant={choice === option ? 'secondary' : 'outline'} aria-pressed={choice === option} onClick={() => { setImportDecisionChoices((previous) => ({ ...previous, [key]: option })); setImportReplacingConfirmed(false); }} disabled={importExecuting}>{option === 'add' ? 'Add' : option === 'replace' ? 'Replace' : 'Skip'}</Button>)}</div></li>; })}</ul>}
+            {importPreview.warnings.map((warning) => <p key={warning} role="note" className="text-amber-700 dark:text-amber-300">{warning}</p>)}
+            {importPreview.errors.map((error) => <p key={error} role="alert" className="text-destructive">{error}</p>)}
+            {importPreview.resources.some((resource) => importDecisionChoices[importResourceKey(resource)] === 'replace') && <label className="flex items-start gap-2 rounded-md border border-destructive/30 p-2"><Checkbox checked={importReplacingConfirmed} onCheckedChange={(checked) => setImportReplacingConfirmed(checked === true)} disabled={importExecuting} /><span>I reviewed the listed destination files and explicitly approve replacing those exact resources.</span></label>}
+            {importPreview.resources.length === 0 ? <p className="text-muted-foreground">This source contains no supported resources to import.</p> : <Button type="button" size="sm" onClick={() => void runImportExecution()} disabled={importExecuting || importPreview.resources.some((resource) => !resource.safeChoices.includes(importDecisionChoices[importResourceKey(resource)] ?? 'skip')) || importPreview.resources.some((resource) => importDecisionChoices[importResourceKey(resource)] === 'replace') && !importReplacingConfirmed}>{importExecuting ? <><Loader2 className="animate-spin" data-icon="inline-start" />Importing…</> : 'Confirm and import'}</Button>}
+          </div>}
+          {importExecuting && <p role="status" className="text-[11px] text-muted-foreground">Staging and publishing validated resources. Keep Nodus open until completion is reported.</p>}
+          {importExecutionError !== null && <AlertBlock><span>{errorMessage(importExecutionError)}</span><Button type="button" size="sm" variant="outline" onClick={() => void runImportPreview()} disabled={importPreviewing || importExecuting}>Create a fresh preview</Button></AlertBlock>}
+          {importExecution && <SuccessBlock><span>Import {importExecution.state} · operation {importExecution.operationId}</span><span className="block">{importExecution.resources.filter((resource) => resource.status === 'published').length} published, {importExecution.resources.filter((resource) => resource.status === 'skipped').length} skipped. Every published resource passed final checksum verification.</span></SuccessBlock>}
+          {importRecoveryResult !== null && <SuccessBlock><span>{importRecoveryResult}</span></SuccessBlock>}
+          {importOperations.some((operation) => operation.state === 'staging' || operation.state === 'publishing' || operation.state === 'recovery-required' || operation.state === 'staged' || operation.state === 'corrupt') && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-[11px]"><p className="font-semibold">An import operation needs recovery or inspection.</p>{importOperations.filter((operation) => operation.state === 'staging' || operation.state === 'publishing' || operation.state === 'recovery-required' || operation.state === 'staged' || operation.state === 'corrupt').map((operation) => <div key={operation.operationId} className="flex flex-wrap items-center justify-between gap-2"><span>{operation.operationId} · {operation.state} · {operation.resources.length} resources</span>{operation.state !== 'corrupt' && <div className="flex flex-wrap gap-1">{(operation.state === 'publishing' || operation.state === 'recovery-required') && <Button type="button" size="sm" variant="outline" onClick={() => void runImportRetry(operation.operationId)} disabled={importRecoveryBusy !== null}>{importRecoveryBusy === operation.operationId ? <><Loader2 className="animate-spin" data-icon="inline-start" />Retrying…</> : 'Retry safely'}</Button>}<Button type="button" size="sm" variant="outline" onClick={() => void runImportRecovery(operation.operationId)} disabled={importRecoveryBusy !== null}>{importRecoveryBusy === operation.operationId ? <><Loader2 className="animate-spin" data-icon="inline-start" />Recovering…</> : operation.state === 'staging' ? 'Recover staging safely' : 'Roll back safely'}</Button></div>}</div>)}{importOperations.filter((operation) => operation.state === 'corrupt').map((operation) => <p key={operation.operationId}>{operation.failure?.message ?? 'Recovery journal is unreadable.'} Preserve recovery files and inspect manually.</p>)}<p>Retry revalidates every staged and destination resource. Rollback changes only files still proven to belong to this operation; ambiguous files are left untouched.</p></div>}
         </div>
 
         <div className="space-y-2.5">

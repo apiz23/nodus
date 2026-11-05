@@ -5,7 +5,7 @@
  * deliberately contain no filesystem, Node, or relay types.
  */
 
-import type { BackupManifest, ExportReport, FolderImpact, ImportPreview, VaultAttachment } from '../storage/contracts.js';
+import type { BackupManifest, ExportReport, FolderImpact, ImportExecutionReport, ImportOperationStatus, ImportPreview, ImportPreviewResponse, VaultAttachment } from '../storage/contracts.js';
 import type { DatabaseView, DatabaseViewDiagnostic } from '../database/database-view.js';
 import type { AutomationExecution, DatabaseAutomation } from '../database/automations.js';
 import type {
@@ -29,6 +29,9 @@ export type {
   ExportReport,
   ImportReport,
   ImportPreview,
+  ImportPreviewResponse,
+  ImportExecutionReport,
+  ImportOperationStatus,
   RestorePreview,
 } from '../storage/contracts.js';
 

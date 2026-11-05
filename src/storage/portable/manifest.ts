@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readdir } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { StorageError } from '../errors.js';
+import { IMPORT_MAX_FILESYSTEM_ENTRIES, IMPORT_MAX_MANIFEST_BYTES, IMPORT_MAX_PATH_DEPTH, IMPORT_MAX_RESOURCE_BYTES, validateImportResourceLimits, readBoundedImportFile } from './limits.js';
 
 export const PORTABLE_EXPORT_FORMAT = 'nodus-portable-export' as const;
 export const PORTABLE_EXPORT_VERSION = 1 as const;
@@ -72,6 +73,10 @@ export function validatePortableManifest(value: unknown): asserts value is Porta
   if (!isRecord(value.formats) || Object.keys(SUPPORTED_FORMATS).some((key) => !Number.isSafeInteger(value.formats[key]) || (value.formats[key] as number) < 1)) throw invalid('Manifest format metadata is missing or invalid.');
   for (const [key, supported] of Object.entries(SUPPORTED_FORMATS)) if ((value.formats[key] as number) > supported) throw new StorageError('UNSUPPORTED_VERSION', `Portable export contains unsupported ${key} format version ${String(value.formats[key])}.`);
   if (!Array.isArray(value.resources) || !Array.isArray(value.folders) || !Array.isArray(value.excluded)) throw invalid('Manifest resources, folders, and exclusions are required arrays.');
+  validateImportResourceLimits(
+    value.resources.filter(isRecord).map((resource) => ({ path: typeof resource.path === 'string' ? resource.path : '', bytes: typeof resource.bytes === 'number' ? resource.bytes : -1 })),
+    value.folders.filter((folder): folder is string => typeof folder === 'string'),
+  );
   if (value.requiredFeatures !== undefined && (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.some((feature) => typeof feature !== 'string' || !SUPPORTED_FEATURES.has(feature)))) throw new StorageError('UNSUPPORTED_VERSION', 'Portable export requires an unsupported feature.');
   if (value.app !== undefined && (!isRecord(value.app) || typeof value.app.name !== 'string' || typeof value.app.version !== 'string')) throw invalid('Optional app metadata is invalid.');
   const ids = new Set<string>(); const paths = new Set<string>();
@@ -91,41 +96,56 @@ export function validatePortableManifest(value: unknown): asserts value is Porta
 }
 
 export async function validatePortableExport(directory: string): Promise<PortableExportManifest> {
+  const { manifest } = await readPortableExportManifest(directory);
+  await validatePortableExportContents(directory, manifest);
+  return manifest;
+}
+
+/** Reads the manifest once and returns the exact bytes used for fingerprinting. */
+export async function readPortableExportManifest(directory: string): Promise<{ manifest: PortableExportManifest; rawBytes: Buffer }> {
   const root = resolve(directory); const manifestPath = join(root, PORTABLE_EXPORT_MANIFEST);
-  let manifest: PortableExportManifest;
+  let rawBytes: Buffer;
+  let manifest: unknown;
   try {
     const info = await lstat(manifestPath);
     if (!info.isFile() || info.isSymbolicLink()) throw invalid('Portable export manifest must be a regular file.');
-    manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as PortableExportManifest;
+    rawBytes = await readBoundedImportFile(manifestPath, PORTABLE_EXPORT_MANIFEST, IMPORT_MAX_MANIFEST_BYTES);
+    manifest = JSON.parse(rawBytes.toString('utf8')) as unknown;
   }
   catch (error) { throw new StorageError('INVALID_CONTENT', `Portable export manifest is missing or malformed: ${error instanceof Error ? error.message : String(error)}`, { path: PORTABLE_EXPORT_MANIFEST, cause: error }); }
   validatePortableManifest(manifest);
-  await validatePortableExportContents(directory, manifest);
-  return manifest;
+  return { manifest, rawBytes };
+}
+
+/** Rechecks paths, folders and symlink safety without rereading payload bytes. */
+export async function validatePortableExportInventory(directory: string, manifest: PortableExportManifest, options: { manifestPresent?: boolean } = {}): Promise<void> {
+  const root = resolve(directory);
+  validatePortableManifest(manifest);
+  const files = new Set<string>(); const dirs = new Set<string>();
+  await inventory(root, '', files, dirs, { count: 0 });
+  const hasManifest = files.has(PORTABLE_EXPORT_MANIFEST);
+  if (options.manifestPresent === false && hasManifest) throw invalid('Completion manifest was present before the final publication step.');
+  if (options.manifestPresent !== false && !hasManifest) throw invalid('Portable completion manifest is missing.');
+  const expected = new Set([...manifest.resources.map((resource) => resource.path), ...(hasManifest ? [PORTABLE_EXPORT_MANIFEST] : [])]);
+  for (const file of files) if (!expected.has(file)) throw invalid(`Unmanifested file in portable export: ${file}`);
+  for (const path of expected) if (!files.has(path)) throw invalid(`Portable resource is missing: ${path}`);
+  const expectedFolders = new Set(manifest.folders);
+  for (const dir of dirs) if (!expectedFolders.has(dir)) throw invalid(`Unmanifested directory in portable export: ${dir}`);
+  for (const dir of expectedFolders) if (!dirs.has(dir)) throw invalid(`Portable export folder is missing: ${dir}`);
 }
 
 /** Validates payload files before the completion manifest is published. */
 export async function validatePortableExportContents(directory: string, manifest: PortableExportManifest, options: { manifestPresent?: boolean } = {}): Promise<void> {
   const root = resolve(directory);
   validatePortableManifest(manifest);
-  const files = new Set<string>(); const dirs = new Set<string>();
-  await inventory(root, '', files, dirs);
-  const hasManifest = files.has(PORTABLE_EXPORT_MANIFEST);
-  if (options.manifestPresent === false && hasManifest) throw invalid('Completion manifest was present before the final publication step.');
-  if (options.manifestPresent !== false && !hasManifest) throw invalid('Portable completion manifest is missing.');
-  const expected = new Set([...manifest.resources.map((resource) => resource.path), ...(hasManifest ? [PORTABLE_EXPORT_MANIFEST] : [])]);
+  await validatePortableExportInventory(root, manifest, options);
   for (const resource of manifest.resources) {
-    if (!files.has(resource.path)) throw invalid(`Portable resource is missing: ${resource.path}`);
     const path = join(root, ...resource.path.split('/')); const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink()) throw invalid(`Portable resource is not a regular file: ${resource.path}`);
-    const bytes = await readFile(path);
+    const bytes = await readBoundedImportFile(path, resource.path, IMPORT_MAX_RESOURCE_BYTES);
     if (bytes.byteLength !== resource.bytes) throw invalid(`Portable resource size is incorrect: ${resource.path}`);
     if (sha256(bytes) !== resource.sha256) throw invalid(`Portable resource checksum is incorrect: ${resource.path}`);
   }
-  for (const file of files) if (!expected.has(file)) throw invalid(`Unmanifested file in portable export: ${file}`);
-  const expectedFolders = new Set(manifest.folders);
-  for (const dir of dirs) if (!expectedFolders.has(dir)) throw invalid(`Unmanifested directory in portable export: ${dir}`);
-  for (const dir of expectedFolders) if (!dirs.has(dir)) throw invalid(`Portable export folder is missing: ${dir}`);
 }
 
 export function serializePortableManifest(manifest: PortableExportManifest): Buffer {
@@ -137,13 +157,16 @@ function compareResource(a: PortableExportResource, b: PortableExportResource): 
 function compareText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 function invalid(message: string): StorageError { return new StorageError('INVALID_CONTENT', message); }
-async function inventory(root: string, relative: string, files: Set<string>, dirs: Set<string>): Promise<void> {
+async function inventory(root: string, relative: string, files: Set<string>, dirs: Set<string>, budget: { count: number }): Promise<void> {
   const names = await readdir(relative === '' ? root : join(root, ...relative.split('/')), { withFileTypes: true });
   for (const item of names) {
+    budget.count += 1;
+    if (budget.count > IMPORT_MAX_FILESYSTEM_ENTRIES) throw invalid(`Portable export inventory exceeds the ${IMPORT_MAX_FILESYSTEM_ENTRIES}-entry limit.`);
     const path = relative === '' ? item.name : `${relative}/${item.name}`;
+    if (path.split('/').length > IMPORT_MAX_PATH_DEPTH) throw invalid(`Portable export path exceeds the ${IMPORT_MAX_PATH_DEPTH}-segment depth limit: ${path}`);
     const info = await lstat(join(root, ...path.split('/')));
     if (info.isSymbolicLink()) throw invalid(`Symbolic links are not permitted in portable exports: ${path}`);
-    if (item.isDirectory()) { dirs.add(path); await inventory(root, path, files, dirs); }
+    if (item.isDirectory()) { dirs.add(path); await inventory(root, path, files, dirs, budget); }
     else if (item.isFile()) files.add(path);
     else throw invalid(`Unsupported filesystem entry in portable export: ${path}`);
   }

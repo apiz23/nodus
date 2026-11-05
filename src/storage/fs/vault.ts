@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir, rm } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type {
   AutomationStore,
   DatabaseStore,
@@ -36,7 +36,7 @@ import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type 
 import { parseDatabaseViewOrder, resolveDatabaseViewOrder, serializeDatabaseViewOrder } from '../../database/database-view-order.js';
 import { resolveLink } from '../../links/wikilink.js';
 import { addNoteDatabaseMembership, setNotePropertyValue, setNotePropertyValuesAtomically, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
-import { relationWriteIssue } from '../../database/relations.js';
+import { configurationIssues, projectRelations, relationWriteIssue } from '../../database/relations.js';
 import {
   mutatePropertyCatalog as applyPropertyCatalogMutation,
   parsePropertyCatalog,
@@ -55,13 +55,16 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { linkFileAtomicExclusive, writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, TEMP_PREFIX, isReservedNotePath } from './layout.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, IMPORT_TRANSACTION_DIR, TEMP_PREFIX, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
 import { attachmentPathId, createAttachmentPath, markdownReferencesAttachment, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from './attachments.js';
 import { createVaultFolder, deleteVaultFolder, inspectVaultFolder, listVaultFolders, moveVaultFolder } from './folders.js';
 import { SnapshotReconciler, type SnapshotReconciler as SnapshotReconcilerType, type SnapshotReconcilerOptions } from './snapshot-reconciler.js';
+import { fingerprintPlan, fingerprintResourceInventory, fingerprintSnapshot } from '../portable/fingerprints.js';
+import { validateImportResourceDecisions, type ImportConflictDecision, type ImportPreviewBinding } from '../portable/preview-session.js';
+import { planImport, selectImportPlan } from '../portable/import.js';
 
 interface ParsedNote {
   note: Note;
@@ -91,6 +94,47 @@ interface TemplateApplyTransactionManifest {
   sourceTemplateId: string;
   databaseId: string;
   files: TemplateApplyTransactionFile[];
+}
+
+interface ImportTransactionFile {
+  kind: string;
+  id: string;
+  path: string;
+  decision: 'add' | 'replace';
+  sourceSha256: string;
+  size: number;
+  stagedName: string;
+  destinationSha256: string | null;
+  backupName?: string;
+  publication: 'staged' | 'published' | 'restored' | 'pending';
+  publishedDev?: string;
+  publishedIno?: string;
+  replacementTempName?: string;
+}
+
+interface ImportTransactionFolder {
+  path: string;
+  state: 'pending' | 'created' | 'retained' | 'removed';
+  dev?: string;
+  ino?: string;
+}
+
+interface ImportTransactionJournal {
+  format: 'nodus-import-transaction';
+  version: 1;
+  operationId: string;
+  state: 'staging' | 'staged' | 'publishing' | 'committed' | 'rolled-back' | 'recovery-required';
+  sourceFingerprint: string;
+  destinationFingerprint: string;
+  startedAt: string;
+  updatedAt: string;
+  files: ImportTransactionFile[];
+  decisions: ImportConflictDecision[];
+  folders: ImportTransactionFolder[];
+  baselineResources?: Array<{ kind: string; id: string; path: string; bytes: number; sha256: string }>;
+  baselineFolders?: string[];
+  baselineExcluded?: Array<{ path: string; reason: string }>;
+  failure?: { code: string; message: string };
 }
 
 export interface DatabaseRowsVaultSnapshot {
@@ -1275,23 +1319,26 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   /** Captures every Nodus-managed portable resource while holding one root lock. */
   async snapshotForPortableExport(): Promise<PortableExportSnapshot> {
-    return withVaultRootLock(this.root, async () => {
-      const entries = await this.snapshotUnlocked();
-      const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
-      const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
-      const automationFiles = await this.listDatabaseAutomationFilesUnlocked();
-      const templateFiles = await this.listTemplateFilesUnlocked();
-      const represented = new Set([
-        ...entries.map((entry) => entry.path),
-        ...databaseViewOrders.map((entry) => entry.path),
-        ...automationFiles.map((entry) => entry.path),
-        ...templateFiles.map((entry) => entry.path),
-        ...(propertyCatalog ? [propertyCatalog.path] : []),
-      ]);
-      const excluded: Array<{ path: string; reason: string }> = [];
-      await this.collectPortableExclusions(this.root, '', represented, excluded);
-      return { entries, propertyCatalog, databaseViewOrders, automationFiles, templateFiles, folders: (await walkVault(this.root)).folders, excluded };
-    });
+    return withVaultRootLock(this.root, () => this.snapshotForPortableExportUnlocked());
+  }
+
+  /** Caller must hold the root lock. */
+  private async snapshotForPortableExportUnlocked(allowedImportOperationId?: string): Promise<PortableExportSnapshot> {
+    const entries = await this.snapshotUnlocked(allowedImportOperationId);
+    const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
+    const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
+    const automationFiles = await this.listDatabaseAutomationFilesUnlocked();
+    const templateFiles = await this.listTemplateFilesUnlocked();
+    const represented = new Set([
+      ...entries.map((entry) => entry.path),
+      ...databaseViewOrders.map((entry) => entry.path),
+      ...automationFiles.map((entry) => entry.path),
+      ...templateFiles.map((entry) => entry.path),
+      ...(propertyCatalog ? [propertyCatalog.path] : []),
+    ]);
+    const excluded: Array<{ path: string; reason: string }> = [];
+    await this.collectPortableExclusions(this.root, '', represented, excluded);
+    return { entries, propertyCatalog, databaseViewOrders, automationFiles, templateFiles, folders: (await walkVault(this.root)).folders, excluded };
   }
 
   /** Inventory non-portable paths under the same lock; never follows symlinks. */
@@ -1300,7 +1347,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     children.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     for (const child of children) {
       const path = relative === '' ? child.name : `${relative}/${child.name}`;
-      if (path === '.nodus-vault-write.lock' || path.startsWith(`${TEMPLATE_APPLY_TRANSACTION_PREFIX}`)) continue;
+      if (path === '.nodus-vault-write.lock' || path === IMPORT_TRANSACTION_DIR || path.startsWith(`${TEMPLATE_APPLY_TRANSACTION_PREFIX}`)) continue;
       if (child.isSymbolicLink()) { excluded.push({ path, reason: 'Symbolic links are not followed by portable export.' }); continue; }
       if (child.isDirectory()) {
         if (child.name.startsWith('.') && ![DATABASE_VIEW_ORDER_DIR, '.nodus-automations', '.nodus-templates'].includes(path)) {
@@ -1319,8 +1366,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return withVaultRootLock(this.root, () => this.readPropertyCatalogFileUnlocked());
   }
 
-  private async snapshotUnlocked(): Promise<VaultEntry[]> {
+  private async snapshotUnlocked(allowedImportOperationId?: string): Promise<VaultEntry[]> {
     await this.assertTemplateTransactionsSnapshotSafe();
+    await this.assertImportTransactionsSnapshotSafe(allowedImportOperationId);
     const notes = await this.parseNotesStrict();
     const databases = await this.parseDatabasesStrict();
     const views = await this.parseDatabaseViewsStrict();
@@ -1373,6 +1421,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       if (manifest === null || manifest.state !== 'committed') {
         throw new StorageError('PARTIAL_WRITE', 'An interrupted database template application prevents a consistent backup or export. Retry an explicit database template apply to attempt recovery, then try again.', { details: { paths: [transactionPath] } });
       }
+    }
+  }
+
+  private async assertImportTransactionsSnapshotSafe(allowedOperationId?: string): Promise<void> {
+    const operations = await this.listImportOperationsUnlocked();
+    const incomplete = operations.filter((operation) => operation.operationId !== allowedOperationId && ['staging', 'staged', 'publishing', 'recovery-required', 'corrupt'].includes(operation.state));
+    if (incomplete.length > 0) {
+      const paths = incomplete.map((operation) => `${IMPORT_TRANSACTION_DIR}/${operation.operationId}`);
+      throw new StorageError('PARTIAL_WRITE', 'An incomplete or corrupt import transaction prevents a consistent backup or export. Preserve the journal and recover or inspect it before taking a snapshot.', { details: { paths } });
     }
   }
 
@@ -1449,6 +1506,25 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     await this.inspectTemplateHealth(issues);
+
+    try {
+      // Health is also called from diagnostics while a writer owns the vault
+      // lock. Journals use atomic replacement, so inspect them without waiting
+      // on that lock to avoid blocking the active-writer health report.
+      for (const operation of await this.listImportOperationsUnlocked()) {
+        if (['staging', 'staged', 'publishing', 'recovery-required', 'corrupt'].includes(operation.state)) {
+          issues.push({
+            code: operation.state === 'corrupt' ? 'INVALID_CONTENT' : 'INCOMPLETE_WRITE',
+            path: `${IMPORT_TRANSACTION_DIR}/${operation.operationId}`,
+            message: operation.state === 'corrupt'
+              ? `Import recovery data needs manual inspection: ${operation.failure?.message ?? 'journal validation failed'}`
+              : `Import operation ${operation.state} requires review in Settings → Backup & restore. Its recovery journal and staged resources are preserved.`,
+          });
+        }
+      }
+    } catch (error) {
+      issues.push({ code: 'INCOMPLETE_WRITE', path: IMPORT_TRANSACTION_DIR, message: `Could not inspect import recovery state: ${describe(error)}. Preserve this directory and inspect it before further imports.` });
+    }
 
     return {
       notes: sortByPath(notes),
@@ -1560,7 +1636,646 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
-  private async applyImportLocked(plan: ImportPlan, options: ImportOptions): Promise<ImportReport> {
+  /** Executes only preview-bound decisions through a durable, recoverable publication journal. */
+  async applyReviewedImport(
+    plan: ImportPlan,
+    binding: ImportPreviewBinding,
+    decisions: ImportConflictDecision[],
+  ): Promise<import('../contracts.js').ImportExecutionReport> {
+    validateImportResourceDecisions(binding, decisions);
+    if (resolve(this.root) !== binding.destinationPath) throw new StorageError('STALE_PREVIEW', 'The active destination vault differs from the reviewed preview. Create a new preview in this workspace.');
+    if (fingerprintPlan(plan) !== binding.sourceFingerprint) throw new StorageError('STALE_PREVIEW', 'The import source no longer matches the reviewed preview. Create a new preview.');
+    const selectedPlan = selectImportPlan(plan, decisions);
+    const chosen = decisions.filter((decision) => decision.choice !== 'skip');
+    const operationId = randomUUID();
+    const startedAt = new Date().toISOString();
+    if (chosen.length === 0) return {
+      operationId, state: 'completed', startedAt, completedAt: new Date().toISOString(),
+      counts: { notes: 0, databases: 0, databaseViews: 0 },
+      resources: decisions.map((decision) => ({ kind: decision.kind, id: decision.id, path: decision.path, decision: decision.choice, status: 'skipped' })),
+    };
+    const stagedFiles = new Map<string, Buffer>();
+    const stagedPaths = new Map<string, string>();
+    const resources: ImportTransactionFile[] = [];
+    const payloads: Array<{ resource: ImportTransactionFile; bytes: Buffer }> = [];
+    for (const [index, decision] of chosen.entries()) {
+      const bindingResource = binding.resourceBindings!.find((resource) => resource.kind === decision.kind && resource.id === decision.id && resource.path === decision.path)!;
+      const bytes = Buffer.from(planResourceBytes(plan, decision.kind, decision.id, decision.path));
+      if (sha256Hex(bytes) !== bindingResource.sourceSha256) throw new StorageError('STALE_PREVIEW', `Source resource ${decision.path} changed after preview.`, { path: decision.path });
+      const resource: ImportTransactionFile = {
+        kind: decision.kind, id: decision.id, path: decision.path,
+        decision: decision.choice as 'add' | 'replace', sourceSha256: bindingResource.sourceSha256,
+        size: bytes.byteLength, stagedName: `resource-${String(index).padStart(6, '0')}.bin`,
+        destinationSha256: bindingResource.destinationSha256 ?? null, publication: 'staged',
+      };
+      resources.push(resource);
+      payloads.push({ resource, bytes });
+    }
+    const transactionRoot = await this.ensureImportTransactionRoot();
+    const transactionDirectory = join(transactionRoot, operationId);
+    await mkdir(transactionDirectory, { mode: 0o700 });
+    const stagedDirectory = join(transactionDirectory, 'staged');
+    const backupDirectory = join(transactionDirectory, 'backup');
+    let journal: ImportTransactionJournal = {
+      format: 'nodus-import-transaction', version: 1, operationId, state: 'staging',
+      sourceFingerprint: binding.sourceFingerprint, destinationFingerprint: binding.destinationFingerprint,
+      startedAt, updatedAt: new Date().toISOString(), files: resources, decisions: decisions.map((decision) => ({ ...decision })), folders: [],
+    };
+    try { await this.writeImportJournal(transactionDirectory, journal); }
+    catch (error) {
+      await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
+      throw error;
+    }
+    try {
+      await mkdir(stagedDirectory, { mode: 0o700 });
+      await mkdir(backupDirectory, { mode: 0o700 });
+      for (const { resource, bytes } of payloads) {
+        const stagedPath = join(stagedDirectory, resource.stagedName);
+        await this.writeImportStagedFile(stagedPath, bytes);
+        const staged = await readFile(stagedPath);
+        if (sha256Hex(staged) !== resource.sourceSha256 || staged.byteLength !== resource.size) throw new StorageError('INVALID_CONTENT', `Could not verify staged resource ${resource.path}.`, { path: resource.path });
+        stagedFiles.set(resource.path, staged);
+        stagedPaths.set(resource.path, stagedPath);
+      }
+    } catch (error) {
+      await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
+      throw error;
+    }
+    journal = { ...journal, state: 'staged', updatedAt: new Date().toISOString() };
+    await this.writeImportJournal(transactionDirectory, journal);
+
+    try {
+      const counts = await withVaultRootLock(this.root, async () => {
+        const current = await this.snapshotForPortableExportUnlocked(operationId);
+        if (fingerprintSnapshot(current) !== binding.destinationFingerprint) throw new StorageError('STALE_PREVIEW', 'The destination changed after preview. Create a new preview and review conflicts again.');
+        this.assertReviewedDestination(current, binding, chosen);
+        await this.validateReviewedImportDependencies(selectedPlan);
+        journal = { ...journal, baselineResources: snapshotResourceInventory(current), baselineFolders: [...current.folders], baselineExcluded: current.excluded.map((item) => ({ ...item })) };
+        const currentByResource = snapshotResourceBytes(current);
+        for (const resource of journal.files) {
+          await this.validateInternalPath(resource.path);
+          if (resource.decision === 'replace') {
+            const original = currentByResource.get(JSON.stringify([resource.kind, resource.id, resource.path]));
+            if (!original || sha256Hex(original) !== resource.destinationSha256) throw new StorageError('STALE_PREVIEW', `The replacement target ${resource.path} no longer matches the preview.`, { path: resource.path });
+            const backupName = `resource-${String(resources.indexOf(resource)).padStart(6, '0')}.bin`;
+            await writeFileAtomic(join(backupDirectory, backupName), original, { mode: 0o600 });
+            resource.backupName = backupName;
+          }
+        }
+        journal = { ...journal, state: 'publishing', folders: this.importDirectories(selectedPlan, journal.files).map((path) => ({ path, state: 'pending' })), updatedAt: new Date().toISOString() };
+        await this.writeImportJournal(transactionDirectory, journal);
+        try {
+          await this.ensureImportDirectories(transactionDirectory, journal);
+          const report = await this.applyImportLocked(
+            selectedPlan, { overwrite: true }, stagedFiles,
+            new Set(journal.files.filter((file) => file.decision === 'add').map((file) => file.path)), stagedPaths,
+            async (path) => {
+              const file = journal.files.find((item) => item.path === path);
+              if (!file) return;
+              const info = await lstat(await this.validateInternalPath(path), { bigint: true });
+              file.publication = 'published'; file.publishedDev = String(info.dev); file.publishedIno = String(info.ino);
+              journal = { ...journal, updatedAt: new Date().toISOString() };
+              await this.writeImportJournal(transactionDirectory, journal);
+            },
+            async (path, temporaryPath) => {
+              const file = journal.files.find((item) => item.path === path);
+              if (!file || file.decision !== 'replace') return;
+              const info = await lstat(temporaryPath, { bigint: true });
+              if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', `Replacement temporary file is not regular: ${path}.`, { path });
+              file.publication = 'pending';
+              file.publishedDev = String(info.dev);
+              file.publishedIno = String(info.ino);
+              file.replacementTempName = basename(temporaryPath);
+              journal = { ...journal, updatedAt: new Date().toISOString() };
+              await this.writeImportJournal(transactionDirectory, journal);
+            },
+          );
+          const after = await this.snapshotForPortableExportUnlocked(operationId);
+          const afterByResource = snapshotResourceBytes(after);
+          for (const resource of journal.files) {
+            const actual = afterByResource.get(JSON.stringify([resource.kind, resource.id, resource.path]));
+            if (!actual || sha256Hex(actual) !== resource.sourceSha256 || actual.byteLength !== resource.size) throw new StorageError('INVALID_CONTENT', `Published resource failed final verification: ${resource.path}.`, { path: resource.path });
+            resource.publication = 'published';
+          }
+          journal = { ...journal, state: 'committed', updatedAt: new Date().toISOString() };
+          await this.writeImportJournal(transactionDirectory, journal);
+          return report;
+        } catch (error) {
+          journal = { ...journal, updatedAt: new Date().toISOString(), failure: { code: error instanceof StorageError ? error.code : 'STORAGE_FAILURE', message: error instanceof Error ? error.message : String(error) } };
+          await this.writeImportJournal(transactionDirectory, journal);
+          const rollback = await this.rollbackImportJournal(transactionDirectory, journal);
+          journal = rollback.journal;
+          await this.writeImportJournal(transactionDirectory, journal);
+          if (!rollback.complete) throw new StorageError('PARTIAL_WRITE', 'Import publication failed and rollback requires manual recovery. Recovery data was preserved.', { cause: error, details: { paths: journal.files.filter((file) => file.publication !== 'restored').map((file) => file.path) } });
+          throw new StorageError('PARTIAL_WRITE', 'Import failed; all changes made by this operation were rolled back.', { cause: error, details: { paths: journal.files.map((file) => file.path) } });
+        }
+      });
+      return {
+        operationId, state: 'completed', startedAt, completedAt: new Date().toISOString(), counts,
+        resources: decisions.map((decision) => ({ kind: decision.kind, id: decision.id, path: decision.path, decision: decision.choice, status: decision.choice === 'skip' ? 'skipped' : 'published', ...(decision.choice === 'skip' ? {} : { sha256: binding.resourceBindings!.find((resource) => resource.kind === decision.kind && resource.id === decision.id && resource.path === decision.path)!.sourceSha256 }) })),
+      };
+    } catch (error) {
+      if (journal.state === 'staged') {
+        journal = { ...journal, state: 'rolled-back', updatedAt: new Date().toISOString(), failure: { code: error instanceof StorageError ? error.code : 'STORAGE_FAILURE', message: error instanceof Error ? error.message : String(error) } };
+        await this.writeImportJournal(transactionDirectory, journal).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      this.noteSnapshot.clear();
+    }
+  }
+
+  async listImportOperations(): Promise<import('../contracts.js').ImportOperationStatus[]> {
+    return withVaultRootLock(this.root, () => this.listImportOperationsUnlocked());
+  }
+
+  private async listImportOperationsUnlocked(): Promise<import('../contracts.js').ImportOperationStatus[]> {
+      const root = join(this.root, IMPORT_TRANSACTION_DIR);
+      let rootInfo;
+      try { rootInfo = await lstat(root); }
+      catch (error) { if (isMissing(error)) return []; throw error; }
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
+      const rootEntries = await readdir(root, { withFileTypes: true });
+      const results: import('../contracts.js').ImportOperationStatus[] = [];
+      for (const entry of rootEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) {
+          const now = new Date().toISOString();
+          results.push({ operationId: entry.name, state: 'corrupt', startedAt: now, updatedAt: now, resources: [], failure: { code: 'UNSAFE_TRANSACTION_ENTRY', message: 'Unexpected file or symbolic link in import recovery storage. Nodus will not modify it; preserve it for manual inspection.' } });
+          continue;
+        }
+        if (!isUuidV4(entry.name)) {
+          const now = new Date().toISOString();
+          results.push({ operationId: entry.name, state: 'corrupt', startedAt: now, updatedAt: now, resources: [], failure: { code: 'UNRECOGNIZED_TRANSACTION', message: 'Unrecognized import recovery directory. Preserve it and inspect manually; Nodus will not modify it.' } });
+          continue;
+        }
+        try {
+          const journal = await this.readImportJournal(join(this.root, IMPORT_TRANSACTION_DIR, entry.name));
+          if (journal.operationId !== entry.name) throw new StorageError('INVALID_CONTENT', 'Import operation ID does not match its journal directory.');
+          results.push(importOperationStatus(journal));
+        } catch (error) {
+          const now = new Date().toISOString();
+          results.push({ operationId: entry.name, state: 'corrupt', startedAt: now, updatedAt: now, resources: [], failure: { code: error instanceof StorageError ? error.code : 'INVALID_CONTENT', message: error instanceof Error ? error.message : 'Import recovery journal is invalid.' } });
+        }
+      }
+      return results;
+  }
+
+  async recoverImportOperation(operationId: string): Promise<import('../contracts.js').ImportOperationStatus> {
+    if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
+    return withVaultRootLock(this.root, async () => {
+      const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
+      let rootInfo;
+      try { rootInfo = await lstat(transactionRoot); } catch (error) { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; }
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
+      const directory = join(this.root, IMPORT_TRANSACTION_DIR, operationId);
+      const journal = await this.readImportJournal(directory);
+      if (journal.operationId !== operationId) throw new StorageError('INVALID_CONTENT', 'Import journal ID does not match its directory.');
+      if (journal.state === 'committed' || journal.state === 'rolled-back' && journal.failure?.code !== 'STAGING_INTERRUPTED') return importOperationStatus(journal);
+      const interruptedDuringStaging = journal.state === 'staging' || journal.state === 'rolled-back' && journal.failure?.code === 'STAGING_INTERRUPTED';
+      const result = await this.rollbackImportJournal(directory, journal);
+      const recovered = {
+        ...result.journal,
+        ...(interruptedDuringStaging && result.complete
+          ? { failure: { code: 'STAGING_INTERRUPTED', message: 'Import staging was interrupted before publication. No destination resources were changed; staged recovery data is retained.' } }
+          : result.complete ? {} : { failure: { code: 'RECOVERY_REQUIRED', message: 'Some resources differ from both the original and staged revisions. No further files were changed; preserve the recovery directory for manual inspection.' } }),
+      };
+      await this.writeImportJournal(directory, recovered);
+      this.noteSnapshot.clear();
+      if (!result.complete) throw new StorageError('PARTIAL_WRITE', 'Import recovery is incomplete. Recovery files were preserved; inspect the listed resource paths.', { details: { paths: recovered.files.filter((file) => file.publication !== 'restored').map((file) => file.path) } });
+      return importOperationStatus(recovered);
+    });
+  }
+
+  async retryImportOperation(operationId: string): Promise<import('../contracts.js').ImportExecutionReport> {
+    if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
+    return withVaultRootLock(this.root, async () => {
+      const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
+      const rootInfo = await lstat(transactionRoot).catch((error) => { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; });
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
+      const transactionDirectory = join(transactionRoot, operationId);
+      let journal = await this.readImportJournal(transactionDirectory);
+      if (journal.operationId !== operationId) throw new StorageError('INVALID_CONTENT', 'Import journal ID does not match its directory.');
+      if (journal.state === 'committed') throw new StorageError('CONFLICT', 'This import operation already completed.');
+      if (journal.state === 'rolled-back') throw new StorageError('CONFLICT', 'This operation was rolled back. Create a fresh preview to retry it.');
+      if (!journal.baselineResources || !journal.baselineFolders || !journal.baselineExcluded) throw new StorageError('INVALID_CONTENT', 'Import journal has no verified destination baseline; preserve it for manual inspection.');
+
+      for (const file of journal.files) {
+        if (!(await this.removeOwnedReplacementTemporary(file))) throw new StorageError('CONFLICT', `A replacement temporary for ${file.path} changed and cannot be safely removed. Preserve the operation for manual recovery.`, { path: file.path });
+      }
+
+      const current = await this.snapshotForPortableExportUnlocked(operationId);
+      const currentBytes = snapshotResourceBytes(current);
+      for (const file of journal.files) {
+        const key = JSON.stringify([file.kind, file.id, file.path]);
+        const bytes = currentBytes.get(key);
+        const hash = bytes === undefined ? undefined : sha256Hex(bytes);
+        if (hash === file.sourceSha256) {
+          const absolute = await this.validateInternalPath(file.path);
+          const targetInfo = await lstat(absolute, { bigint: true });
+          if (file.decision === 'add') {
+            const stagedInfo = await lstat(join(transactionDirectory, 'staged', file.stagedName), { bigint: true });
+            if (targetInfo.dev !== stagedInfo.dev || targetInfo.ino !== stagedInfo.ino) throw new StorageError('CONFLICT', `A resource at ${file.path} has the staged bytes but is not owned by this operation; refusing to adopt or overwrite it.`, { path: file.path });
+          } else if (file.publishedDev !== String(targetInfo.dev) || file.publishedIno !== String(targetInfo.ino)) {
+            throw new StorageError('CONFLICT', `The replacement ${file.path} cannot be proven to belong to this operation. Preserve it for manual recovery.`, { path: file.path });
+          }
+          file.publication = 'published'; file.publishedDev = String(targetInfo.dev); file.publishedIno = String(targetInfo.ino);
+        } else if (hash === file.destinationSha256 || (file.destinationSha256 === null && hash === undefined)) {
+          file.publication = 'pending'; file.publishedDev = undefined; file.publishedIno = undefined;
+        } else {
+          throw new StorageError('CONFLICT', `Resource ${file.path} differs from both its recorded original and staged revisions. No retry changes were made.`, { path: file.path });
+        }
+      }
+
+      const currentFolderPaths = new Set(current.folders);
+      for (const folder of journal.folders) {
+        const absolute = await this.validateInternalPath(folder.path);
+        const info = await lstat(absolute, { bigint: true }).catch((error) => { if (isMissing(error)) return undefined; throw error; });
+        if (folder.state === 'pending' || folder.state === 'removed') {
+          if (info) throw new StorageError('STALE_PREVIEW', `Import folder ${folder.path} appeared after its recorded state; recovery will not adopt it.`, { path: folder.path });
+          continue;
+        }
+        if (!info || !info.isDirectory() || info.isSymbolicLink() || folder.dev !== String(info.dev) || folder.ino !== String(info.ino)) throw new StorageError('STALE_PREVIEW', `Import folder ${folder.path} changed after publication; recovery will not remove or reuse it.`, { path: folder.path });
+      }
+
+      const expectedResources = journal.baselineResources.map((item) => ({ ...item }));
+      const expectedFolders = new Set(journal.baselineFolders);
+      for (const folder of journal.folders) if (['created', 'retained'].includes(folder.state) && isVisibleImportFolder(folder.path)) expectedFolders.add(folder.path);
+      for (const file of journal.files.filter((candidate) => candidate.publication === 'published')) {
+        const key = JSON.stringify([file.kind, file.id, file.path]);
+        const resource = { kind: file.kind, id: file.id, path: file.path, bytes: file.size, sha256: file.sourceSha256 };
+        const index = expectedResources.findIndex((item) => JSON.stringify([item.kind, item.id, item.path]) === key);
+        if (index >= 0) expectedResources[index] = resource;
+        else expectedResources.push(resource);
+        if (file.destinationSha256 === null) for (const folder of visibleParents(file.path)) expectedFolders.add(folder);
+      }
+      const expectedFingerprint = fingerprintResourceInventory(expectedResources, [...expectedFolders], journal.baselineExcluded);
+      if (fingerprintSnapshot(current) !== expectedFingerprint) throw new StorageError('STALE_PREVIEW', 'The workspace changed outside this import operation. No further resources were published; use safe rollback or inspect the workspace.');
+
+      const pending = journal.files.filter((file) => file.publication !== 'published');
+      const startedAt = journal.startedAt;
+      const retrySource = join(transactionDirectory, `retry-${randomUUID()}`);
+      await mkdir(retrySource, { mode: 0o700 });
+      const stagedPaths = new Map<string, string>();
+      const stagedBytes = new Map<string, Buffer>();
+      try {
+        for (const file of journal.files) {
+          const stagedPath = join(transactionDirectory, 'staged', file.stagedName);
+          const bytes = await readFile(stagedPath);
+          const destination = join(retrySource, ...file.path.split('/'));
+          await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+          await writeFileAtomic(destination, bytes, { mode: 0o600 });
+          if (file.publication !== 'published') { stagedPaths.set(file.path, stagedPath); stagedBytes.set(file.path, bytes); }
+        }
+        const completePlan = await planImport(retrySource);
+        const decisions = journal.files.map((file) => ({ kind: file.kind, id: file.id, path: file.path, choice: file.publication === 'published' ? 'skip' as const : file.decision }));
+        const selected = selectImportPlan(completePlan, decisions);
+        if (pending.length === 0) {
+          journal = { ...journal, state: 'committed', updatedAt: new Date().toISOString() };
+          await this.writeImportJournal(transactionDirectory, journal);
+          return { operationId, state: 'completed', startedAt, completedAt: new Date().toISOString(), counts: { notes: 0, databases: 0, databaseViews: 0 }, resources: journal.files.map((file) => ({ kind: file.kind, id: file.id, path: file.path, decision: file.decision, status: 'published', sha256: file.sourceSha256 })) };
+        }
+        await this.validateReviewedImportDependencies(selected);
+        journal = { ...journal, state: 'publishing', updatedAt: new Date().toISOString() };
+        await this.writeImportJournal(transactionDirectory, journal);
+        try {
+          for (const folder of journal.folders) if (folder.state === 'removed') folder.state = 'pending';
+          await this.ensureImportDirectories(transactionDirectory, journal);
+          const counts = await this.applyImportLocked(selected, { overwrite: true }, stagedBytes, new Set(pending.filter((file) => file.decision === 'add').map((file) => file.path)), stagedPaths, async (path) => {
+            const file = journal.files.find((item) => item.path === path);
+            if (!file) return;
+            const info = await lstat(await this.validateInternalPath(path), { bigint: true });
+            file.publication = 'published'; file.publishedDev = String(info.dev); file.publishedIno = String(info.ino);
+            journal = { ...journal, updatedAt: new Date().toISOString() };
+            await this.writeImportJournal(transactionDirectory, journal);
+          }, async (path, temporaryPath) => {
+            const file = journal.files.find((item) => item.path === path);
+            if (!file || file.decision !== 'replace') return;
+            const info = await lstat(temporaryPath, { bigint: true });
+            if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', `Replacement temporary file is not regular: ${path}.`, { path });
+            file.publication = 'pending'; file.publishedDev = String(info.dev); file.publishedIno = String(info.ino);
+            file.replacementTempName = basename(temporaryPath);
+            journal = { ...journal, updatedAt: new Date().toISOString() };
+            await this.writeImportJournal(transactionDirectory, journal);
+          });
+          const after = await this.snapshotForPortableExportUnlocked(operationId);
+          const afterBytes = snapshotResourceBytes(after);
+          for (const file of journal.files) {
+            const actual = afterBytes.get(JSON.stringify([file.kind, file.id, file.path]));
+            if (!actual || sha256Hex(actual) !== file.sourceSha256 || actual.byteLength !== file.size) throw new StorageError('INVALID_CONTENT', `Final retry verification failed for ${file.path}.`, { path: file.path });
+          }
+          journal = { ...journal, state: 'committed', updatedAt: new Date().toISOString() };
+          await this.writeImportJournal(transactionDirectory, journal);
+          this.noteSnapshot.clear();
+          return { operationId, state: 'completed', startedAt, completedAt: new Date().toISOString(), counts, resources: journal.files.map((file) => ({ kind: file.kind, id: file.id, path: file.path, decision: file.decision, status: 'published', sha256: file.sourceSha256 })) };
+        } catch (error) {
+          journal = { ...journal, failure: { code: error instanceof StorageError ? error.code : 'STORAGE_FAILURE', message: error instanceof Error ? error.message : String(error) }, updatedAt: new Date().toISOString() };
+          await this.writeImportJournal(transactionDirectory, journal);
+          const rollback = await this.rollbackImportJournal(transactionDirectory, journal);
+          journal = rollback.journal;
+          await this.writeImportJournal(transactionDirectory, journal);
+          throw new StorageError('PARTIAL_WRITE', rollback.complete ? 'Import retry failed and this operation was rolled back.' : 'Import retry failed; recovery requires manual inspection. Recovery materials were preserved.', { cause: error, details: { paths: journal.files.filter((file) => file.publication !== 'restored').map((file) => file.path) } });
+        }
+      } finally {
+        await rm(retrySource, { recursive: true, force: true }).catch(() => undefined);
+      }
+    });
+  }
+
+  private assertReviewedDestination(snapshot: PortableExportSnapshot, binding: ImportPreviewBinding, decisions: ImportConflictDecision[]): void {
+    const current = snapshotResourceBytes(snapshot);
+    for (const decision of decisions) {
+      const resource = binding.resourceBindings!.find((item) => item.kind === decision.kind && item.id === decision.id && item.path === decision.path)!;
+      const target = current.get(JSON.stringify([resource.kind, resource.id, resource.path]));
+      const hash = target === undefined ? undefined : sha256Hex(target);
+      if (decision.choice === 'add' && hash !== undefined) throw new StorageError('STALE_PREVIEW', `The new resource path ${resource.path} is now occupied.`, { path: resource.path });
+      if (decision.choice === 'replace' && hash !== resource.destinationSha256) throw new StorageError('STALE_PREVIEW', `The replacement resource ${resource.path} changed after preview.`, { path: resource.path });
+    }
+  }
+
+  private async validateReviewedImportDependencies(plan: ImportPlan): Promise<void> {
+    const importedDatabaseIds = new Set(plan.databases.map((database) => database.id));
+    const schemas = new Map((await this.parseDatabasesStrict()).map(({ database }) => [database.id, database] as const));
+    for (const database of plan.databases) schemas.set(database.id, database);
+    const configuration = configurationIssues(schemas);
+    const issues: string[] = [];
+    for (const database of plan.databases) for (const property of database.properties) {
+      const key = `${database.id}:${property.id}`;
+      const message = configuration.issues.get(key);
+      if (message) issues.push(`Database ${database.id}, property ${property.id}: ${message}.`);
+      if (configuration.circular.has(key)) issues.push(`Database ${database.id}, property ${property.id}: circular rollup dependency.`);
+    }
+    const existing = await this.parseNotesStrict();
+    const incomingIds = new Set(plan.notes.map((note) => note.id));
+    const notes = [...existing.filter(({ note }) => !incomingIds.has(note.id)).map(({ note }) => note), ...plan.notes];
+    const incomingPaths = new Set(plan.notes.map((note) => note.path));
+    const projected = projectRelations(notes, schemas);
+    for (const issue of projected.diagnostics) {
+      if (incomingPaths.has(issue.path) && ['MISSING_TARGET', 'INCOMPATIBLE_TARGET', 'INVALID_CONFIGURATION', 'CIRCULAR_ROLLUP', 'FORMULA_ERROR', 'MISSING_DATABASE'].includes(issue.code)) {
+        issues.push(`${issue.path}, database ${issue.databaseId}, property ${issue.propertyId}: ${issue.message}.`);
+      }
+    }
+    const automationFile = plan.entries.find((entry) => entry.kind === 'automation-definitions');
+    if (automationFile) for (const automation of parseAutomations(automationFile.text)) {
+      const database = schemas.get(automation.databaseId);
+      if (!database) { issues.push(`${automationFile.path}: automation ${automation.id} targets missing database ${automation.databaseId}.`); continue; }
+      try { validateAutomationReferences(automation, database); }
+      catch (error) { issues.push(`${automationFile.path}: automation ${automation.id}: ${error instanceof Error ? error.message : String(error)}.`); }
+    }
+    for (const templateFile of plan.entries.filter((entry) => entry.kind === 'template-catalog')) for (const template of parseTemplates(templateFile.text)) {
+      if (template.type !== 'database') continue;
+      const templateSchemas = new Map(schemas);
+      templateSchemas.set(template.database.id, template.database);
+      const templateConfiguration = configurationIssues(templateSchemas);
+      for (const property of template.database.properties) {
+        const key = `${template.database.id}:${property.id}`;
+        const message = templateConfiguration.issues.get(key);
+        if (message) issues.push(`${templateFile.path}: template ${template.id}, property ${property.id}: ${message}.`);
+      }
+    }
+    if (issues.length > 0) throw new StorageError('INVALID_CONTENT', 'Import contains dependencies that would be unresolved in the destination workspace.', { details: { issues, ids: [...importedDatabaseIds].sort(), paths: [...new Set([...plan.notes.map((note) => note.path), ...plan.databases.map((database) => databasePath(database.id))])].sort() } });
+  }
+
+  private async ensureImportTransactionRoot(): Promise<string> {
+    const path = join(this.root, IMPORT_TRANSACTION_DIR);
+    try {
+      const info = await lstat(path);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      try { await mkdir(path, { mode: 0o700 }); }
+      catch (createError) {
+        if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') throw createError;
+        const createdByOtherRequest = await lstat(path);
+        if (!createdByOtherRequest.isDirectory() || createdByOtherRequest.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
+      }
+    }
+    return path;
+  }
+
+  private async writeImportJournal(directory: string, journal: ImportTransactionJournal): Promise<void> {
+    const envelope = { ...journal, integritySha256: importJournalDigest(journal) };
+    await writeFileAtomic(join(directory, 'journal.json'), `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  private async writeImportStagedFile(path: string, bytes: Uint8Array): Promise<void> {
+    await writeFileAtomic(path, bytes, { mode: 0o600 });
+  }
+
+  private async readImportJournal(directory: string): Promise<ImportTransactionJournal> {
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction must be a real directory.');
+    const journalPath = join(directory, 'journal.json');
+    const journalInfo = await lstat(journalPath);
+    if (!journalInfo.isFile() || journalInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Import transaction journal is missing or is not a regular file.');
+    let envelope: Record<string, unknown>;
+    try { envelope = JSON.parse(await readFile(journalPath, 'utf8')) as Record<string, unknown>; }
+    catch (error) { throw new StorageError('INVALID_CONTENT', 'Import transaction journal is malformed; preserve recovery files for manual inspection.', { cause: error }); }
+    const { integritySha256, ...candidate } = envelope;
+    if (candidate.format !== 'nodus-import-transaction' || candidate.version !== 1 || typeof integritySha256 !== 'string' || integritySha256 !== importJournalDigest(candidate)) throw new StorageError('INVALID_CONTENT', 'Import transaction journal integrity validation failed; preserve recovery files for manual inspection.');
+    const journal = candidate as unknown as ImportTransactionJournal;
+      if (!isUuidV4(journal.operationId) || !['staging', 'staged', 'publishing', 'committed', 'rolled-back', 'recovery-required'].includes(journal.state) || !Array.isArray(journal.files) || !Array.isArray(journal.decisions) || !journal.decisions.every(isImportDecision) || !Array.isArray(journal.folders) || !journal.folders.every(isImportTransactionFolder) || !/^[a-f0-9]{64}$/.test(journal.sourceFingerprint) || !/^[a-f0-9]{64}$/.test(journal.destinationFingerprint) || !journal.files.every(isImportTransactionFile)) throw new StorageError('INVALID_CONTENT', 'Import transaction journal structure is invalid; preserve recovery files for manual inspection.');
+    if (['publishing', 'committed', 'recovery-required'].includes(journal.state) && (!Array.isArray(journal.baselineResources) || !Array.isArray(journal.baselineFolders) || !Array.isArray(journal.baselineExcluded))) throw new StorageError('INVALID_CONTENT', 'Import transaction is missing its destination baseline; preserve recovery files for manual inspection.');
+    if (journal.baselineResources !== undefined && (!journal.baselineResources.every((item) => item && typeof item.kind === 'string' && typeof item.id === 'string' && typeof item.path === 'string' && Number.isSafeInteger(item.bytes) && item.bytes >= 0 && /^[a-f0-9]{64}$/.test(item.sha256)) || !Array.isArray(journal.baselineFolders) || !journal.baselineFolders.every((folder) => typeof folder === 'string') || !Array.isArray(journal.baselineExcluded) || !journal.baselineExcluded.every((item) => item && typeof item.path === 'string' && typeof item.reason === 'string'))) throw new StorageError('INVALID_CONTENT', 'Import transaction destination baseline is malformed; preserve recovery files for manual inspection.');
+    if (journal.baselineResources) {
+      const baselinePaths = new Set<string>();
+      const baselineIds = new Set<string>();
+      for (const resource of journal.baselineResources) {
+        const key = foldPath(resource.path);
+        const identity = JSON.stringify([resource.kind, resource.id]);
+        if (baselinePaths.has(key) || baselineIds.has(identity)) throw new StorageError('INVALID_CONTENT', 'Import transaction destination baseline contains duplicate resource identities or paths.');
+        baselinePaths.add(key); baselineIds.add(identity);
+        await this.validateInternalPath(resource.path);
+      }
+    }
+    const paths = new Set<string>();
+    const identities = new Set<string>();
+    const stagedNames = new Set<string>();
+    const backupNames = new Set<string>();
+    const replacementTempNames = new Set<string>();
+    const decisionKeys = new Set<string>();
+    for (const decision of journal.decisions) {
+      const key = JSON.stringify([decision.kind, decision.id, decision.path]);
+      if (decisionKeys.has(key)) throw new StorageError('INVALID_CONTENT', 'Import journal contains duplicate resource decisions.');
+      decisionKeys.add(key);
+    }
+    if (journal.state === 'committed' && journal.files.some((file) => file.publication !== 'published')) throw new StorageError('INVALID_CONTENT', 'Committed import journal contains unpublished resources.');
+    if (journal.state === 'rolled-back' && journal.files.some((file) => file.publication !== 'restored')) throw new StorageError('INVALID_CONTENT', 'Rolled-back import journal contains resources without a verified restored state.');
+    const folderPaths = new Set<string>();
+    for (const folder of journal.folders) {
+      if (folderPaths.has(foldPath(folder.path))) throw new StorageError('INVALID_CONTENT', 'Import journal contains duplicate folder paths.');
+      folderPaths.add(foldPath(folder.path));
+      await this.validateInternalPath(folder.path);
+    }
+    const stagedDirectory = join(directory, 'staged');
+    const backupDirectory = join(directory, 'backup');
+    const stagingMayBeIncomplete = journal.state === 'staging' || journal.state === 'rolled-back' && journal.failure?.code === 'STAGING_INTERRUPTED';
+    for (const subdirectory of [stagedDirectory, backupDirectory]) {
+      let subdirectoryInfo;
+      try { subdirectoryInfo = await lstat(subdirectory); }
+      catch (error) { if (stagingMayBeIncomplete && isMissing(error)) continue; throw error; }
+      if (!subdirectoryInfo.isDirectory() || subdirectoryInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Import transaction contains an unsafe staging or backup directory.');
+    }
+    for (const file of journal.files) {
+      const pathKey = foldPath(file.path);
+      const identityKey = JSON.stringify([file.kind, file.id]);
+      if (paths.has(pathKey)) throw new StorageError('INVALID_CONTENT', 'Import transaction journal contains duplicate target paths.');
+      if (identities.has(identityKey)) throw new StorageError('INVALID_CONTENT', 'Import transaction journal contains duplicate resource identities.');
+      if (stagedNames.has(file.stagedName) || (file.backupName !== undefined && backupNames.has(file.backupName))) throw new StorageError('INVALID_CONTENT', 'Import transaction journal contains duplicate staging destinations.');
+      const replacementTempKey = file.replacementTempName === undefined ? undefined : JSON.stringify([dirname(file.path), file.replacementTempName]);
+      if (replacementTempKey !== undefined && replacementTempNames.has(replacementTempKey)) throw new StorageError('INVALID_CONTENT', 'Import transaction journal contains duplicate replacement temporary paths.');
+      paths.add(pathKey); identities.add(identityKey);
+      const decision = journal.decisions.find((item) => item.kind === file.kind && item.id === file.id && item.path === file.path);
+      if (!decision || decision.choice !== file.decision) throw new StorageError('INVALID_CONTENT', 'Import journal file does not match its reviewed decision.');
+      if ((file.decision === 'add' && file.destinationSha256 !== null) || (file.decision === 'replace' && file.destinationSha256 === null)) throw new StorageError('INVALID_CONTENT', 'Import journal replacement baseline is inconsistent with its reviewed decision.');
+      stagedNames.add(file.stagedName); if (file.backupName) backupNames.add(file.backupName);
+      if (replacementTempKey !== undefined) replacementTempNames.add(replacementTempKey);
+      await this.validateInternalPath(file.path);
+      const stagedPath = join(directory, 'staged', file.stagedName);
+      let stagedInfo;
+      try { stagedInfo = await lstat(stagedPath); }
+      catch (error) { if (stagingMayBeIncomplete && isMissing(error)) continue; throw error; }
+      if (!stagedInfo.isFile() || stagedInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', `Staged recovery resource is not a regular file: ${file.path}.`, { path: file.path });
+      const staged = await readFile(stagedPath);
+      if (staged.byteLength !== file.size || sha256Hex(staged) !== file.sourceSha256) throw new StorageError('INVALID_CONTENT', `Staged recovery resource failed integrity validation: ${file.path}.`, { path: file.path });
+      if (file.backupName) {
+        const backupPath = join(directory, 'backup', file.backupName);
+        const backupInfo = await lstat(backupPath);
+        if (!backupInfo.isFile() || backupInfo.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', `Import recovery backup is not a regular file: ${file.path}.`, { path: file.path });
+        const backup = await readFile(backupPath);
+        if (!file.destinationSha256 || sha256Hex(backup) !== file.destinationSha256) throw new StorageError('INVALID_CONTENT', `Import recovery backup failed integrity validation: ${file.path}.`, { path: file.path });
+      }
+    }
+    if (journal.files.length !== journal.decisions.filter((item) => item.choice !== 'skip').length) throw new StorageError('INVALID_CONTENT', 'Import journal files do not cover every selected decision.');
+    return journal;
+  }
+
+  private importDirectories(plan: ImportPlan, files: ImportTransactionFile[]): string[] {
+    const folders = new Set<string>();
+    for (const folder of plan.sourceFolders ?? []) folders.add(folder);
+    for (const file of files) {
+      const parts = file.path.split('/');
+      parts.pop();
+      let current = '';
+      for (const part of parts) { current = current ? `${current}/${part}` : part; folders.add(current); }
+    }
+    return [...folders].sort((a, b) => a.split('/').length - b.split('/').length || comparePath(a, b));
+  }
+
+  private async ensureImportDirectories(transactionDirectory: string, journal: ImportTransactionJournal): Promise<void> {
+    for (const folder of journal.folders) {
+      const parts = folder.path.split('/');
+      const managedHiddenFolder = ['.nodus-automations', '.nodus-templates', '.nodus-orders', '.nodus-orders/database-views'].includes(folder.path);
+      if (parts.some((part) => !part || part === '.' || part === '..' || part.startsWith('.') && !managedHiddenFolder || part.includes('\\') || part.includes(':'))) throw new StorageError('UNSAFE_PATH', `Import folder path is unsafe: ${folder.path}.`, { path: folder.path });
+      const absolute = await this.validateInternalPath(folder.path);
+      let info;
+      try { info = await lstat(absolute, { bigint: true }); }
+      catch (error) {
+        if (!isMissing(error)) throw error;
+        // Persist the pending intent first. If a crash races mkdir, recovery will
+        // preserve the ambiguous directory instead of guessing who created it.
+        journal = { ...journal, updatedAt: new Date().toISOString() };
+        await this.writeImportJournal(transactionDirectory, journal);
+        let created = true;
+        try { await mkdir(absolute, { mode: 0o700 }); }
+        catch (createError) {
+          if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') throw createError;
+          created = false;
+        }
+        info = await lstat(absolute, { bigint: true });
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', `Import folder is occupied by an unsafe filesystem entry: ${folder.path}.`, { path: folder.path });
+        folder.state = created ? 'created' : 'retained';
+        if (folder.state === 'created') { folder.dev = String(info.dev); folder.ino = String(info.ino); }
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', `Import folder is occupied by an unsafe filesystem entry: ${folder.path}.`, { path: folder.path });
+      if (folder.state === 'pending') { folder.state = 'retained'; folder.dev = String(info.dev); folder.ino = String(info.ino); }
+      journal = { ...journal, updatedAt: new Date().toISOString() };
+      await this.writeImportJournal(transactionDirectory, journal);
+    }
+  }
+
+  private async removeImportTransactionDirectory(directory: string): Promise<void> {
+    const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
+    const rootInfo = await lstat(transactionRoot);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Refusing to remove a transaction under an unsafe staging root.');
+    const root = await realpath(transactionRoot);
+    const listed = await lstat(directory);
+    if (!listed.isDirectory() || listed.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Refusing to remove a symlink or non-directory import transaction.');
+    const actual = await realpath(directory);
+    assertInsideRoot(root, actual, IMPORT_TRANSACTION_DIR);
+    const info = await lstat(actual);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Refusing to remove an unsafe import transaction directory.');
+    await rm(actual, { recursive: true, force: false });
+  }
+
+  /** Removes a writer temporary only when journal identity and content prove this operation owns it. */
+  private async removeOwnedReplacementTemporary(file: ImportTransactionFile): Promise<boolean> {
+    if (file.replacementTempName === undefined) return true;
+    if (file.decision !== 'replace' || !file.publishedDev || !file.publishedIno || !isAtomicTemporaryName(file.replacementTempName)) return false;
+    const target = await this.validateInternalPath(file.path);
+    const temporary = join(dirname(target), file.replacementTempName);
+    let info;
+    try { info = await lstat(temporary, { bigint: true }); }
+    catch (error) { if (isMissing(error)) return true; return false; }
+    if (!info.isFile() || info.isSymbolicLink() || String(info.dev) !== file.publishedDev || String(info.ino) !== file.publishedIno) return false;
+    const bytes = await readFile(temporary).catch(() => undefined);
+    if (!bytes || bytes.byteLength !== file.size || sha256Hex(bytes) !== file.sourceSha256) return false;
+    const current = await lstat(temporary, { bigint: true }).catch(() => undefined);
+    if (!current?.isFile() || current.dev !== info.dev || current.ino !== info.ino) return false;
+    try { await unlink(temporary); }
+    catch (error) { if (isMissing(error)) return true; return false; }
+    return true;
+  }
+
+  private async rollbackImportJournal(directory: string, journal: ImportTransactionJournal): Promise<{ journal: ImportTransactionJournal; complete: boolean }> {
+    let complete = true;
+    const files = [...journal.files].reverse();
+    for (const file of files) {
+      const absolute = await this.validateInternalPath(file.path);
+      if (!(await this.removeOwnedReplacementTemporary(file))) { complete = false; continue; }
+      let current: Buffer | undefined;
+      let restored = false;
+      try { current = await readFile(absolute); } catch (error) { if (!isMissing(error)) { complete = false; continue; } }
+      const currentHash = current === undefined ? undefined : sha256Hex(current);
+      if (file.destinationSha256 === null) {
+        if (currentHash === file.sourceSha256) {
+          const currentInfo = await lstat(absolute, { bigint: true }).catch(() => undefined);
+          const stagedInfo = await lstat(join(directory, 'staged', file.stagedName), { bigint: true }).catch(() => undefined);
+          if (!currentInfo?.isFile() || !stagedInfo?.isFile() || currentInfo.dev !== stagedInfo.dev || currentInfo.ino !== stagedInfo.ino) { complete = false; continue; }
+          await unlink(absolute).then(() => { restored = true; }).catch(() => { complete = false; });
+        }
+        else if (currentHash !== undefined) { complete = false; continue; }
+        else restored = true;
+      } else if (currentHash === file.sourceSha256) {
+        const currentInfo = await lstat(absolute, { bigint: true }).catch(() => undefined);
+        if (!currentInfo?.isFile() || file.publishedDev !== String(currentInfo.dev) || file.publishedIno !== String(currentInfo.ino)) { complete = false; continue; }
+        const backupPath = file.backupName ? join(directory, 'backup', file.backupName) : undefined;
+        if (!backupPath) { complete = false; continue; }
+        const backup = await readFile(backupPath).catch(() => undefined);
+        if (!backup || sha256Hex(backup) !== file.destinationSha256) { complete = false; continue; }
+        await writeFileAtomic(absolute, backup, { mode: 0o600 }).then(() => { restored = true; }).catch(() => { complete = false; });
+      } else if (currentHash === file.destinationSha256) restored = true;
+      else { complete = false; continue; }
+      if (restored) file.publication = 'restored';
+    }
+    for (const folder of [...journal.folders].reverse()) {
+      if (folder.state === 'retained' || folder.state === 'removed') continue;
+      const absolute = await this.validateInternalPath(folder.path);
+      let info;
+      try { info = await lstat(absolute, { bigint: true }); }
+      catch (error) {
+        if (!isMissing(error)) { complete = false; continue; }
+        folder.state = 'removed';
+        continue;
+      }
+      // A pending folder has no durable inode ownership proof. Preserve it.
+      if (folder.state !== 'created' || !info.isDirectory() || info.isSymbolicLink() || folder.dev !== String(info.dev) || folder.ino !== String(info.ino)) { complete = false; continue; }
+      try { await rmdir(absolute); folder.state = 'removed'; }
+      catch { complete = false; }
+    }
+    return { journal: { ...journal, state: complete ? 'rolled-back' : 'recovery-required', updatedAt: new Date().toISOString() }, complete };
+  }
+
+  private async applyImportLocked(plan: ImportPlan, options: ImportOptions, publicationBytes?: Map<string, Buffer>, exclusivePaths?: Set<string>, stagedPaths?: Map<string, string>, publicationHook?: (path: string) => Promise<void>, beforeReplacementPublish?: (path: string, temporaryPath: string) => Promise<void>): Promise<ImportReport> {
     if (options.sourceTemplateId !== undefined && (!options.atomicNewFiles || !isUuidV4(options.sourceTemplateId))) {
       throw new StorageError('INVALID_INPUT', 'sourceTemplateId requires atomicNewFiles and must be a lowercase UUID v4.');
     }
@@ -1896,54 +2611,55 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         propertyCatalog = 1;
         if (existingCatalog?.hash !== incomingCatalog.hash) {
           failedPath = PROPERTY_CATALOG_PATH;
-          await this.writeDocument(PROPERTY_CATALOG_PATH, incomingCatalog.rawBytes, true, () =>
-            this.assertImportTargetUnchanged(PROPERTY_CATALOG_PATH, expectedHashes.get(PROPERTY_CATALOG_PATH)),
-          );
+          await this.publishImportDocument(PROPERTY_CATALOG_PATH, publicationBytes?.get(PROPERTY_CATALOG_PATH) ?? incomingCatalog.rawBytes, true, expectedHashes.get(PROPERTY_CATALOG_PATH), exclusivePaths?.has(PROPERTY_CATALOG_PATH), stagedPaths?.get(PROPERTY_CATALOG_PATH), beforeReplacementPublish && !exclusivePaths?.has(PROPERTY_CATALOG_PATH) ? (temporaryPath) => beforeReplacementPublish(PROPERTY_CATALOG_PATH, temporaryPath) : undefined);
           written.push(PROPERTY_CATALOG_PATH);
+          await publicationHook?.(PROPERTY_CATALOG_PATH);
         }
       }
 
       for (const note of plan.notes) {
-        const text = noteText.get(note.id) ?? this.serializeNoteInput(note);
+        const staged = publicationBytes?.get(note.path);
+        const text = staged === undefined ? noteText.get(note.id) ?? this.serializeNoteInput(note) : decodeVaultText(staged, note.path);
         failedPath = note.path;
-        await this.writeDocument(note.path, text, false, () =>
-          this.assertImportTargetUnchanged(note.path, expectedHashes.get(note.path)),
-        );
+        await this.publishImportDocument(note.path, text, false, expectedHashes.get(note.path), exclusivePaths?.has(note.path), stagedPaths?.get(note.path), beforeReplacementPublish && !exclusivePaths?.has(note.path) ? (temporaryPath) => beforeReplacementPublish(note.path, temporaryPath) : undefined);
         notes += 1;
         written.push(note.path);
+        await publicationHook?.(note.path);
       }
 
       for (const database of plan.databases) {
         const path = databasePath(database.id);
-        const text = databaseText.get(database.id) ?? serializeDatabase(database);
+        const staged = publicationBytes?.get(path);
+        const text = staged === undefined ? databaseText.get(database.id) ?? serializeDatabase(database) : decodeVaultText(staged, path);
         failedPath = path;
-        await this.writeDocument(path, text, true, () =>
-          this.assertImportTargetUnchanged(path, expectedHashes.get(path)),
-        );
+        await this.publishImportDocument(path, text, true, expectedHashes.get(path), exclusivePaths?.has(path), stagedPaths?.get(path), beforeReplacementPublish && !exclusivePaths?.has(path) ? (temporaryPath) => beforeReplacementPublish(path, temporaryPath) : undefined);
         databases += 1;
         written.push(path);
+        await publicationHook?.(path);
       }
 
       for (const view of incomingViews) {
         const path = databaseViewPath(view.databaseId, view.id);
         const entry = plan.entries.find((item) => item.kind === 'database-view' && item.id === view.id && item.path === path);
         failedPath = path;
-        await this.writeDocument(path, entry?.text ?? this.serializeDatabaseViewInput(view), true, () =>
-          this.assertImportTargetUnchanged(path, expectedHashes.get(path)),
-        );
+        await this.publishImportDocument(path, publicationBytes?.has(path) ? decodeVaultText(publicationBytes.get(path)!, path) : entry?.text ?? this.serializeDatabaseViewInput(view), true, expectedHashes.get(path), exclusivePaths?.has(path), stagedPaths?.get(path), beforeReplacementPublish && !exclusivePaths?.has(path) ? (temporaryPath) => beforeReplacementPublish(path, temporaryPath) : undefined);
         databaseViews += 1;
         written.push(path);
+        await publicationHook?.(path);
       }
 
       for (const entry of attachmentEntries) {
         const path = entry.path;
-        const bytes = entry.rawBytes!;
+        const bytes = publicationBytes?.get(path) ?? entry.rawBytes!;
         const absolute = await this.validateAttachmentPath(path);
         failedPath = path;
         await this.assertImportTargetUnchanged(path, expectedHashes.get(path));
-        await writeFileAtomic(absolute, bytes);
+        if (exclusivePaths?.has(path) && stagedPaths?.has(path)) await linkFileAtomicExclusive(stagedPaths.get(path)!, absolute);
+        else if (exclusivePaths?.has(path)) await writeFileAtomicExclusive(absolute, bytes);
+        else await writeFileAtomic(absolute, bytes, beforeReplacementPublish && !exclusivePaths?.has(path) ? { beforeRename: (temporaryPath) => beforeReplacementPublish(path, temporaryPath) } : {});
         attachments += 1;
         written.push(path);
+        await publicationHook?.(path);
       }
 
       // Ordering manifests reference saved views, so they are written only
@@ -1951,28 +2667,29 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       for (const order of incomingOrders) {
         if (existingOrderHashes.get(order.path) === order.hash) continue;
         failedPath = order.path;
-        await this.writeDocument(order.path, order.rawBytes, true, () =>
-          this.assertImportTargetUnchanged(order.path, expectedHashes.get(order.path)),
-        );
+        await this.publishImportDocument(order.path, publicationBytes?.get(order.path) ?? order.rawBytes, true, expectedHashes.get(order.path), exclusivePaths?.has(order.path), stagedPaths?.get(order.path), beforeReplacementPublish && !exclusivePaths?.has(order.path) ? (temporaryPath) => beforeReplacementPublish(order.path, temporaryPath) : undefined);
         databaseViewOrders += 1;
         written.push(order.path);
+        await publicationHook?.(order.path);
       }
 
       for (const entry of automationEntries) {
         const path = entry.path;
         if (expectedHashes.get(path) === sha256Hex(entry.rawBytes ?? entry.text)) continue;
         failedPath = path;
-        await this.writeDocument(path, entry.rawBytes ?? entry.text, true, () => this.assertImportTargetUnchanged(path, expectedHashes.get(path)));
+        await this.publishImportDocument(path, publicationBytes?.get(path) ?? entry.rawBytes ?? entry.text, true, expectedHashes.get(path), exclusivePaths?.has(path), stagedPaths?.get(path), beforeReplacementPublish && !exclusivePaths?.has(path) ? (temporaryPath) => beforeReplacementPublish(path, temporaryPath) : undefined);
         automationFiles += 1;
         written.push(path);
+        await publicationHook?.(path);
       }
 
       for (const entry of templateEntries) {
         if (expectedHashes.get(entry.path) === sha256Hex(entry.rawBytes ?? entry.text)) continue;
         failedPath = entry.path;
-        await this.writeDocument(entry.path, entry.rawBytes ?? entry.text, true, () => this.assertImportTargetUnchanged(entry.path, expectedHashes.get(entry.path)));
+        await this.publishImportDocument(entry.path, publicationBytes?.get(entry.path) ?? entry.rawBytes ?? entry.text, true, expectedHashes.get(entry.path), exclusivePaths?.has(entry.path), stagedPaths?.get(entry.path), beforeReplacementPublish && !exclusivePaths?.has(entry.path) ? (temporaryPath) => beforeReplacementPublish(entry.path, temporaryPath) : undefined);
         templateFiles += 1;
         written.push(entry.path);
+        await publicationHook?.(entry.path);
       }
 
       // Remove old locations only after every target is written, so a failed
@@ -2224,6 +2941,17 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     if (expectedHash === undefined) throw importTargetChanged(path);
     const current = await this.readBytesAt(absolute, path);
     if (sha256Hex(current) !== expectedHash) throw importTargetChanged(path);
+  }
+
+  private async publishImportDocument(path: string, bytes: string | Uint8Array, allowReserved: boolean, expectedHash: string | undefined, exclusive: boolean | undefined, stagedPath?: string, beforeReplacementPublish?: (temporaryPath: string) => Promise<void>): Promise<void> {
+    const absolute = allowReserved ? await this.validateInternalPath(path) : await this.validateNoteTarget(path);
+    if (exclusive) {
+      await this.assertImportTargetUnchanged(path, undefined);
+      if (stagedPath !== undefined) await linkFileAtomicExclusive(stagedPath, absolute);
+      else await writeFileAtomicExclusive(absolute, Buffer.from(bytes));
+      return;
+    }
+    await this.writeDocument(path, bytes, allowReserved, () => this.assertImportTargetUnchanged(path, expectedHash), beforeReplacementPublish);
   }
 
   private async removeDocument(path: string, expectedHash: string | undefined): Promise<void> {
@@ -2519,13 +3247,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     text: string | Uint8Array,
     allowReserved = false,
     beforeWrite?: () => Promise<void>,
+    beforeRename?: (temporaryPath: string) => Promise<void>,
   ): Promise<void> {
     const absolute = allowReserved
       ? await this.validateInternalPath(path)
       : await this.validateNoteTarget(path);
     await beforeWrite?.();
     try {
-      await writeFileAtomic(absolute, text);
+      await writeFileAtomic(absolute, text, beforeRename === undefined ? {} : { beforeRename });
     } catch (error) {
       throw storageFailure(error, 'Write file', path);
     }
@@ -2572,6 +3301,92 @@ function decodeVaultText(bytes: Uint8Array, path: string): string {
   } catch {
     throw new StorageError('INVALID_CONTENT', `File "${path}" is not valid UTF-8 text`, { path });
   }
+}
+
+function planResourceBytes(plan: ImportPlan, kind: string, id: string, path: string): Buffer {
+  if (kind === 'property-catalog' && plan.propertyCatalog?.path === path) return Buffer.from(plan.propertyCatalog.rawBytes);
+  const order = (plan.databaseViewOrders ?? []).find((item) => kind === 'database-view-order' && item.databaseId === id && item.path === path);
+  if (order) return Buffer.from(order.rawBytes);
+  const entry = plan.entries.find((item) => item.kind === kind && item.id === id && item.path === path);
+  if (!entry) throw new StorageError('INVALID_CONTENT', `The reviewed plan is missing ${kind} ${id} at ${path}.`, { path });
+  return Buffer.from(entry.rawBytes ?? Buffer.from(entry.text, 'utf8'));
+}
+
+function snapshotResourceBytes(snapshot: PortableExportSnapshot): Map<string, Buffer> {
+  const result = new Map<string, Buffer>();
+  const add = (kind: string, id: string, path: string, bytes: Uint8Array | string) => result.set(JSON.stringify([kind, id, path]), Buffer.from(bytes));
+  for (const entry of [...snapshot.entries, ...snapshot.automationFiles, ...snapshot.templateFiles]) add(entry.kind, entry.id, entry.path, entry.rawBytes ?? entry.text);
+  if (snapshot.propertyCatalog) add('property-catalog', 'property-catalog', snapshot.propertyCatalog.path, snapshot.propertyCatalog.rawBytes);
+  for (const order of snapshot.databaseViewOrders) add('database-view-order', order.databaseId, order.path, order.rawBytes);
+  return result;
+}
+
+function snapshotResourceInventory(snapshot: PortableExportSnapshot): Array<{ kind: string; id: string; path: string; bytes: number; sha256: string }> {
+  return [...snapshotResourceBytes(snapshot)].map(([identity, bytes]) => {
+    const [kind, id, path] = JSON.parse(identity) as [string, string, string];
+    return { kind, id, path, bytes: bytes.byteLength, sha256: sha256Hex(bytes) };
+  }).sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+}
+
+function visibleParents(path: string): string[] {
+  const parts = path.split('/').slice(0, -1);
+  if (['databases', 'database-views', 'attachments'].includes(parts[0] ?? '')) return [];
+  const result: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    if (part.startsWith('.')) break;
+    current = current ? `${current}/${part}` : part;
+    result.push(current);
+  }
+  return result;
+}
+
+function importJournalDigest(journal: ImportTransactionJournal | Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(journal), 'utf8').digest('hex');
+}
+
+function isImportTransactionFile(value: unknown): value is ImportTransactionFile {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const file = value as Record<string, unknown>;
+  return typeof file.kind === 'string' && typeof file.id === 'string' && typeof file.path === 'string' &&
+    (file.decision === 'add' || file.decision === 'replace') && /^[a-f0-9]{64}$/.test(String(file.sourceSha256)) &&
+    Number.isSafeInteger(file.size) && (file.size as number) >= 0 && typeof file.stagedName === 'string' && /^resource-[0-9]{6}\.bin$/.test(file.stagedName) &&
+    (file.destinationSha256 === null || /^[a-f0-9]{64}$/.test(String(file.destinationSha256))) &&
+    (file.backupName === undefined || (typeof file.backupName === 'string' && /^resource-[0-9]{6}\.bin$/.test(file.backupName))) &&
+    (file.publishedDev === undefined || /^\d+$/.test(String(file.publishedDev))) && (file.publishedIno === undefined || /^\d+$/.test(String(file.publishedIno))) &&
+    (file.replacementTempName === undefined || (isAtomicTemporaryName(file.replacementTempName) && file.publishedDev !== undefined && file.publishedIno !== undefined)) &&
+    ['staged', 'pending', 'published', 'restored'].includes(String(file.publication));
+}
+
+function isAtomicTemporaryName(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith(TEMP_PREFIX) && isUuidV4(value.slice(TEMP_PREFIX.length));
+}
+
+function isImportDecision(value: unknown): value is ImportConflictDecision {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const decision = value as Record<string, unknown>;
+  return typeof decision.kind === 'string' && typeof decision.id === 'string' && typeof decision.path === 'string' && ['add', 'skip', 'replace'].includes(String(decision.choice));
+}
+
+function isImportTransactionFolder(value: unknown): value is ImportTransactionFolder {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const folder = value as Record<string, unknown>;
+  const managedHiddenFolders = new Set(['.nodus-automations', '.nodus-templates', '.nodus-orders', '.nodus-orders/database-views']);
+  const validPath = typeof folder.path === 'string' && folder.path.length > 0 && !folder.path.startsWith('/') && !folder.path.includes('\\') && !folder.path.includes(':') && !/[\u0000-\u001f\u007f]/.test(folder.path) && folder.path.split('/').every((part) => part !== '' && part !== '.' && part !== '..' && (!part.startsWith('.') || managedHiddenFolders.has(folder.path as string)));
+  return validPath && ['pending', 'created', 'retained', 'removed'].includes(String(folder.state)) &&
+    (folder.dev === undefined || /^\d+$/.test(String(folder.dev))) && (folder.ino === undefined || /^\d+$/.test(String(folder.ino))) &&
+    (['created', 'retained', 'removed'].includes(String(folder.state)) ? /^\d+$/.test(String(folder.dev)) && /^\d+$/.test(String(folder.ino)) : folder.dev === undefined && folder.ino === undefined);
+}
+
+function isVisibleImportFolder(path: string): boolean { const first = path.split('/')[0] ?? ''; return !first.startsWith('.') && !['databases', 'database-views', 'attachments'].includes(first); }
+function comparePath(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
+function importOperationStatus(journal: ImportTransactionJournal): import('../contracts.js').ImportOperationStatus {
+  const byIdentity = new Map(journal.files.map((file) => [JSON.stringify([file.kind, file.id, file.path]), file] as const));
+  return { operationId: journal.operationId, state: journal.state, startedAt: journal.startedAt, updatedAt: journal.updatedAt, resources: journal.decisions.map((decision) => {
+    const file = byIdentity.get(JSON.stringify([decision.kind, decision.id, decision.path]));
+    return { kind: decision.kind, id: decision.id, path: decision.path, decision: decision.choice, publication: decision.choice === 'skip' ? 'skipped' as const : file?.publication ?? 'staged' as const };
+  }), ...(journal.failure ? { failure: journal.failure } : {}) };
 }
 
 function summaryOf(note: Note): NoteSummary {

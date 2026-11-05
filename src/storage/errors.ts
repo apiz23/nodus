@@ -11,6 +11,8 @@ export type StorageErrorCode =
   | 'CORRUPT_BACKUP'
   | 'PARTIAL_WRITE'
   | 'STALE_WRITE'
+  | 'STALE_PREVIEW'
+  | 'PREVIEW_EXPIRED'
   | 'STORAGE_FAILURE';
 
 export interface StorageErrorDetails {

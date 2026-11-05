@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'vite';
@@ -7,12 +7,17 @@ import { chromium } from 'playwright';
 
 const root = await mkdtemp(join(tmpdir(), 'nodus-workspace-'));
 const exportParent = await mkdtemp(join(tmpdir(), 'nodus-portable-export-'));
+const importParent = await mkdtemp(join(tmpdir(), 'nodus-import-source-'));
 const exportTarget = join(exportParent, 'package');
+const legacyImportSource = join(importParent, 'legacy-package');
 process.env.NODUS_VAULT = root;
 let server;
 let browser;
 try {
   await writeFile(join(root, 'workspace-note.md'), '# Workspace note\n\nA small draft for layout checks.\n', 'utf8');
+  await mkdir(join(legacyImportSource, 'notes'), { recursive: true });
+  const importedMarkdown = '# Browser imported note\n\nThis note was written through the reviewed import workflow.\n';
+  await writeFile(join(legacyImportSource, 'notes', 'browser-import.md'), importedMarkdown, 'utf8');
   server = await createServer({ configFile: 'ui/vite.config.ts', server: { port: 0, strictPort: false } });
   await server.listen();
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -30,6 +35,9 @@ try {
   const source = page.locator('.cm-content');
   await editor.fill('# Workspace note\n\nA changed draft that survives layout changes.');
 
+  const recoveryOperationId = '33333333-3333-4333-8333-333333333333';
+  await page.route('**/api/import/operations', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ operations: [{ operationId: recoveryOperationId, state: 'recovery-required', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), resources: [{ kind: 'note', id: 'recovery-note', path: 'notes/recovery.md', decision: 'add', publication: 'published' }] }] }) }));
+  await page.route(`**/api/import/operations/${recoveryOperationId}/retry`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ operationId: recoveryOperationId, state: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), counts: { notes: 1, databases: 0, databaseViews: 0 }, resources: [{ kind: 'note', id: 'recovery-note', path: 'notes/recovery.md', decision: 'add', status: 'published', sha256: 'd'.repeat(64) }] }) }));
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const workspace = page.getByRole('region', { name: 'Workspace', exact: true });
   const preset = workspace.getByRole('combobox', { name: 'Workspace preset', exact: true });
@@ -104,6 +112,11 @@ try {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.setViewportSize({ width: 1280, height: 900 });
   const backupRegion = page.getByRole('region', { name: 'Backup and restore', exact: true });
+  const recoveryAlert = backupRegion.getByRole('alert').filter({ hasText: recoveryOperationId });
+  await recoveryAlert.getByRole('button', { name: 'Retry safely', exact: true }).click();
+  await backupRegion.getByText(/Import completed · operation/).first().waitFor();
+  await page.unroute(`**/api/import/operations/${recoveryOperationId}/retry`);
+  await page.unroute('**/api/import/operations');
   const exportPath = backupRegion.getByRole('textbox', { name: 'Export folder', exact: true });
   await exportPath.fill(exportTarget);
   await page.route('**/api/export', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_FAILURE', message: 'Injected portable export failure.' } }) }));
@@ -147,9 +160,10 @@ try {
     await previewGate;
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
       source: exportTarget, format: 'nodus-portable-export', manifestVersion: 1,
+      previewId: 'P'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(),
       counts: { notes: 3, databases: 1, databaseViews: 1, attachments: 0, otherResources: 0 },
       resources: [
-        { kind: 'note', id: 'new-id', path: 'new.md', status: 'new', safeChoices: ['skip'] },
+        { kind: 'note', id: 'new-id', path: 'new.md', status: 'new', safeChoices: ['add', 'skip'] },
         { kind: 'note', id: 'same-id', path: 'same.md', status: 'identical', safeChoices: ['skip'] },
         { kind: 'database', id: 'conflict-id', path: 'databases/conflict.json', status: 'conflict', reason: 'ID already exists with different content', safeChoices: ['skip', 'replace'] },
       ],
@@ -160,12 +174,72 @@ try {
   await importPath.fill(exportTarget);
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
   await previewPending;
-  await backupRegion.getByRole('button', { name: 'Checking…', exact: true }).waitFor();
+  await backupRegion.getByRole('button', { name: 'Previewing…', exact: true }).waitFor();
   releasePreview();
   const previewStatus = backupRegion.getByRole('status');
   await previewStatus.getByText('1 new · 1 identical · 1 conflicts', { exact: true }).waitFor();
-  await previewStatus.getByText(/ID already exists with different content/).waitFor();
-  await previewStatus.getByText('Database db-id property prop-id targets a missing database.').waitFor();
+  await backupRegion.getByText(/ID already exists with different content/).waitFor();
+  await backupRegion.getByText('Database db-id property prop-id targets a missing database.').waitFor();
+  const newResource = backupRegion.getByRole('listitem').filter({ hasText: 'new.md' });
+  assert.equal(await newResource.getByRole('button', { name: 'Add', exact: true }).getAttribute('aria-pressed'), 'true', 'New resources default to explicit Add decision');
+  const conflictResource = backupRegion.getByRole('listitem').filter({ hasText: 'databases/conflict.json' });
+  await conflictResource.getByRole('button', { name: 'Replace', exact: true }).click();
+  const replaceConsent = backupRegion.getByRole('checkbox', { name: /explicitly approve replacing those exact resources/i });
+  await replaceConsent.check();
+  let executeRequest;
+  let releaseExecute;
+  let executeReached;
+  const executePending = new Promise((resolve) => { executeReached = resolve; });
+  const executeGate = new Promise((resolve) => { releaseExecute = resolve; });
+  await page.route('**/api/import/execute', async (route) => {
+    executeRequest = route.request().postDataJSON();
+    executeReached();
+    await executeGate;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      operationId: '11111111-1111-4111-8111-111111111111', state: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+      counts: { notes: 1, databases: 0, databaseViews: 0 },
+      resources: [
+        { kind: 'note', id: 'new-id', path: 'new.md', decision: 'add', status: 'published', sha256: 'a'.repeat(64) },
+        { kind: 'note', id: 'same-id', path: 'same.md', decision: 'skip', status: 'skipped' },
+        { kind: 'database', id: 'conflict-id', path: 'databases/conflict.json', decision: 'replace', status: 'published', sha256: 'b'.repeat(64) },
+      ],
+    }) });
+  });
+  const confirmImport = backupRegion.getByRole('button', { name: 'Confirm and import', exact: true });
+  await confirmImport.click();
+  await executePending;
+  await backupRegion.getByRole('button', { name: 'Importing…', exact: true }).waitFor();
+  assert.equal(executeRequest.confirm, true, 'Execution requires explicit confirmation');
+  assert.equal(executeRequest.previewId, 'P'.repeat(43), 'Execution is bound to the opaque preview handle');
+  assert(executeRequest.decisions.some((decision) => decision.choice === 'replace' && decision.id === 'conflict-id'), 'Replace choice is sent with stable resource identity');
+  releaseExecute();
+  await backupRegion.getByText(/Import completed · operation/).waitFor();
+  await page.unroute('**/api/import/execute');
+  await page.unroute('**/api/import/preview');
+  const retryPreview = {
+    source: exportTarget, format: 'nodus-portable-export', manifestVersion: 1,
+    previewId: 'R'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 },
+    resources: [{ kind: 'note', id: 'retry-id', path: 'retry.md', status: 'new', safeChoices: ['add', 'skip'] }],
+    warnings: [], errors: [], conflicts: [],
+  };
+  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(retryPreview) }));
+  await page.route('**/api/import/execute', (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STALE_PREVIEW', message: 'The destination changed after preview. Create a fresh preview.' } }) }));
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await backupRegion.getByText(/Validated portable export v1/).waitFor();
+  await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).click();
+  await backupRegion.getByRole('alert').filter({ hasText: 'destination changed after preview' }).waitFor();
+  assert.equal(await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).count(), 0, 'A stale preview cannot be submitted again');
+  await page.unroute('**/api/import/execute');
+  await backupRegion.getByRole('button', { name: 'Create a fresh preview', exact: true }).click();
+  await backupRegion.getByText(/Validated portable export v1/).waitFor();
+  await page.route('**/api/import/execute', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+    operationId: '22222222-2222-4222-8222-222222222222', state: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+    counts: { notes: 1, databases: 0, databaseViews: 0 }, resources: [{ kind: 'note', id: 'retry-id', path: 'retry.md', decision: 'add', status: 'published', sha256: 'c'.repeat(64) }],
+  }) }));
+  await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).click();
+  await backupRegion.getByText(/Import completed · operation/).waitFor();
+  await page.unroute('**/api/import/execute');
   await page.unroute('**/api/import/preview');
   await page.route('**/api/import/preview', (route) => route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INVALID_CONTENT', message: 'Portable package failed validation.', paths: ['databases/broken.json'], issues: ['Invalid database schema.'] } }) }));
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
@@ -175,16 +249,23 @@ try {
   await importPath.fill(exportTarget);
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
   await backupRegion.getByRole('status').filter({ hasText: 'Validated portable export v1' }).waitFor();
-  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: exportTarget, format: 'legacy-directory', counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 }, resources: [], warnings: [], errors: [], conflicts: [] }) }));
+  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: exportTarget, format: 'legacy-directory', counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 }, previewId: 'L'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(), resources: [], warnings: [], errors: [], conflicts: [] }) }));
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
   await backupRegion.getByRole('status').filter({ hasText: 'Validated legacy directory' }).waitFor();
   await page.unroute('**/api/import/preview');
-  assert.equal(await page.getByRole('button', { name: /^(Import|Apply import|Execute import)$/i }).count(), 0, 'Preview UI exposes no import execution action');
+  assert.equal(await page.getByRole('button', { name: 'Confirm and import', exact: true }).count(), 0, 'Execution action is absent without an active preview');
+  await importPath.fill(legacyImportSource);
+  await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
+  await backupRegion.getByRole('status').filter({ hasText: 'Validated legacy directory' }).waitFor();
+  await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).click();
+  await backupRegion.getByText(/Import completed · operation/).waitFor();
+  assert.equal(await readFile(join(root, 'notes', 'browser-import.md'), 'utf8'), importedMarkdown, 'The real preview-to-execution flow publishes the exact source note bytes');
   assert.equal(errors.length, 0, errors.join('\n'));
-  console.log('Workspace customization browser smoke passed (workspace settings plus import preview loading, portable/legacy success, status/conflict/diagnostic rendering, structured API error, retry, and no-apply).');
+  console.log('Workspace customization browser smoke passed (real legacy import publication plus preview, explicit conflict choices, replacement consent, loading/completion, stale-preview rejection, refreshed retry, API error, legacy/empty states, and no unintended apply action).');
 } finally {
   if (browser) await browser.close();
   if (server) await server.close();
   await rm(root, { recursive: true, force: true });
   await rm(exportParent, { recursive: true, force: true });
+  await rm(importParent, { recursive: true, force: true });
 }

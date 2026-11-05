@@ -14,6 +14,7 @@ export const BACKUP_FORMAT = 'nodus-backup';
 export const BACKUP_VERSION = 7;
 export const TEMP_PREFIX = '.nodus-tmp-';
 export const TEMPLATE_APPLY_TRANSACTION_PREFIX = `${TEMP_PREFIX}template-apply-`;
+export const IMPORT_TRANSACTION_DIR = '.nodus-import-transactions';
 
 /** Workspace-relative path of a database definition, always POSIX-separated. */
 export function databasePath(id: string): string {

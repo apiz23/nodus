@@ -15,7 +15,7 @@ import { TEMP_PREFIX } from './layout.js';
 export async function writeFileAtomic(
   target: string,
   text: string | Uint8Array,
-  options: { mode?: number } = {},
+  options: { mode?: number; beforeRename?: (temporaryPath: string) => Promise<void> } = {},
 ): Promise<void> {
   const directory = dirname(target);
   await mkdir(directory, { recursive: true });
@@ -29,6 +29,9 @@ export async function writeFileAtomic(
     await handle.sync();
     await handle.close();
     handle = undefined;
+    // Import recovery may persist the temporary inode before rename so a crash
+    // immediately after replacement can still prove which bytes it published.
+    await options.beforeRename?.(temporary);
     await rename(temporary, target);
     await syncDirectory(directory);
   } catch (error) {

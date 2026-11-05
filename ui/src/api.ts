@@ -2,7 +2,9 @@ import type {
   BackupReport,
   ExportReport,
   ImportReport,
-  ImportPreview,
+  ImportPreviewResponse,
+  ImportExecutionReport,
+  ImportOperationStatus,
   RestorePreview,
   UiBacklinksResponse,
   UiRelationBacklinksResponse,
@@ -461,8 +463,24 @@ export const api = {
     });
   },
 
-  previewImport(input: UiValidateBackupInput): Promise<ImportPreview> {
-    return request<ImportPreview>('/api/import/preview', { method: 'POST', body: jsonBody(input) });
+  previewImport(input: UiValidateBackupInput): Promise<ImportPreviewResponse> {
+    return request<ImportPreviewResponse>('/api/import/preview', { method: 'POST', body: jsonBody(input) });
+  },
+
+  executeImport(input: { previewId: string; confirm: true; decisions: Array<{ kind: string; id: string; path: string; choice: 'add' | 'skip' | 'replace' }> }): Promise<ImportExecutionReport> {
+    return request<ImportExecutionReport>('/api/import/execute', { method: 'POST', body: jsonBody(input) });
+  },
+
+  listImportOperations(): Promise<{ operations: ImportOperationStatus[] }> {
+    return request<{ operations: ImportOperationStatus[] }>('/api/import/operations');
+  },
+
+  recoverImportOperation(operationId: string): Promise<ImportOperationStatus> {
+    return request<ImportOperationStatus>(`/api/import/operations/${encodeURIComponent(operationId)}/recover`, { method: 'POST', body: jsonBody({ action: 'rollback' }) });
+  },
+
+  retryImportOperation(operationId: string): Promise<ImportExecutionReport> {
+    return request<ImportExecutionReport>(`/api/import/operations/${encodeURIComponent(operationId)}/retry`, { method: 'POST', body: jsonBody({ confirm: true }) });
   },
 
   validateBackup(input: UiValidateBackupInput): Promise<UiBackupValidationResult> {
