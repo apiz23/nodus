@@ -25,12 +25,12 @@ export interface WalkResult {
  * Hidden files and directories are skipped, except leftover `.nodus-tmp-*`
  * files, which are reported so `checkHealth` can surface interrupted writes.
  */
-export async function walkVault(root: string): Promise<WalkResult> {
+export async function walkVault(root: string, options: { maxDepth?: number; maxEntries?: number } = {}): Promise<WalkResult> {
   const entries: WalkEntry[] = [];
   const issues: StorageIssue[] = [];
   const folders: string[] = [];
 
-  await walkDirectory(root, '', entries, issues, folders);
+  await walkDirectory(root, '', entries, issues, folders, options.maxDepth, { count: 0, max: options.maxEntries });
 
   entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   folders.sort();
@@ -43,6 +43,8 @@ async function walkDirectory(
   entries: WalkEntry[],
   issues: StorageIssue[],
   folders: string[],
+  maxDepth: number | undefined,
+  budget: { count: number; max: number | undefined },
 ): Promise<void> {
   let dirents;
   try {
@@ -54,6 +56,11 @@ async function walkDirectory(
   dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 
   for (const dirent of dirents) {
+    budget.count += 1;
+    if (budget.max !== undefined && budget.count > budget.max) {
+      issues.push({ code: 'INVALID_CONTENT', path: relative || '.', message: `Directory inventory exceeds the ${budget.max}-entry import limit` });
+      return;
+    }
     const childRelative = relative === '' ? dirent.name : `${relative}/${dirent.name}`;
     const childAbsolute = join(absolute, dirent.name);
 
@@ -73,6 +80,10 @@ async function walkDirectory(
     }
 
     if (dirent.isDirectory()) {
+      if (maxDepth !== undefined && childRelative.split('/').length > maxDepth) {
+        issues.push({ code: 'INVALID_CONTENT', path: childRelative, message: `Directory depth exceeds the ${maxDepth}-segment import limit` });
+        continue;
+      }
       if (relative === '' && dirent.name.toLowerCase() === DATABASES_DIR) {
         await collectDatabases(childAbsolute, childRelative, entries, issues);
         continue;
@@ -86,7 +97,7 @@ async function walkDirectory(
         continue;
       }
       folders.push(childRelative);
-      await walkDirectory(childAbsolute, childRelative, entries, issues, folders);
+      await walkDirectory(childAbsolute, childRelative, entries, issues, folders, maxDepth, budget);
       continue;
     }
 

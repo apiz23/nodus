@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -38,6 +38,13 @@ async function inventory(root: string, prefix = ''): Promise<string[]> {
 async function request<T>(base: string, dir: string) {
   const response = await fetch(`${base}/api/import/preview`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }),
+  });
+  return { status: response.status, body: await response.json() as T };
+}
+
+async function execute<T>(base: string, body: unknown) {
+  const response = await fetch(`${base}/api/import/execute`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   return { status: response.status, body: await response.json() as T };
 }
@@ -98,9 +105,11 @@ describe('POST /api/import/preview', () => {
       expect(stableTarget.some((item) => item.startsWith('.nodus-templates/'))).toBe(true);
       expect(stableTarget.some((item) => item.startsWith('.nodus-automations/'))).toBe(true);
       try {
-      const portable = await request<{ format: string; manifestVersion: number; counts: { notes: number }; resources: Array<{ status: string; safeChoices: string[] }>; conflicts: Array<{ status: string; safeChoices: string[] }>; warnings: string[] }>(base, portableDir);
+      const portable = await request<{ format: string; manifestVersion: number; previewId: string; expiresAt: string; counts: { notes: number }; resources: Array<{ status: string; safeChoices: string[] }>; conflicts: Array<{ status: string; safeChoices: string[] }>; warnings: string[] }>(base, portableDir);
         expect(portable.status).toBe(200);
         expect(portable.body).toMatchObject({ format: 'nodus-portable-export', manifestVersion: 1, counts: { notes: 4 } });
+        expect(portable.body.previewId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        expect(Date.parse(portable.body.expiresAt)).toBeGreaterThan(Date.parse(NOW));
         expect(portable.body.resources.map((resource) => resource.status).sort()).toEqual(['conflict', 'conflict', 'identical', 'new']);
         expect(portable.body.conflicts.map((resource) => resource.safeChoices).sort((a, b) => a.length - b.length)).toEqual([['skip'], ['skip', 'replace']]);
         expect(portable.body.warnings.some((warning) => warning.includes('ignored.csv') || warning.includes('excluded from source export'))).toBe(true);
@@ -163,6 +172,126 @@ describe('POST /api/import/preview', () => {
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         await middleware.dispose();
+      }
+    });
+  });
+});
+
+describe('POST /api/import/execute', () => {
+  it('publishes only the explicit choices bound to a fresh preview and rejects handle reuse', async () => {
+    await withTempDir(async (root) => {
+      const activePath = join(root, 'workspace');
+      const active = await FileSystemVault.open(activePath);
+      const source = await FileSystemVault.open(join(root, 'source'));
+      await source.createNote(createNote({ id: NEW_NOTE_ID, title: 'Incoming item', path: 'notes/new.md', body: 'incoming', now: NOW }));
+      const portableDir = join(root, 'portable');
+      await exportVault(source, portableDir, { now: NOW });
+      const middleware = createLocalApiMiddleware({ vaultPath: activePath, now: () => NOW });
+      const server = createServer((req, res) => middleware(req, res, () => { res.statusCode = 404; res.end(); }));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test API address');
+      const base = `http://127.0.0.1:${address.port}`;
+      try {
+        const preview = await request<{ previewId: string; resources: Array<{ kind: string; id: string; path: string; status: string; safeChoices: string[] }> }>(base, portableDir);
+        expect(preview.status).toBe(200);
+        const resource = preview.body.resources.find((item) => item.id === NEW_NOTE_ID)!;
+        expect(resource.status).toBe('new');
+        const decisions = preview.body.resources.map((item) => ({ kind: item.kind, id: item.id, path: item.path, choice: item.id === NEW_NOTE_ID ? 'add' : 'skip' }));
+        const response = await execute<{ state: string; operationId: string; resources: Array<{ path: string; status: string }> }>(base, { previewId: preview.body.previewId, confirm: true, decisions });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ state: 'completed' });
+        expect(response.body.operationId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(response.body.resources.find((item) => item.path === resource.path)?.status).toBe('published');
+        expect((await active.readNote(NEW_NOTE_ID)).body).toBe('incoming');
+        const listed = await fetch(`${base}/api/import/operations`);
+        expect(listed.status).toBe(200);
+        const listing = await listed.json() as { operations: Array<{ operationId: string; state: string }> };
+        expect(listing.operations).toContainEqual(expect.objectContaining({ operationId: response.body.operationId, state: 'committed' }));
+        const status = await fetch(`${base}/api/import/operations/${response.body.operationId}`);
+        expect(status.status).toBe(200);
+        expect(await status.json()).toMatchObject({ operationId: response.body.operationId, state: 'committed' });
+        const retryCompleted = await fetch(`${base}/api/import/operations/${response.body.operationId}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
+        expect(retryCompleted.status).toBe(409);
+        const reused = await execute<{ error: { code: string } }>(base, { previewId: preview.body.previewId, confirm: true, decisions });
+        expect(reused.status).toBe(409);
+        expect(reused.body.error.code).toBe('STALE_PREVIEW');
+        const unconfirmed = await execute<{ error: { code: string } }>(base, { previewId: 'unused', confirm: false, decisions: [] });
+        expect(unconfirmed.status).toBe(400);
+        expect(unconfirmed.body.error.code).toBe('CONFIRMATION_REQUIRED');
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        await middleware.dispose();
+        source.dispose();
+        active.dispose();
+      }
+    });
+  });
+
+  it('rejects a package changed after preview without modifying the destination', async () => {
+    await withTempDir(async (root) => {
+      const activePath = join(root, 'workspace');
+      const active = await FileSystemVault.open(activePath);
+      const source = await FileSystemVault.open(join(root, 'source'));
+      await source.createNote(createNote({ id: NEW_NOTE_ID, title: 'Incoming item', path: 'notes/new.md', body: 'incoming', now: NOW }));
+      const portableDir = join(root, 'portable');
+      await exportVault(source, portableDir, { now: NOW });
+      const middleware = createLocalApiMiddleware({ vaultPath: activePath, now: () => NOW });
+      const server = createServer((req, res) => middleware(req, res, () => { res.statusCode = 404; res.end(); }));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test API address');
+      const base = `http://127.0.0.1:${address.port}`;
+      try {
+        const preview = await request<{ previewId: string; resources: Array<{ kind: string; id: string; path: string }> }>(base, portableDir);
+        expect(preview.status).toBe(200);
+        await writeFile(join(portableDir, 'notes', 'new.md'), serializeNote(createNote({ id: NEW_NOTE_ID, title: 'Edited after review', path: 'notes/new.md', body: 'external change', now: NOW })), 'utf8');
+        const decisions = preview.body.resources.map((item) => ({ ...item, choice: 'add' }));
+        const response = await execute<{ error: { code: string; message: string } }>(base, { previewId: preview.body.previewId, confirm: true, decisions });
+        expect(response.status).toBe(409);
+        expect(response.body.error).toMatchObject({ code: 'STALE_PREVIEW' });
+        expect(response.body.error.message).toMatch(/fresh preview/i);
+        await expect(active.readNote(NEW_NOTE_ID)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        await middleware.dispose();
+        source.dispose();
+        active.dispose();
+      }
+    });
+  });
+
+  it('reports a source removed after preview as stale without touching the destination', async () => {
+    await withTempDir(async (root) => {
+      const activePath = join(root, 'workspace');
+      const active = await FileSystemVault.open(activePath);
+      const source = await FileSystemVault.open(join(root, 'source'));
+      await source.createNote(createNote({ id: NEW_NOTE_ID, title: 'Incoming item', path: 'notes/new.md', body: 'incoming', now: NOW }));
+      const portableDir = join(root, 'portable');
+      await exportVault(source, portableDir, { now: NOW });
+      const middleware = createLocalApiMiddleware({ vaultPath: activePath, now: () => NOW });
+      const server = createServer((req, res) => middleware(req, res, () => { res.statusCode = 404; res.end(); }));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test API address');
+      const base = `http://127.0.0.1:${address.port}`;
+      try {
+        const preview = await request<{ previewId: string; resources: Array<{ kind: string; id: string; path: string }> }>(base, portableDir);
+        expect(preview.status).toBe(200);
+        await rm(portableDir, { recursive: true });
+        const decisions = preview.body.resources.map((item) => ({ ...item, choice: 'add' }));
+        const response = await execute<{ error: { code: string } }>(base, { previewId: preview.body.previewId, confirm: true, decisions });
+        expect(response.status).toBe(409);
+        expect(response.body.error.code).toBe('STALE_PREVIEW');
+        await expect(active.readNote(NEW_NOTE_ID)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        await middleware.dispose();
+        source.dispose();
+        active.dispose();
       }
     });
   });

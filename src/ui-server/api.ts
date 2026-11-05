@@ -83,7 +83,8 @@ import { parseTemplate, resolveNoteTemplate, type NodusTemplate } from '../datab
 import { serializeDatabaseView } from '../database/database-view.js';
 import { databaseViewPath } from '../storage/fs/layout.js';
 import { projectNoteProperties } from '../database/note-properties.js';
-import { applyImport, previewImport as previewPortableImport } from '../storage/portable/import.js';
+import { applyImport, createImportPreviewSnapshot, planImport } from '../storage/portable/import.js';
+import { ImportPreviewSessionStore, parseImportResourceDecisions, validateImportResourceDecisions } from '../storage/portable/preview-session.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -143,6 +144,7 @@ export function createLocalApiMiddleware(
 ): LocalApiMiddleware {
   let activeVaultPath: string | null = options.interactiveStartup ? null : resolve(options.vaultPath);
   const clock = options.now ?? NOW;
+  const importPreviewSessions = new ImportPreviewSessionStore({ now: () => Date.parse(clock()) });
   const chooseFolder = options.folderPicker ?? pickFolder;
   const preferencesFile = options.preferencesPath ?? applicationPreferencesPath();
   const defaultVaultPath = resolve(options.defaultVaultPath ?? options.vaultPath);
@@ -1239,7 +1241,63 @@ export function createLocalApiMiddleware(
       const body = await readJson(req);
       const vault = await getVault();
       const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
-      return sendJson(res, 200, await previewPortableImport(source, vault));
+      const result = await createImportPreviewSnapshot(source, vault);
+      const session = importPreviewSessions.issue(result.binding);
+      return sendJson(res, 200, { ...result.preview, previewId: session.previewId, expiresAt: session.expiresAt });
+    }
+
+    if (method === 'POST' && path === '/api/import/execute') {
+      const body = await readJson(req);
+      if (body.confirm !== true) throw new ApiError(400, 'CONFIRMATION_REQUIRED', 'Confirm the reviewed import before execution.');
+      const previewId = requireString(body.previewId, 'previewId');
+      const decisions = parseImportResourceDecisions(body.decisions);
+      const pending = importPreviewSessions.read(previewId);
+      validateImportResourceDecisions(pending.binding, decisions);
+      const session = importPreviewSessions.consume(previewId);
+      const vault = await getVault();
+      let source: string;
+      try { source = await requireBackupSource(session.binding.sourcePath, vault); }
+      catch (error) {
+        if (error instanceof ApiError && error.status === 404) throw new ApiError(409, 'STALE_PREVIEW', 'The source package is no longer available. Create a fresh preview after restoring or selecting the package.');
+        throw error;
+      }
+      let plan: Awaited<ReturnType<typeof planImport>>;
+      try { plan = await planImport(source); }
+      catch { throw new ApiError(409, 'STALE_PREVIEW', 'The source package changed or is no longer valid. Create a fresh preview and review its diagnostics.'); }
+      try {
+        const report = await vault.applyReviewedImport(plan, session.binding, decisions);
+        backlinkIndex.markDirty();
+        return sendJson(res, 200, report);
+      } catch (error) {
+        if (isStorageError(error) && error.code === 'PARTIAL_WRITE') backlinkIndex.markDirty();
+        throw error;
+      }
+    }
+
+    if (method === 'GET' && path === '/api/import/operations') {
+      return sendJson(res, 200, { operations: await (await getVault()).listImportOperations() });
+    }
+
+    const importOperationMatch = /^\/api\/import\/operations\/([0-9a-f-]{36})(?:\/(recover|retry))?$/.exec(path);
+    if (importOperationMatch && importOperationMatch[2] === 'recover' && method === 'POST') {
+      const body = await readJson(req);
+      if (body.action !== 'rollback') throw new ApiError(400, 'INVALID_INPUT', 'Recovery action must be "rollback".');
+      const status = await (await getVault()).recoverImportOperation(importOperationMatch[1]!);
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, status);
+    }
+    if (importOperationMatch && importOperationMatch[2] === 'retry' && method === 'POST') {
+      const body = await readJson(req);
+      if (body.confirm !== true) throw new ApiError(400, 'CONFIRMATION_REQUIRED', 'Confirm the reviewed retry before execution.');
+      const report = await (await getVault()).retryImportOperation(importOperationMatch[1]!);
+      backlinkIndex.markDirty();
+      return sendJson(res, 200, report);
+    }
+    if (importOperationMatch && importOperationMatch[2] === undefined && method === 'GET') {
+      const operations = await (await getVault()).listImportOperations();
+      const operation = operations.find((candidate) => candidate.operationId === importOperationMatch[1]);
+      if (!operation) throw new ApiError(404, 'NOT_FOUND', 'Import operation was not found.');
+      return sendJson(res, 200, operation);
     }
 
     if (method === 'POST' && path === '/api/restore') {
@@ -2532,6 +2590,8 @@ export function storageStatus(code: string): number {
     case 'CONFLICT':
     case 'DUPLICATE_ID':
     case 'STALE_WRITE':
+    case 'STALE_PREVIEW':
+    case 'PREVIEW_EXPIRED':
       return 409;
     case 'UNSAFE_PATH':
     case 'INVALID_INPUT':

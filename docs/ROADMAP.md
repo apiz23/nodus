@@ -2,8 +2,8 @@
 
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
-**Last updated:** 2026-11-03
-**Latest verified integrated baseline:** `origin/main` at `331bce0f98b66a38e59bc62a3ae744f6f845b20d` (Phase 27 PR #16 merged; checked 2026-11-03).
+**Last updated:** 2026-11-05
+**Latest verified integrated baseline:** `origin/main` at `fed2b32f5d5235d7b29523bb9565bf66f38c85dd` (Phase 29B/29C PR #19 squash-merged; checked 2026-11-05).
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -46,7 +46,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
 
 1. [How to Read This Roadmap](#1-how-to-read-this-roadmap)
 2. [Current State at a Glance](#2-current-state-at-a-glance)
-   - [Current Forward Sequence (verified 2026-11-03)](#current-forward-sequence-verified-2026-11-03)
+   - [Current Forward Sequence (verified 2026-11-05)](#current-forward-sequence-verified-2026-11-05)
 3. [Completed and Historical Milestones](#3-completed-and-historical-milestones)
    - [3.1 Milestone Summary](#31-milestone-summary)
    - [Phase 1 — Application Foundation and Domain Model](#phase-1--application-foundation-and-domain-model)
@@ -169,7 +169,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 - Production build reports the App chunk at 799.91 kB (796.92 kB at the Phase 17 baseline). The advisory remains; no bundling refactor was made.
 - Phase 17G baseline: serial full suite passed, 98 files / 1,137 tests; graph benchmark recorded 78.45 ms for 5,000 notes / 15,000 links.
 
-### Current Forward Sequence (verified 2026-11-03)
+### Current Forward Sequence (verified 2026-11-05)
 
 The prior proposal list in Section 4 is retained for historical context and is superseded by this current sequence.
 
@@ -181,8 +181,8 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 25 | Smart Organization | COMPLETE WITH LIMITATIONS — integrated | PR #14 merged. Folder moves remain deferred while legacy Phase 19 is pending integration. |
 | 26 | Workspace Customization | COMPLETE WITH LIMITATIONS — integrated | PR #15 merged; browser-local global theme and vault-scoped layout preferences. |
 | 27 | Task Management | COMPLETE WITH LIMITATIONS — integrated | PR #16 merged; derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
-| 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
-| 29 | Advanced Import & Export | IN PROGRESS | Phase 29B portable export and Phase 29C import validation/preview are implemented and verified; Phase 29C awaits owner acceptance because previews are not revision-bound. Phase 29D has not started. |
+| 28 | Calendar & Timeline | COMPLETE / ACCEPTED | Formally accepted 2026-11-04; bounded month-card Timeline remains the accepted Phase 28 scope. |
+| 29 | Advanced Import & Export | IN PROGRESS | Phase 29A audit and 29B portable export are complete; 29C import validation/preview was accepted by the owner on 2026-11-05. Phase 29D.1–29D.6 implementation and final reliability verification are recorded in the isolated worktree handoff; formal Phase 29D acceptance remains pending owner review. Publication is recoverable, not package-atomic; external filesystem races, a pre-journal initialization window, stale process-lock recovery, and indefinite journal retention remain documented limits. Import bounds are 10,000 resources / 20,000 filesystem entries / 256 MiB package / 64 MiB per resource / 64 path segments. Phase 29 remains IN PROGRESS. See [Phase 29D handoff](phase29d-handoff.md) and [Phase 29D plan](phase29d-plan.md). |
 | 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
 | 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
 | 32 | Product Experience & UX Simplification | PLANNED | Precedes desktop integration. |

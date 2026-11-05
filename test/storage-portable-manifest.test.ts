@@ -9,6 +9,7 @@ import { planImport, previewImport } from '../src/storage/portable/import.js';
 import { withVaultRootLock } from '../src/storage/fs/root-lock.js';
 import { createPortableManifest, PORTABLE_EXPORT_VERSION, validatePortableExport, validatePortableManifest, validatePortablePath } from '../src/storage/portable/manifest.js';
 import { withTempDir } from './tmp.js';
+import { IMPORT_MAX_PACKAGE_BYTES, IMPORT_MAX_RESOURCE_BYTES } from '../src/storage/portable/limits.js';
 
 const NOW = '2026-11-04T00:00:00Z';
 const NOTE_ID = '2a4c6e80-1357-4b9d-8e0f-123456789abc';
@@ -53,6 +54,14 @@ describe('portable export manifest', () => {
 
   it('rejects absolute and traversing paths', () => {
     for (const path of ['/absolute/file', '../escape', 'a/../../b', 'C:/escape', 'a\\b', 'notes/..']) expect(() => validatePortablePath(path)).toThrow();
+  });
+
+  it('rejects manifest-declared resource sizes beyond operational import limits', () => {
+    const oversized = { kind: 'note' as const, id: 'large', path: 'notes/large.md', bytes: IMPORT_MAX_RESOURCE_BYTES + 1, sha256: '0'.repeat(64) };
+    expect(() => createPortableManifest({ createdAt: NOW, snapshotConsistency: 'cooperating-nodus-writers', formats, resources: [oversized], folders: [], excluded: [] })).toThrow(/per-resource limit/i);
+    const total = Array.from({ length: 5 }, (_, index) => ({ kind: 'note' as const, id: `note-${index}`, path: `notes/${index}.md`, bytes: IMPORT_MAX_RESOURCE_BYTES, sha256: '0'.repeat(64) }));
+    expect(IMPORT_MAX_PACKAGE_BYTES).toBeLessThan(total.reduce((sum, item) => sum + item.bytes, 0));
+    expect(() => createPortableManifest({ createdAt: NOW, snapshotConsistency: 'cooperating-nodus-writers', formats, resources: total, folders: [], excluded: [] })).toThrow(/total resource limit/i);
   });
 
   it('verifies exact resource bytes and detects modification, missing files, size errors, and extras', async () => {
