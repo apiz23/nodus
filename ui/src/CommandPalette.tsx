@@ -8,6 +8,7 @@ import {
   FolderClosed,
   History,
   Keyboard,
+  ListTodo,
   Moon,
   Network,
   Plus,
@@ -155,6 +156,14 @@ export function CommandPalette({
         category: 'Navigation',
         icon: <FileText />,
         run: () => onView('notes'),
+      },
+      {
+        id: 'view-tasks',
+        title: 'Tasks',
+        keywords: 'todo checklist checkboxes open completed due priority',
+        category: 'Navigation',
+        icon: <ListTodo />,
+        run: () => onView('tasks'),
       },
       {
         id: 'view-discovery',

@@ -5,7 +5,7 @@ export const LEGACY_SIDEBAR_WIDTH_KEY = 'nodus-sidebar-width';
 
 export type WorkspaceTheme = 'light' | 'dark';
 export type EditorLayout = 'live' | 'source' | 'preview' | 'split';
-export type SidebarSectionId = 'discovery' | 'graph' | 'insights' | 'organization' | 'databases' | 'templates';
+export type SidebarSectionId = 'tasks' | 'discovery' | 'graph' | 'insights' | 'organization' | 'databases' | 'templates';
 export type WorkspacePresetId = 'writing' | 'research' | 'knowledge' | 'database' | 'minimal';
 
 export interface WorkspacePreferences {
@@ -47,7 +47,7 @@ export interface PreferenceStorage {
 }
 
 export const SIDEBAR_SECTIONS: readonly SidebarSectionId[] = [
-  'discovery', 'graph', 'insights', 'organization', 'databases', 'templates',
+  'tasks', 'discovery', 'graph', 'insights', 'organization', 'databases', 'templates',
 ];
 
 export const DEFAULT_WORKSPACE_PREFERENCES: WorkspacePreferences = {

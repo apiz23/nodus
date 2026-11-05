@@ -11,6 +11,9 @@ import type {
   UiKnowledgeInsights,
   UiOrganizationAnalysis,
   UiOrganizationMovePreview,
+  UiTasksResponse,
+  UiToggleTaskInput,
+  UiToggleTaskResponse,
   UiRelatedNotesResponse,
   UiGraphCluster,
   UiGraphPathResult,
@@ -50,7 +53,6 @@ import type {
   UiApiErrorBody,
   UiFolderImpact,
   UiAttachment,
-  UiTasksResponse,
 } from '../../src/ui-server/dto.js';
 import type { DatabaseView } from '../../src/database/database-view.js';
 
@@ -139,7 +141,6 @@ function jsonBody(value: unknown): string {
 }
 
 export const api = {
-  tasks(): Promise<UiTasksResponse> { return request<UiTasksResponse>('/api/tasks'); },
   scheduleTask(noteId: string, input: { taskId: string; scheduledDate: string; baseHash: string }): Promise<{ task: import('../../src/tasks/extract.js').ExtractedTask; projection: UiTasksResponse }> {
     return request(`/api/notes/${encodeURIComponent(noteId)}/tasks/schedule`, { method: 'PUT', body: jsonBody(input) });
   },
@@ -273,6 +274,12 @@ export const api = {
   },
   organization(refresh = false): Promise<UiOrganizationAnalysis> {
     return request(`/api/organization${refresh ? '?refresh=true' : ''}`);
+  },
+  tasks(refresh = false): Promise<UiTasksResponse> {
+    return request(`/api/tasks${refresh ? '?refresh=true' : ''}`);
+  },
+  toggleTask(noteId: string, input: UiToggleTaskInput): Promise<UiToggleTaskResponse> {
+    return request(`/api/notes/${encodeURIComponent(noteId)}/tasks/toggle`, { method: 'PUT', body: jsonBody(input) });
   },
   applyOrganizationSuggestion(suggestionId: string): Promise<{ note: UiNote }> {
     return request(`/api/organization/${encodeURIComponent(suggestionId)}/apply`, { method: 'POST', body: '{}' });

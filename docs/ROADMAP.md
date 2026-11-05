@@ -3,7 +3,7 @@
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
 **Last updated:** 2026-11-03
-**Latest verified integrated baseline:** `origin/main` at `a8c6675ed3741031d20021b5d22fe80ab6bd70f5` (Phase 25 PR #14 merged; checked 2026-11-03).
+**Latest verified integrated baseline:** `origin/main` at `331bce0f98b66a38e59bc62a3ae744f6f845b20d` (Phase 27 PR #16 merged; checked 2026-11-03).
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -156,7 +156,7 @@ This roadmap covers the application, storage, database, editor, search, UI, test
 | Command palette, shortcuts, recent notes | **Implemented with documented limits** | `ui/src/CommandPalette.tsx`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `docs/shortcuts.md` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **114 files / 1,204 executed tests** (Phase 24 integrated baseline; 2026-11-03) | `test/` |
+| Test suite | **122 files / 1,241 executed tests** (Phase 27 feature baseline; 2026-11-03) | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
@@ -179,8 +179,8 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 23 | Advanced Search & Filtering | COMPLETE WITH LIMITATIONS — integrated | PR #12 merged. |
 | 24 | Knowledge Retrieval | COMPLETE WITH LIMITATIONS — integrated; 24D deferred | PR #13 merged. |
 | 25 | Smart Organization | COMPLETE WITH LIMITATIONS — integrated | PR #14 merged. Folder moves remain deferred while legacy Phase 19 is pending integration. |
-| 26 | Workspace Customization | IN PROGRESS on `feat/phase-26-workspace-customization` | Reuses existing UI resizable panels; browser-local global theme and vault-scoped layout preferences. |
-| 27 | Task Management | PLANNED | Portable Markdown task conventions. |
+| 26 | Workspace Customization | COMPLETE WITH LIMITATIONS — integrated | PR #15 merged; browser-local global theme and vault-scoped layout preferences. |
+| 27 | Task Management | COMPLETE WITH LIMITATIONS — integrated | PR #16 merged; derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
 | 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
 | 29 | Advanced Import & Export | PLANNED | Preserve Markdown, metadata, and graph view portability. |
 | 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
@@ -192,6 +192,18 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 36 | Release Readiness | PLANNED | Final quality and compatibility review. |
 
 Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**. It is not the current Phase 28 calendar work and should be resolved before enabling automatic note or folder moves from organization suggestions.
+
+### Phase 27 — Task Management
+
+**Objective:** Aggregate portable Markdown tasks into a useful, reliable task workflow.
+
+**Implemented on `feat/phase-27-task-management`:** GFM checklist extraction with source positions, nested parent/child context, nearest heading, deterministic ordering, and code-block/inline-code exclusion. The Tasks dashboard provides status filters, client-side text/folder filtering, sorting, grouping, counts, source-note navigation, loading/empty/error states, and revision-safe completion/reopening. Due dates and priorities use visible trailing `[due:YYYY-MM-DD]` and `[priority:high|medium|low]` tokens; no hidden metadata is introduced.
+
+**Architecture:** `src/tasks/extract.ts` uses the same `@lezer/markdown` GFM grammar as the editor. The projection is derived lazily from the existing knowledge snapshot and raw note hashes; no task database or second persistence layer exists. See [task management](task-management.md) for syntax, update safety, limits, and measurements.
+
+**Status:** **COMPLETE WITH LIMITATIONS — integrated in PR #16** (`331bce0`).
+
+**Known limitations:** Metadata tokens are a visible Nodus convention, not a universal Markdown standard. One task marker per list item; multiple inline checkbox tokens are not separate tasks. No assignees, dependencies, recurrence, WIP limits, project boards, or persistent task filters.
 
 ---
 
@@ -2110,6 +2122,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 | CodeMirror Live/Source/Preview modes | `ui/src/editor/CodeMirrorEditor.tsx`, `ui/src/Editor.tsx` | Implemented |
 | Formatting commands and toolbar | `ui/src/editor/markdownCommands.ts`, `MarkdownToolbar.tsx` | Implemented |
 | GFM task lists | `ui/src/editor/taskList.ts`, `taskMarkers.ts` | Implemented |
+| Derived tasks dashboard and safe completion | `src/tasks/extract.ts`, `ui/src/TasksView.tsx`, `ui/src/task-view.ts` | Implemented with limitations; see [task management](task-management.md) |
 | Markdown preview | `ui/src/editor/MarkdownPreview.tsx` | Implemented |
 | Page icons | `ui/src/PageIconPicker.tsx`, `src/ui-server/page-icon.ts` | Implemented |
 | Managed attachments and image paste/drop | `src/storage/fs/attachments.ts`, `ui/src/editor/AttachmentBrowser.tsx` | Implemented |
@@ -2627,6 +2640,9 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-42 | Links | Path links still break when a note moves | `[[folder/old-path]]` references become unresolved | Use ID-pinned links; repair explicitly from Discovery |
 | L-43 | Links | Rename alias preservation depends on a successful whole-vault link scan | A malformed unrelated note can skip preservation while the save still succeeds | Health diagnostics identify malformed notes; the save is never blocked |
 | L-44 | Links | Repair is one occurrence per request | Large broken-link sets need repeated actions | A bounded repair-all workflow is future work; no silent bulk rewrite exists |
+| L-45 | Tasks | Due/priority metadata is visible trailing text, not a universal Markdown standard | Other editors show the tokens as ordinary text | Document the syntax; never invent hidden task state |
+| L-46 | Tasks | Task projection is capped at 50,000 and the dashboard initially renders 200 rows | Very large vaults may need filtering or Show more | Counts remain complete; surface truncation and refine filters |
+| L-47 | Tasks | One task marker per list item; no assignees, recurrence, dependencies, boards, or persistent task filters | Scope is intentionally narrower than a task application | Keep these deferred until separately designed |
 
 ---
 
@@ -2771,6 +2787,17 @@ Append a new entry after every significant task. Do not rewrite history; correct
 - **Files changed:** `ui/src/graph-viewport.ts`, `ui/src/graph-model.ts`, `ui/src/GraphView.tsx`, `ui/src/graph-saved-views.ts`, tests, `scripts/graph-canvas-smoke.mjs`, benchmark, README, docs, and roadmap.
 - **Integration note:** Built from `origin/main` at `6e3795c` after Phase 22 merged. Phase 19 remains unmerged.
 - **Known limitations:** Node positions are saved only in graph views. Large layouts remain bounded and label LOD hides most labels when zoomed out. No force simulation.
+
+---
+
+### 2026-11-03 — Phase 27 — Task Management
+
+- **Status:** COMPLETE WITH LIMITATIONS — integrated in PR #16 (`331bce0`).
+- **Summary:** Added a reusable Lezer/GFM task extraction module, a lazily rebuilt vault task projection with raw note hashes, a Tasks dashboard with counts, filters, sorting, grouping, metadata badges, and source navigation, and a revision-safe endpoint that changes only the selected checkbox marker. No task database or separate task persistence was introduced.
+- **Files changed:** `src/tasks/extract.ts`, `src/ui-server/api.ts`, `src/ui-server/dto.ts`, `src/storage/fs/vault.ts`, `ui/src/TasksView.tsx`, `ui/src/task-view.ts`, `ui/src/api.ts`, `ui/src/App.tsx`, `ui/src/Sidebar.tsx`, `ui/src/CommandPalette.tsx`, `ui/src/Editor.tsx`, `ui/src/editor/CodeMirrorEditor.tsx`, `ui/src/workspacePreferences.ts`, `ui/src/WorkspaceCustomizationSettings.tsx`, tests, `scripts/tasks-smoke.mjs`, `benchmark/tasks.benchmark.ts`, docs, README, package scripts, and this roadmap.
+- **Tests executed:** Focused extraction, projection, task-view, API, and view tests passed. Full serial suite: `pnpm test --maxWorkers=1` — 122 files / 1,241 tests passed. Typecheck, build, browser, task smoke, search/editor/vault/database/graph/discovery smokes, and `pnpm bench:tasks` are recorded in the delivery report. Phase 27 task projection is observational and not a performance guarantee.
+- **Known limitations:** Metadata uses visible trailing text tokens rather than a universal Markdown standard. One marker per list item; no assignees, recurrence, dependencies, boards, or persisted task filters. Projection is bounded at 50,000 tasks and the UI initially renders 200 rows.
+- **Remaining work:** Post-merge follow-up only: wrap long task descriptions in the dashboard. Phase 28 Calendar & Timeline is not started.
 
 ---
 

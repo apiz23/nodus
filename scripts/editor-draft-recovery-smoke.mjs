@@ -28,7 +28,37 @@ try {
   let page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${base}/`);
+  await page.evaluate(async () => {
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open('nodus-draft-recovery', 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        database.createObjectStore('drafts', { keyPath: 'key' });
+        database.createObjectStore('watermarks', { keyPath: 'key' });
+      };
+      request.onsuccess = () => { request.result.close(); resolve(); };
+      request.onerror = () => reject(request.error);
+    });
+  });
   await page.goto(`${base}/app`);
+  await page.getByRole('treeitem', { name: `Recovery smoke (recovery-smoke.md)`, exact: true }).waitFor();
+  await page.waitForTimeout(500);
+  const upgraded = await page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('nodus-draft-recovery');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction('drafts', 'readonly');
+    const indexes = [...transaction.objectStore('drafts').indexNames];
+    const result = { version: database.version, stores: [...database.objectStoreNames], indexes };
+    database.close();
+    return result;
+  });
+  assert.equal(upgraded.version, 2, 'Draft recovery database did not upgrade to version 2');
+  assert(upgraded.stores.includes('deleted-notes'), 'Draft recovery database did not add the deleted-notes store');
+  assert(upgraded.indexes.includes('vaultIdentity'), 'Draft recovery database did not add the vaultIdentity index');
   await page.getByRole('treeitem', { name: `Recovery smoke (recovery-smoke.md)`, exact: true }).click();
   await page.getByRole('button', { name: 'Source', exact: true }).click();
 

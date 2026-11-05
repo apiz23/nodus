@@ -45,6 +45,9 @@ describe('Markdown task extraction and temporal metadata', () => {
       text: 'Review', dueDate: '2026-11-11', dueDateStatus: 'valid', scheduledDate: '2026-11-09', scheduledDateStatus: 'valid', priority: 'low',
     });
     expect(parseTaskMetadata('Priority [priority:high] [priority:low]')).toMatchObject({ text: 'Priority', priority: 'high' });
+    expect(parseTaskMetadata('Mention [due:2026-11-10] in prose only')).toMatchObject({
+      text: 'Mention [due:2026-11-10] in prose only', dueDate: null, dueDateStatus: 'missing',
+    });
   });
 
   it('leaves invalid date metadata visible and marks it invalid', () => {

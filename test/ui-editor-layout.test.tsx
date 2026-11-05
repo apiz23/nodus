@@ -58,6 +58,7 @@ function render(fullWidth: boolean): string {
         onDelete: () => {},
         onOpenNote: () => {},
         backlinksRevision: 0,
+        taskNavigation: null,
       }),
     ),
   );

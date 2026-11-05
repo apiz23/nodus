@@ -96,6 +96,7 @@ interface EditorProps {
   onUnsetPropertyValue: (propertyId: string) => Promise<UiNote>;
   onCatalogChanged?: () => void;
   backlinksRevision: number;
+  taskNavigation: { line: number; sequence: number } | null;
 }
 
 export function Editor({
@@ -142,6 +143,7 @@ export function Editor({
   onUnsetPropertyValue,
   onCatalogChanged,
   backlinksRevision,
+  taskNavigation,
 }: EditorProps) {
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [headings, setHeadings] = useState<readonly DocumentHeading[]>([]);
@@ -624,6 +626,7 @@ export function Editor({
                       onOutlineChange={(next) => setHeadings((current) => sameHeadingList(current, next) ? current : next)}
                       onActiveHeadingChange={setActiveHeadingId}
                       outlineNavigationRequest={outlineNavigationRequest}
+                      taskNavigationRequest={taskNavigation}
                       notes={notes}
                       onOpenNote={onOpenNote}
                       notePath={note.path}
