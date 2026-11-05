@@ -19,6 +19,10 @@ import { DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH } from '../
 import { parseAutomationHistory, parseAutomations } from '../../database/automations.js';
 import { parseTemplates } from '../../database/templates.js';
 import { TEMPLATE_CATALOG_PATH } from '../fs/layout.js';
+import { PORTABLE_EXPORT_MANIFEST, validatePortableExport, type PortableExportManifest } from './manifest.js';
+import { projectRelations } from '../../database/relations.js';
+import { diagnoseDatabaseView } from '../../database/database-view.js';
+import type { ImportPreview, ImportPreviewResource } from '../contracts.js';
 
 /**
  * Reads and fully validates a portable import directory.
@@ -46,6 +50,11 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
       path: sourceDir,
     });
   }
+
+  let portableManifest: PortableExportManifest | undefined;
+  const manifestPath = join(source, PORTABLE_EXPORT_MANIFEST);
+  try { await lstat(manifestPath); portableManifest = await validatePortableExport(source); }
+  catch (error) { if (!isMissing(error)) throw error; }
 
   const walk = await walkVault(source);
   if (walk.issues.length > 0) {
@@ -164,7 +173,64 @@ export async function planImport(sourceDir: string): Promise<ImportPlan> {
 
   entries.push(...await readImportDatabaseAutomationFiles(source));
   entries.push(...await readImportTemplateFiles(source));
-  return { entries, notes, databases, databaseViews, databaseViewOrders: await readImportDatabaseViewOrders(source), ...(propertyCatalog === undefined ? {} : { propertyCatalog }) };
+  const databaseViewOrders = await readImportDatabaseViewOrders(source);
+  if (portableManifest) validateManifestResources(portableManifest, entries, propertyCatalog, databaseViewOrders);
+  return { entries, notes, databases, databaseViews, databaseViewOrders, ...(propertyCatalog === undefined ? {} : { propertyCatalog }), ...(portableManifest === undefined ? {} : { portableManifest, excluded: portableManifest.excluded }) };
+}
+
+/** Read-only comparison of a validated directory against the active vault. */
+export async function previewImport(sourceDir: string, vault: VaultStorage): Promise<ImportPreview> {
+  const source = resolve(sourceDir);
+  const plan = await planImport(source);
+  const target = await vault.snapshotForPortableExport?.();
+  if (!target) throw new StorageError('INVALID_INPUT', 'The active storage adapter cannot provide a consistent import preview.');
+  const incoming: PreviewSourceResource[] = plan.entries.map(previewResource);
+  if (plan.propertyCatalog) incoming.push({ kind: 'property-catalog', id: 'property-catalog', path: plan.propertyCatalog.path, bytes: plan.propertyCatalog.rawBytes });
+  for (const order of plan.databaseViewOrders ?? []) incoming.push({ kind: 'database-view-order', id: order.databaseId, path: order.path, bytes: order.rawBytes });
+  const existing: PreviewSourceResource[] = [...target.entries, ...target.automationFiles, ...target.templateFiles].map(previewResource);
+  if (target.propertyCatalog) existing.push({ kind: 'property-catalog', id: 'property-catalog', path: target.propertyCatalog.path, bytes: target.propertyCatalog.rawBytes });
+  for (const order of target.databaseViewOrders) existing.push({ kind: 'database-view-order', id: order.databaseId, path: order.path, bytes: order.rawBytes });
+  const resources = incoming.map((entry) => classifyResource(entry, existing));
+  const warnings = [...(plan.excluded ?? []).map((item) => `${item.path}: excluded from source export (${item.reason})`), ...databaseWarnings(plan)];
+  const counts = {
+    notes: resources.filter((item) => item.kind === 'note').length,
+    databases: resources.filter((item) => item.kind === 'database').length,
+    databaseViews: resources.filter((item) => item.kind === 'database-view').length,
+    attachments: resources.filter((item) => item.kind === 'attachment').length,
+    otherResources: resources.filter((item) => !['note','database','database-view','attachment'].includes(item.kind)).length,
+  };
+  return { source, format: plan.portableManifest ? 'nodus-portable-export' : 'legacy-directory', ...(plan.portableManifest ? { manifestVersion: plan.portableManifest.version } : {}), counts, resources, warnings, errors: [], conflicts: resources.filter((item) => item.status === 'conflict') };
+}
+
+function validateManifestResources(manifest: PortableExportManifest, entries: VaultEntry[], catalog: PropertyCatalogFile | undefined, orders: DatabaseViewOrderFileSnapshot[]): void {
+  const actual: Array<{ kind: string; id: string; path: string; ownerId?: string }> = entries.map((entry) => ({ kind: entry.kind, id: entry.id, path: entry.path, ...(entry.kind === 'database-view' ? { ownerId: entry.path.split('/')[1] } : {}) }));
+  if (catalog) actual.push({ kind: 'property-catalog', id: 'property-catalog', path: catalog.path });
+  for (const order of orders) actual.push({ kind: 'database-view-order', id: order.databaseId, path: order.path });
+  const expected = manifest.resources.map(({ kind, id, path, ownerId }) => ({ kind, id, path, ...(ownerId === undefined ? {} : { ownerId }) }));
+  const key = (r: { kind: string; id: string; path: string; ownerId?: string }) => JSON.stringify([r.kind, r.id, r.path, r.ownerId ?? null]);
+  if (actual.length !== expected.length || actual.some((resource) => !expected.some((candidate) => key(candidate) === key(resource)))) throw new StorageError('INVALID_CONTENT', 'Portable manifest resources do not match parsed resource identities, types, or paths.', { details: { paths: expected.map((item) => item.path) } });
+}
+
+interface PreviewSourceResource { kind: string; id: string; path: string; bytes: Uint8Array | string }
+function previewResource(entry: VaultEntry): PreviewSourceResource { return { kind: entry.kind, id: entry.id, path: entry.path, bytes: entry.rawBytes ?? entry.text }; }
+function classifyResource(incoming: PreviewSourceResource, existing: PreviewSourceResource[]): ImportPreviewResource {
+  const byId = existing.find((entry) => entry.kind === incoming.kind && entry.id === incoming.id);
+  const byPath = existing.find((entry) => entry.path.normalize('NFC').toLowerCase() === incoming.path.normalize('NFC').toLowerCase());
+  if (byId && byId.path === incoming.path && sha256Entry(byId) === sha256Entry(incoming)) return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'identical', safeChoices: ['skip'] };
+  if (byId || byPath) return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'conflict', reason: byId ? `ID already exists at ${byId.path}${byId.path !== incoming.path ? '; source path differs' : ' with different content'}` : `Path is already owned by ${byPath!.kind} ${byPath!.id}`, safeChoices: ['skip', ...(byId && byId.path === incoming.path ? ['replace' as const] : [])] };
+  return { kind: incoming.kind, id: incoming.id, path: incoming.path, status: 'new', safeChoices: ['skip'] };
+}
+
+function sha256Entry(entry: PreviewSourceResource): string { return createHash('sha256').update(entry.bytes).digest('hex'); }
+
+function databaseWarnings(plan: ImportPlan): string[] {
+  const warnings: string[] = [];
+  const schemas = new Map(plan.databases.map((database) => [database.id, database]));
+  for (const database of plan.databases) for (const property of database.properties) if (property.type === 'relation' && property.relation && !schemas.has(property.relation.databaseId)) warnings.push(`Database ${database.id} property ${property.id} targets missing database ${property.relation.databaseId}.`);
+  for (const view of plan.databaseViews ?? []) for (const diagnostic of diagnoseDatabaseView(view, schemas.get(view.databaseId))) warnings.push(`Saved view ${view.id}: ${diagnostic.message}`);
+  const relationProjection = projectRelations(plan.notes, schemas);
+  for (const issue of relationProjection.diagnostics) warnings.push(`${issue.path}: ${issue.message}`);
+  return [...new Set(warnings)];
 }
 
 async function readImportTemplateFiles(source: string): Promise<VaultEntry[]> {

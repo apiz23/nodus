@@ -251,22 +251,42 @@ Normal operations are strict: `listNotes`, `snapshot`, export, and backup throw 
 
 ## Export and import
 
-Export is a plain directory, not a proprietary archive:
+Portable export is a plain directory, not a proprietary archive. It remains shaped like a vault and carries `nodus-export.json` at the root:
 
 ```
 <export>/notes/roadmap.md
 <export>/databases/<id>.json
 <export>/database-views/<database-id>/<view-id>.json
 <export>/properties/catalog.json       # when present
+<export>/nodus-export.json             # v1 portable integrity manifest, written last
 ```
 
-- `exportVault(vault, target)` requires an empty target outside the vault, writes every valid note, definition, saved view, catalog, and attachment byte for byte, and reports counts. A partial failure can leave a valid subset that import accepts: a plain export has no completeness manifest. Confirm that export succeeded and check its counts; use a verified backup when interrupted-copy detection is required.
+- `exportVault(vault, target)` requires an empty target outside the vault. It writes supported resources byte for byte, generates SHA-256 and byte-length records over those exact bytes, validates the output, and writes the manifest last as a completion marker. A failure before that marker can leave files in the destination, but the directory is not a complete portable export and the destination must be inspected before retrying.
 - The export is itself a valid vault, so it can be opened directly by `FileSystemVault.open`.
+- Legacy directory exports without this manifest remain accepted by `planImport`; the new manifest is not required by the existing import reader.
+
+### Portable export manifest v1
+
+The format identifier is `nodus-portable-export`; the root file is `nodus-export.json`. Required fields are `format`, `version`, `createdAt` (UTC RFC 3339), `snapshotConsistency`, `formats`, `resources`, `folders`, `excluded`, and `digest`. `app` is optional package name/version metadata; `requiredFeatures` is an optional list reserved for format features that a reader must understand. Each resource has a stable type-scoped `id`, `kind`, safe relative POSIX `path`, exact serialized byte length, and lowercase SHA-256. Database views additionally carry their owning database ID. Folder paths preserve empty folders. Exclusions are explicit `{ path, reason }` diagnostics, not silent omissions.
+
+Resource kinds in v1 are `note`, `database`, `database-view`, `attachment`, `database-view-order`, `property-catalog`, `automation-definitions`, `automation-history`, and `template-catalog`. Schemas, records (Markdown notes with frontmatter), formulas, rollup definitions, relation IDs/references, view filters/sorts/grouping/calendar configuration, templates, and attachment-relative paths are preserved in their source files. Derived formula/rollup values are not made authoritative. Browser-local preferences are not vault resources.
+
+The manifest is self-validated before publication. Validation rejects missing or malformed required fields, unsupported manifest or component-format versions, unknown required features, duplicate type-scoped IDs, duplicate normalized paths, unsafe relative paths, missing/extra files or folders, byte-length mismatches, and checksum mismatches. Ordinary unknown JSON fields are ignored for validation and excluded from the canonical digest; readers do not interpret them. SHA-256 and the canonical digest detect accidental changes; they are not signatures or proof of authorship. A future incompatible manifest version must be rejected as unsupported rather than treated as v1.
+
+The version policy is additive: v1 keeps original Nodus files unchanged; new optional manifest fields can be added without changing v1 interpretation when they do not become required for safe reading. A feature necessary to interpret resources must be listed in `requiredFeatures`; a reader that does not support it rejects the package. Changes to required resource semantics or manifest structure require a new version. The backup manifest remains a separate recovery contract (`nodus-backup.json`) with its own version and restore behavior; the portable manifest is not a replacement for backup validation/restore.
+
+### Snapshot and omissions
+
+`FileSystemVault.snapshotForPortableExport()` captures notes, database definitions, saved views, attachments, property catalog, view order, automation files/history, template catalog, and visible folders under one `.nodus-vault-write.lock` acquisition. Export releases that lock before writing the destination, so normal Nodus workspace operations are blocked only while the source snapshot bytes are copied and validated. Writers that do not use Nodus's lock protocol (for example, an external editor or sync process modifying files directly) are outside this guarantee; the manifest declares `cooperating-nodus-writers`, not a filesystem-wide atomic snapshot. Snapshot/parser/lock failures abort before creating an export package and are reported; no successful manifest is emitted.
+
+Unknown ordinary file types, hidden user paths, and symbolic links are not copied as portable resources and are reported in `excluded`. Managed Nodus resources are included or cause the strict snapshot to fail; they are not silently dropped. The UI displays exclusions after success. Cancellation is not supported by the current local API. If writing fails after destination creation, the partial files remain for inspection and no completed export should be inferred from the absence of a valid manifest.
 
 Import is validated in two separable steps:
 
 1. `planImport(sourceDir)` reads and validates the whole directory with the note, database, saved-view, and property-catalog parsers. It rejects malformed files, unsupported versions, duplicate IDs or catalog definitions, reserved path/ID mismatches, symbolic links, and paths that collide by case or normalization. It writes nothing.
 2. `vault.applyImport(plan, options)` compares the plan with the target. Without `{ overwrite: true }`, any existing ID or path — including a different destination catalog — aborts with `CONFLICT` before a single write. With it, matching notes, databases, views, and the catalog are replaced, old note paths are removed after new files are written, and unrelated data is left alone.
+
+`POST /api/import/preview` accepts `{ dir }` under the same allowed-root and outside-active-vault rules used for backup sources. It validates manifest-based `nodus-export.json` v1 packages through the shared portable manifest validator, cross-checks manifest identities against parsed resources, and compares the resulting plan with the active vault. If a manifest exists but is malformed or invalid, preview returns an error and never falls back to legacy planning. Manifest-free legacy directories remain supported. The preview is read-only and has no apply action. Identical resources are labeled; ID or path conflicts are reported with safe choices (currently skip, and replace only when resource ID and path both match). Unsupported resource types, malformed schemas, bad checksums, and unsafe paths reject preview. Relation, formula, rollup, saved-view diagnostics and manifest exclusions appear as warnings when the existing validators can diagnose them; parser-level failures return an error DTO with resource-relative `paths` when known. The typed-path UI renders counts, status/conflicts, warnings, and structured error paths/issues. Preview does not bind a future import to a source or destination revision; no apply workflow exists.
 
 Behavior and limits:
 

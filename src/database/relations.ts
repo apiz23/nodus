@@ -1,5 +1,6 @@
 import type { Note } from '../domain/note.js';
 import { isUuidV4 } from '../domain/ids.js';
+import { isDateOnly } from '../temporal/date.js';
 import { projectNoteProperties, type NoteDatabaseRow, type NotePropertyValue, type RelationDiagnostic, type StructuredDataIssue } from './note-properties.js';
 import { validateRelationValue, type RelationTargetReference, type RelationWriteDiagnostic } from './relation-contract.js';
 import { isDerivedProperty, type DatabaseDefinition, type Property } from './schema.js';
@@ -76,7 +77,7 @@ function conditionFits(property: Property, value: unknown): boolean {
   if (property.type === 'checkbox') return typeof value === 'boolean';
   if (property.type === 'select' || property.type === 'multi-select') return property.options?.some((option) => option.id === value) ?? false;
   if (property.type === 'relation') return typeof value === 'string' && isUuidV4(value);
-  if (property.type === 'date') return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  if (property.type === 'date') return isDateOnly(value);
   return property.type === 'text' && typeof value === 'string';
 }
 

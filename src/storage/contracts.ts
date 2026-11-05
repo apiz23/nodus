@@ -244,6 +244,29 @@ export interface ImportPlan {
   databaseViewOrders?: DatabaseViewOrderFileSnapshot[];
   /** Validated catalog to import. Absent means a legacy source without one. */
   propertyCatalog?: PropertyCatalogFile;
+  /** Present only for v1 manifest-based portable packages. */
+  portableManifest?: import('./portable/manifest.js').PortableExportManifest;
+  excluded?: Array<{ path: string; reason: string }>;
+}
+
+export interface ImportPreviewResource {
+  kind: string;
+  id: string;
+  path: string;
+  status: 'new' | 'identical' | 'conflict' | 'invalid';
+  reason?: string;
+  safeChoices: Array<'skip' | 'replace'>;
+}
+
+export interface ImportPreview {
+  source: string;
+  format: 'legacy-directory' | 'nodus-portable-export';
+  manifestVersion?: number;
+  counts: { notes: number; databases: number; databaseViews: number; attachments: number; otherResources: number };
+  resources: ImportPreviewResource[];
+  warnings: string[];
+  errors: string[];
+  conflicts: ImportPreviewResource[];
 }
 
 export interface TemplateStore {
@@ -262,6 +285,20 @@ export interface ExportReport {
   propertyCatalog?: number;
   automationFiles?: number;
   templateFiles?: number;
+  /** Present on versioned portable exports; optional for legacy report consumers. */
+  manifest?: string;
+  manifestVersion?: number;
+  excluded?: Array<{ path: string; reason: string }>;
+}
+
+export interface PortableExportSnapshot {
+  entries: VaultEntry[];
+  propertyCatalog: PropertyCatalogFile | null;
+  databaseViewOrders: DatabaseViewOrderFileSnapshot[];
+  automationFiles: VaultEntry[];
+  templateFiles: VaultEntry[];
+  folders: string[];
+  excluded: Array<{ path: string; reason: string }>;
 }
 
 export interface BackupManifestFile {
@@ -381,6 +418,8 @@ export interface VaultStorage extends NoteStore, DatabaseStore, AutomationStore,
   snapshot(): Promise<VaultEntry[]>;
   /** Snapshot entries and the optional catalog read under one vault lock. */
   snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }>;
+  /** All portable resources captured under one root lock; implementations without this guarantee must not be used for portable export. */
+  snapshotForPortableExport?(): Promise<PortableExportSnapshot>;
   /** Reads and validates the optional catalog; null means no catalog file exists. */
   readPropertyCatalogFile(): Promise<PropertyCatalogFile | null>;
   /** Non-throwing diagnostic scan. I/O errors are still thrown. */

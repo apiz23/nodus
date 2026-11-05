@@ -1,18 +1,19 @@
 import { createHash } from 'node:crypto';
-import { GFM, parser } from '@lezer/markdown';
+import { markdownLanguage } from '@codemirror/lang-markdown';
 import type { Note } from '../domain/note.js';
+import { isDateOnly } from '../temporal/date.js';
 
 export type TaskPriority = 'high' | 'medium' | 'low';
+export type TaskDateStatus = 'missing' | 'valid' | 'invalid';
 export type TaskCounts = { total: number; open: number; completed: number; notesWithTasks: number };
 
 export interface ExtractedTask {
-  /** Derived, projection-local identity. It is not persisted. */
+  /** Projection-local identity. It is derived from Markdown and is not persisted. */
   id: string;
   noteId: string;
   noteTitle: string;
   notePath: string;
   noteContentHash: string;
-  /** Human-readable task text with recognized trailing metadata removed. */
   text: string;
   checked: boolean;
   line: number;
@@ -25,6 +26,19 @@ export interface ExtractedTask {
   heading: string | null;
   headingLine: number | null;
   dueDate: string | null;
+  /** New temporal metadata is optional on the public shape for Phase 27 DTO compatibility. */
+  dueDateStatus?: TaskDateStatus;
+  scheduledDate?: string | null;
+  scheduledDateStatus?: TaskDateStatus;
+  priority: TaskPriority | null;
+}
+
+export interface TaskMetadata {
+  text: string;
+  dueDate: string | null;
+  dueDateStatus: TaskDateStatus;
+  scheduledDate: string | null;
+  scheduledDateStatus: TaskDateStatus;
   priority: TaskPriority | null;
 }
 
@@ -39,24 +53,21 @@ export interface TaskExtractionOptions {
   maxTasks?: number;
 }
 
-type SyntaxNode = ReturnType<typeof parser.parse>['topNode'];
-type Heading = { from: number; line: number; text: string; level: number };
+type SyntaxNode = ReturnType<typeof markdownLanguage.parser.parse>['topNode'];
+type Heading = { from: number; line: number; text: string };
 type MutableTask = Omit<ExtractedTask, 'parentId'> & { node: SyntaxNode };
-
-const taskParser = parser.configure(GFM);
 const DEFAULT_MAX_TASKS = 50_000;
 
 /**
- * Extract GFM task-list items from a Markdown body. The parser is the same
- * Lezer grammar used by the editor, so fenced code, inline code, and ordinary
- * bracketed text are not mistaken for tasks.
+ * Extract GFM checklist items with the same Lezer Markdown grammar used by
+ * Nodus's editor. Code fences and inline code are excluded by the parser.
  */
 export function extractTasksFromBody(
   body: string,
   note: Pick<Note, 'id' | 'title' | 'path'>,
   noteContentHash = '',
 ): ExtractedTask[] {
-  const tree = taskParser.parse(body);
+  const tree = markdownLanguage.parser.parse(body);
   const headings = collectHeadings(tree.topNode, body);
   const lineStarts = [0];
   for (let index = 0; index < body.length; index++) if (body.charCodeAt(index) === 10) lineStarts.push(index + 1);
@@ -76,8 +87,10 @@ export function extractTasksFromBody(
       if (node.name !== 'Task') return;
       const marker = directChild(node.node, 'TaskMarker');
       if (!marker) return;
-      const raw = body.slice(marker.to, node.to).replace(/\s+/g, ' ').trim();
-      const metadata = parseTaskMetadata(raw);
+      // The Task node includes continuation paragraphs and stops before a
+      // nested list. Mask inline-code nodes before parsing trailing tokens.
+      const raw = body.slice(marker.to, node.to);
+      const metadata = parseMarkdownTaskMetadata(raw, marker.to, node.node);
       const line = lineAt(node.from);
       const heading = headingBefore(headings, node.from);
       const task: MutableTask = {
@@ -97,10 +110,13 @@ export function extractTasksFromBody(
         heading: heading?.text ?? null,
         headingLine: heading?.line ?? null,
         dueDate: metadata.dueDate,
+        dueDateStatus: metadata.dueDateStatus,
+        scheduledDate: metadata.scheduledDate,
+        scheduledDateStatus: metadata.scheduledDateStatus,
         priority: metadata.priority,
         node: node.node,
       };
-      byFrom.set(task.markerFrom, task);
+      byFrom.set(task.from, task);
     },
   });
 
@@ -109,10 +125,11 @@ export function extractTasksFromBody(
     let parentId: string | null = null;
     for (let ancestor = task.node.parent; ancestor; ancestor = ancestor.parent) {
       if (ancestor.name !== 'ListItem') continue;
-      const direct = directChild(ancestor, 'Task');
-      if (direct === null || direct.from === task.from) continue;
-      parentId = byFrom.get(direct.from)?.id ?? null;
-      if (parentId !== null) break;
+      const parent = directChild(ancestor, 'Task');
+      if (parent && parent.from !== task.from) {
+        parentId = byFrom.get(parent.from)?.id ?? null;
+        if (parentId !== null) break;
+      }
     }
     const { node: _node, ...rest } = task;
     tasks.push({ ...rest, parentId });
@@ -120,15 +137,11 @@ export function extractTasksFromBody(
   return tasks;
 }
 
-/** Extract tasks for one note using a caller-supplied raw-content hash. */
 export function extractTasksFromNote(note: Note, noteContentHash: string): ExtractedTask[] {
   return extractTasksFromBody(note.body, note, noteContentHash);
 }
 
-/**
- * Rebuild the vault-level projection from parsed Markdown. Task objects are
- * never persisted; callers replace the projection after a snapshot refresh.
- */
+/** Rebuild a Markdown-derived vault projection; task objects are never stored. */
 export function buildTaskProjection(
   notes: readonly Note[],
   hashes: ReadonlyMap<string, string> = new Map(),
@@ -152,26 +165,26 @@ export function buildTaskProjection(
     const hash = hashes.get(note.id) ?? '';
     const key = `${hash}\0${note.title}\0${note.path}`;
     const reused = previousByNote.get(note.id);
-    const extracted = reused?.key === key ? reused.tasks : extractTasksFromBody(note.body, note, hash);
+    const canReuse = reused?.key === key && reused.tasks.every((task) =>
+      task.dueDateStatus !== undefined && 'scheduledDate' in task && task.scheduledDateStatus !== undefined,
+    );
+    const extracted = canReuse && reused ? reused.tasks : extractTasksFromBody(note.body, note, hash);
     if (extracted.length === 0) continue;
     notesWithTasks++;
     total += extracted.length;
-    for (const task of extracted) {
-      if (task.checked) completed++;
-      else open++;
-    }
+    for (const task of extracted) task.checked ? completed++ : open++;
     tasks.push(...extracted);
   }
-  const limited = tasks.length > maxTasks;
+  const truncated = tasks.length > maxTasks;
   return {
-    tasks: limited ? tasks.slice(0, maxTasks) : tasks,
+    tasks: truncated ? tasks.slice(0, maxTasks) : tasks,
     counts: { total, open, completed, notesWithTasks },
     scannedNotes: notes.length,
-    truncated: limited,
+    truncated,
   };
 }
 
-/** Toggle only the verified task marker; all other Markdown is preserved. */
+/** Toggle only the verified checkbox marker; all other Markdown is preserved. */
 export function setTaskChecked(body: string, task: Pick<ExtractedTask, 'markerFrom' | 'markerTo' | 'checked'>, checked: boolean): string {
   const marker = body.slice(task.markerFrom, task.markerTo);
   if (marker.length !== 3 || marker[0] !== '[' || marker[2] !== ']' || !/^\[[ xX]\]$/.test(marker)) {
@@ -182,10 +195,115 @@ export function setTaskChecked(body: string, task: Pick<ExtractedTask, 'markerFr
   return `${body.slice(0, task.markerFrom + 1)}${replacement}${body.slice(task.markerFrom + 2)}`;
 }
 
-function directChild(node: SyntaxNode, name: string): SyntaxNode | null {
-  for (let child = node.firstChild; child; child = child.nextSibling) {
-    if (child.name === name) return child;
+/** Replace or append a task's scheduled token on its own source line only. */
+export function setTaskScheduledDate(body: string, task: ExtractedTask, date: string): string {
+  if (!isDateOnly(date)) throw new Error('Scheduled date must use YYYY-MM-DD.');
+  const current = extractTasksFromBody(body, { id: task.noteId, title: task.noteTitle, path: task.notePath }).find((item) => item.id === task.id);
+  if (!current || current.markerFrom !== task.markerFrom || current.checked !== task.checked) throw new Error('The task no longer matches the current Markdown source.');
+  if (current.scheduledDateStatus === 'invalid') throw new Error('This task has duplicate or invalid scheduled-date metadata. Repair the Markdown token before scheduling.');
+  const lineEnd = body.indexOf('\n', current.markerTo);
+  const firstLineEnd = lineEnd < 0 ? body.length : lineEnd;
+  const tree = markdownLanguage.parser.parse(body);
+  const codeRanges: Array<[number, number]> = [];
+  tree.iterate({ enter(node) { if (node.name === 'InlineCode' && node.from < current.to && node.to > current.from) codeRanges.push([node.from, node.to]); } });
+  const tokens = [...body.slice(current.from, current.to).matchAll(/\[scheduled:[^\]]*\]/gi)]
+    .map((match) => ({ from: current.from + match.index!, to: current.from + match.index! + match[0].length }))
+    .filter((token) => !codeRanges.some(([from, to]) => token.from >= from && token.to <= to));
+  if (tokens.length > 1 || (current.scheduledDateStatus === 'valid' && tokens.length !== 1)) throw new Error('Scheduled-date metadata is duplicated or malformed.');
+  if (tokens.length === 1) return `${body.slice(0, tokens[0]!.from)}[scheduled:${date}]${body.slice(tokens[0]!.to)}`;
+  return `${body.slice(0, firstLineEnd)} [scheduled:${date}]${body.slice(firstLineEnd)}`;
+}
+
+/** Parse portable trailing task tokens without changing the Markdown source. */
+export function parseTaskMetadata(text: string): TaskMetadata {
+  let remaining = text;
+  const suffixTokens: { token: string; kind: string; value: string }[] = [];
+  let dueDate: string | null = null;
+  let dueDateStatus: TaskDateStatus = 'missing';
+  let scheduledDate: string | null = null;
+  let scheduledDateStatus: TaskDateStatus = 'missing';
+  let priority: TaskPriority | null = null;
+
+  for (;;) {
+    const match = /\s*\[(due|scheduled|priority):([^\]]*)\]\s*$/i.exec(remaining);
+    if (!match) break;
+    suffixTokens.unshift({ token: match[0].trim(), kind: match[1]!.toLowerCase(), value: match[2]!.trim() });
+    remaining = remaining.slice(0, match.index).trimEnd();
   }
+
+  const preserved = new Set<{ token: string; kind: string; value: string }>();
+  for (const kind of ['due', 'scheduled', 'priority']) {
+    const tokens = suffixTokens.filter((token) => token.kind === kind);
+    if (tokens.length === 0) continue;
+    if (kind === 'due') {
+      if (tokens.length === 1 && isDateOnly(tokens[0]!.value)) { dueDate = tokens[0]!.value; dueDateStatus = 'valid'; }
+      else { dueDateStatus = 'invalid'; tokens.forEach((token) => preserved.add(token)); }
+    } else if (kind === 'scheduled') {
+      if (tokens.length === 1 && isDateOnly(tokens[0]!.value)) { scheduledDate = tokens[0]!.value; scheduledDateStatus = 'valid'; }
+      else { scheduledDateStatus = 'invalid'; tokens.forEach((token) => preserved.add(token)); }
+    } else if (tokens.every((token) => ['high', 'medium', 'low'].includes(token.value.toLowerCase()))) {
+      // Phase 27 consumed duplicate valid priority tokens and the leftmost
+      // value won. Keep that legacy resolution while date duplicates are invalid.
+      priority = tokens[0]!.value.toLowerCase() as TaskPriority;
+    } else {
+      tokens.forEach((token) => preserved.add(token));
+    }
+  }
+
+  return {
+    text: [remaining.trim(), ...suffixTokens.filter((token) => preserved.has(token)).map((token) => token.token)].filter(Boolean).join(' '),
+    dueDate,
+    dueDateStatus,
+    scheduledDate,
+    scheduledDateStatus,
+    priority,
+  };
+}
+
+function parseMarkdownTaskMetadata(raw: string, rawFrom: number, taskNode: SyntaxNode): TaskMetadata {
+  const inlineCode: { from: number; to: number }[] = [];
+  taskNode.cursor().iterate((node) => {
+    if (node.name === 'InlineCode') inlineCode.push({ from: node.from, to: node.to });
+  });
+  const ranges = inlineCode.sort((left, right) => left.from - right.from);
+
+  const replacements = new Map<string, string>();
+  let masked = '';
+  let cursor = rawFrom;
+  for (const [index, range] of ranges.entries()) {
+    if (range.from < cursor || range.to > rawFrom + raw.length) continue;
+    masked += raw.slice(cursor - rawFrom, range.from - rawFrom);
+    const placeholder = `\uE000${index}\uE001`;
+    masked += placeholder;
+    replacements.set(placeholder, raw.slice(range.from - rawFrom, range.to - rawFrom).replace(/\s+/g, ' ').trim());
+    cursor = range.to;
+  }
+  masked += raw.slice(cursor - rawFrom);
+  // Continuation paragraphs belong to the task, but metadata belongs to the
+  // logical line on which it appears. Parse trailing tokens on each line so
+  // a continuation does not hide tokens on the checklist line. Inline code
+  // remains opaque through the placeholders above.
+  const metadataTokens: string[] = [];
+  const contentLines = masked.split(/\r?\n/).map((line) => {
+    let content = line;
+    const lineTokens: string[] = [];
+    for (;;) {
+      const match = /\s+\[(due|scheduled|priority):([^\]]*)\]\s*$/i.exec(content);
+      if (!match) break;
+      lineTokens.unshift(match[0].trim());
+      content = content.slice(0, match.index).trimEnd();
+    }
+    metadataTokens.push(...lineTokens);
+    return content;
+  });
+  const parsed = parseTaskMetadata([...contentLines, ...metadataTokens].join(' ').replace(/\s+/g, ' ').trim());
+  let text = parsed.text;
+  for (const [placeholder, original] of replacements) text = text.replaceAll(placeholder, original);
+  return { ...parsed, text };
+}
+
+function directChild(node: SyntaxNode, name: string): SyntaxNode | null {
+  for (let child = node.firstChild; child; child = child.nextSibling) if (child.name === name) return child;
   return null;
 }
 
@@ -198,15 +316,13 @@ function listDepth(node: SyntaxNode): number {
 function collectHeadings(root: SyntaxNode, body: string): Heading[] {
   const headings: Heading[] = [];
   root.cursor().iterate((node) => {
-    const match = /^(?:ATXHeading|SetextHeading)([1-6])$/.exec(node.name);
-    if (!match) return;
-    const line = body.slice(0, node.from).split('\n').length;
-    const raw = body.slice(node.from, node.to);
-    const firstLine = raw.split('\n', 1)[0] ?? '';
-    const text = node.name.startsWith('ATXHeading')
-      ? firstLine.replace(/^#{1,6}\s*/, '').replace(/\s*#+\s*$/, '').trim()
-      : firstLine.trim();
-    headings.push({ from: node.from, line, text, level: Number(match[1]) });
+    if (!/^(?:ATXHeading|SetextHeading)[1-6]$/.test(node.name)) return;
+    const raw = body.slice(node.from, node.to).split('\n', 1)[0] ?? '';
+    headings.push({
+      from: node.from,
+      line: body.slice(0, node.from).split('\n').length,
+      text: node.name.startsWith('ATXHeading') ? raw.replace(/^#{1,6}\s*/, '').replace(/\s*#+\s*$/, '').trim() : raw.trim(),
+    });
   });
   return headings.sort((left, right) => left.from - right.from);
 }
@@ -218,43 +334,8 @@ function headingBefore(headings: readonly Heading[], position: number): Heading 
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
     const heading = headings[middle]!;
-    if (heading.from < position) {
-      found = heading;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
+    if (heading.from < position) { found = heading; low = middle + 1; }
+    else high = middle - 1;
   }
   return found;
-}
-
-/**
- * Recognized trailing metadata: `[due:YYYY-MM-DD]` and
- * `[priority:high|medium|low]`. Tokens remain ordinary visible Markdown.
- */
-export function parseTaskMetadata(text: string): { text: string; dueDate: string | null; priority: TaskPriority | null } {
-  let remaining = text;
-  let dueDate: string | null = null;
-  let priority: TaskPriority | null = null;
-  for (let pass = 0; pass < 2; pass++) {
-    const due = /\s*\[due:(\d{4}-\d{2}-\d{2})\]\s*$/i.exec(remaining);
-    if (due && validDate(due[1]!)) {
-      dueDate = due[1]!;
-      remaining = remaining.slice(0, due.index).trim();
-      continue;
-    }
-    const priorityMatch = /\s*\[priority:(high|medium|low)\]\s*$/i.exec(remaining);
-    if (priorityMatch) {
-      priority = priorityMatch[1]!.toLowerCase() as TaskPriority;
-      remaining = remaining.slice(0, priorityMatch.index).trim();
-      continue;
-    }
-    break;
-  }
-  return { text: remaining, dueDate, priority };
-}
-
-function validDate(value: string): boolean {
-  const date = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }

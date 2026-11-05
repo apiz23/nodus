@@ -1,6 +1,8 @@
 import type {
   BackupReport,
+  ExportReport,
   ImportReport,
+  ImportPreview,
   RestorePreview,
   UiBacklinksResponse,
   UiRelationBacklinksResponse,
@@ -139,6 +141,12 @@ function jsonBody(value: unknown): string {
 }
 
 export const api = {
+  scheduleTask(noteId: string, input: { taskId: string; scheduledDate: string; baseHash: string }): Promise<{ task: import('../../src/tasks/extract.js').ExtractedTask; projection: UiTasksResponse }> {
+    return request(`/api/notes/${encodeURIComponent(noteId)}/tasks/schedule`, { method: 'PUT', body: jsonBody(input) });
+  },
+  updateCalendarRange(noteId: string, input: { databaseId: string; viewId: string; startDatePropertyId: string; startDate: string; endDatePropertyId?: string; endDate?: string | null; baseHash: string }): Promise<UiNotePropertiesResponse> {
+    return request(`/api/notes/${encodeURIComponent(noteId)}/calendar-range`, { method: 'PUT', body: jsonBody(input) });
+  },
   status(): Promise<UiVaultBootstrap> {
     return request<UiVaultBootstrap>('/api/status');
   },
@@ -444,6 +452,17 @@ export const api = {
       method: 'POST',
       body: jsonBody(input),
     });
+  },
+
+  createPortableExport(input: UiCreateBackupInput): Promise<ExportReport> {
+    return request<ExportReport>('/api/export', {
+      method: 'POST',
+      body: jsonBody(input),
+    });
+  },
+
+  previewImport(input: UiValidateBackupInput): Promise<ImportPreview> {
+    return request<ImportPreview>('/api/import/preview', { method: 'POST', body: jsonBody(input) });
   },
 
   validateBackup(input: UiValidateBackupInput): Promise<UiBackupValidationResult> {

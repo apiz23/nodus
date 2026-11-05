@@ -3,6 +3,7 @@ import type { Note } from '../domain/note.js';
 import type { FormulaErrorCode, FormulaSourceSpan } from './formula-contract.js';
 import { validateRelationValue, type RelationValue } from './relation-contract.js';
 import { isDerivedProperty, type DatabaseDefinition, type Property, type PropertyType } from './schema.js';
+import { isDateOnly } from '../temporal/date.js';
 
 export const NOTE_PROPERTIES_FORMAT = 'nodus-note-properties';
 export const NOTE_PROPERTIES_VERSION = 1;
@@ -323,6 +324,21 @@ export function setNotePropertyValue(
   };
 }
 
+/** Validate a group of property changes against one evolving draft; callers persist once. */
+export function setNotePropertyValuesAtomically(
+  note: NoteIdentity,
+  schemas: ReadonlyMap<string, DatabaseDefinition>,
+  inputs: readonly SetNotePropertyInput[],
+): SetNotePropertyResult {
+  let draft = note;
+  for (const input of inputs) {
+    const result = setNotePropertyValue(draft, schemas, input);
+    if (!result.ok) return result;
+    draft = { ...draft, extraFrontmatter: result.extraFrontmatter };
+  }
+  return { ok: true, extraFrontmatter: draft.extraFrontmatter };
+}
+
 function validatePropertyValue(
   property: Property,
   value: unknown,
@@ -354,7 +370,7 @@ function validatePropertyValue(
         : typeMismatch(property, 'a boolean');
     case 'date':
       if (typeof value !== 'string') return typeMismatch(property, 'a YYYY-MM-DD string');
-      return isCalendarDate(value)
+      return isDateOnly(value)
         ? { value }
         : invalidValue(property, 'must be a valid YYYY-MM-DD calendar date');
     case 'select':
@@ -415,12 +431,6 @@ function missingOption(
 
 function hasOption(property: Property, optionId: string): boolean {
   return property.options?.some((option) => option.id === optionId) ?? false;
-}
-
-function isCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function issue(

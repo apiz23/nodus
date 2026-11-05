@@ -196,6 +196,9 @@ describe('relation storage and API hardening', () => {
       const sourceVault = await seed(join(root, 'source'), [MISSING]);
       const exportPath = join(root, 'portable');
       await exportVault(sourceVault, exportPath);
+      // This fixture intentionally models a legacy manifest-free partial directory;
+      // manifest-based packages reject missing resources before planning.
+      await unlink(join(exportPath, 'nodus-export.json'));
       await unlink(join(exportPath, 'target-one.md'));
 
       const partial = await FileSystemVault.open(join(root, 'partial'));

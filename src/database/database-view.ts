@@ -1,12 +1,21 @@
 import { NodusError } from '../domain/errors.js';
 import { isUuidV4 } from '../domain/ids.js';
+import { isDateOnly } from '../temporal/date.js';
 import type { DatabaseDefinition, Property } from './schema.js';
 
 export const DATABASE_VIEW_FORMAT = 'nodus-database-view';
 export const DATABASE_VIEW_VERSION = 3;
 
 export type DatabaseViewType = 'table' | 'list' | 'kanban' | 'calendar' | 'gallery';
-export interface DatabaseViewSettings { groupPropertyId?: string; datePropertyId?: string }
+export interface DatabaseViewSettings {
+  groupPropertyId?: string;
+  /** Legacy Calendar setting; interpreted as a one-day start date. */
+  datePropertyId?: string;
+  /** Calendar range start. New Calendar configurations use this field. */
+  startDatePropertyId?: string;
+  /** Optional inclusive Calendar range end. */
+  endDatePropertyId?: string;
+}
 
 export type ViewSort = { propertyId: 'title' | string; direction: 'asc' | 'desc' };
 export type ViewFilterOperator = 'contains' | 'equals' | 'greater' | 'less' | 'is' | 'before' | 'after' | 'includes' | 'is-empty' | 'is-not-empty';
@@ -38,15 +47,25 @@ export function parseDatabaseView(json: string): DatabaseView {
   if (raw.version >= 2) {
     if (raw.type !== 'table' && raw.type !== 'kanban' && raw.type !== 'calendar' && !(raw.version >= 3 && (raw.type === 'list' || raw.type === 'gallery'))) throw invalid('type must be table, list, kanban, calendar, or gallery');
     if (!record(raw.settings)) throw invalid('settings must be an object');
-    const allowedSettings = raw.type === 'kanban' ? ['groupPropertyId'] : raw.type === 'calendar' ? ['datePropertyId'] : raw.version >= 3 ? ['groupPropertyId'] : [];
+    const allowedSettings = raw.type === 'kanban' ? ['groupPropertyId'] : raw.type === 'calendar'
+      ? raw.version >= 3 ? ['datePropertyId', 'startDatePropertyId', 'endDatePropertyId'] : ['datePropertyId']
+      : raw.version >= 3 ? ['groupPropertyId'] : [];
     exactKeys(raw.settings, allowedSettings, 'settings');
     const settings: DatabaseViewSettings = {};
     if (raw.type === 'calendar' && raw.version >= 3 && 'groupPropertyId' in raw.settings) throw invalid('Calendar settings cannot include groupPropertyId');
     if (raw.type === 'kanban' && raw.version >= 3 && 'datePropertyId' in raw.settings) throw invalid('Kanban settings cannot include datePropertyId');
     if (raw.type === 'kanban' && !('groupPropertyId' in raw.settings)) throw invalid('Kanban settings require groupPropertyId');
-    if (raw.type === 'calendar' && !('datePropertyId' in raw.settings)) throw invalid('Calendar settings require datePropertyId');
+    if (raw.type === 'calendar' && raw.version < 3 && !('datePropertyId' in raw.settings)) throw invalid('Calendar settings require datePropertyId');
+    if (raw.type === 'calendar' && raw.version >= 3) {
+      const legacy = 'datePropertyId' in raw.settings;
+      const ranged = 'startDatePropertyId' in raw.settings;
+      if (legacy === ranged) throw invalid('Calendar settings require either datePropertyId or startDatePropertyId');
+      if ('endDatePropertyId' in raw.settings && !ranged) throw invalid('Calendar endDatePropertyId requires startDatePropertyId');
+    }
     if ('groupPropertyId' in raw.settings) settings.groupPropertyId = uuid(raw.settings.groupPropertyId, 'settings.groupPropertyId');
     if ('datePropertyId' in raw.settings) settings.datePropertyId = uuid(raw.settings.datePropertyId, 'settings.datePropertyId');
+    if ('startDatePropertyId' in raw.settings) settings.startDatePropertyId = uuid(raw.settings.startDatePropertyId, 'settings.startDatePropertyId');
+    if ('endDatePropertyId' in raw.settings) settings.endDatePropertyId = uuid(raw.settings.endDatePropertyId, 'settings.endDatePropertyId');
     presentation = { type: raw.type, settings };
   }
   const id = uuid(raw.id, 'view id');
@@ -83,7 +102,8 @@ export function parseDatabaseView(json: string): DatabaseView {
 
 export function serializeDatabaseView(view: DatabaseView): string {
   const hasTableGrouping = (view.type === 'table' || view.type === 'list') && view.settings?.groupPropertyId !== undefined;
-  const version = view.type === 'list' || view.type === 'gallery' || hasTableGrouping || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
+  const hasCalendarRange = view.type === 'calendar' && (view.settings?.startDatePropertyId !== undefined || view.settings?.endDatePropertyId !== undefined);
+  const version = view.type === 'list' || view.type === 'gallery' || hasTableGrouping || hasCalendarRange || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
   const normalized = version >= 3 ? { ...view, type: view.type ?? 'table', settings: view.settings ?? {}, sorts: view.sorts ?? [view.sort] } : view;
   const json = `${JSON.stringify({
     format: DATABASE_VIEW_FORMAT, version, id: normalized.id, databaseId: normalized.databaseId, name: normalized.name,
@@ -100,13 +120,18 @@ export function serializeDatabaseView(view: DatabaseView): string {
 export function diagnoseDatabaseView(view: DatabaseView, database?: DatabaseDefinition): DatabaseViewDiagnostic[] {
   if (!database) return [{ code: 'MISSING_DATABASE', message: `Database "${view.databaseId}" is missing; saved view was preserved.` }];
   const issues: DatabaseViewDiagnostic[] = [];
+  const calendarStartId = view.settings?.startDatePropertyId ?? view.settings?.datePropertyId;
+  if (view.type === 'calendar' && calendarStartId !== undefined && view.settings?.endDatePropertyId === calendarStartId) {
+    issues.push({ code: 'INVALID_REFERENCE', propertyId: calendarStartId, message: 'Calendar start and end date properties must be different.' });
+  }
   const byId = new Map(database.properties.map((property) => [property.id, property]));
-  const settingIds = [view.settings?.groupPropertyId, view.settings?.datePropertyId].filter((id): id is string => id !== undefined);
+  const settingIds = [view.settings?.groupPropertyId, view.settings?.datePropertyId, view.settings?.startDatePropertyId, view.settings?.endDatePropertyId].filter((id): id is string => id !== undefined);
   for (const settingId of settingIds) if (!byId.has(settingId)) issues.push({ code: 'MISSING_PROPERTY', propertyId: settingId, message: `View property "${settingId}" is missing; saved view was preserved.` });
-  const layoutId = view.type === 'calendar' ? view.settings?.datePropertyId : view.type === 'kanban' ? view.settings?.groupPropertyId : undefined;
-  if (layoutId !== undefined) {
+  const layoutRefs = view.type === 'calendar'
+    ? [view.settings?.startDatePropertyId ?? view.settings?.datePropertyId, view.settings?.endDatePropertyId].filter((id): id is string => id !== undefined).map((id) => [id, 'date'] as const)
+    : view.type === 'kanban' && view.settings?.groupPropertyId !== undefined ? [[view.settings.groupPropertyId, 'select'] as const] : [];
+  for (const [layoutId, expected] of layoutRefs) {
     const property = byId.get(layoutId);
-    const expected = view.type === 'calendar' ? 'date' : 'select';
     if (property && property.type !== expected) issues.push({ code: 'INVALID_REFERENCE', propertyId: layoutId, message: `${view.type} requires a ${expected === 'date' ? 'Date' : 'Select'} property; saved view was preserved.` });
   }
   const groupId = view.type === 'table' || view.type === 'list' ? view.settings?.groupPropertyId : undefined;
@@ -162,7 +187,7 @@ function parseSorts(value: unknown): ViewSort[] {
   unique(sorts.map((sort) => sort.propertyId), 'sort property ID');
   return sorts;
 }
-function validDate(value: string): boolean { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const date = new Date(`${value}T00:00:00.000Z`); return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value; }
+function validDate(value: string): boolean { return isDateOnly(value); }
 function uuid(value: unknown, label: string): string { if (typeof value !== 'string' || !isUuidV4(value)) throw invalid(`${label} must be a lowercase UUID v4`); return value; }
 function requiredName(value: unknown): string { if (typeof value !== 'string' || !value.trim() || value.trim() !== value) throw invalid('name must be a non-empty string without surrounding whitespace'); return value; }
 function exactKeys(value: Record<string, unknown>, allowed: string[], where: string): void { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw invalid(`Unknown key "${key}" in ${where}`); }

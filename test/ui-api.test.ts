@@ -2193,6 +2193,23 @@ describe('backup and restore API routes', () => {
     });
   });
 
+  it('creates a versioned portable export over HTTP and reports excluded resources', async () => {
+    await withTempDir(async (dir) => {
+      const vaultPath = join(dir, 'vault');
+      const vault = await seedBackupVault(vaultPath);
+      await writeFile(join(vaultPath, 'unsupported.csv'), 'a,b\n1,2\n');
+      const started = await startApi(vaultPath);
+      const target = join(dir, 'portable-export');
+      try {
+        const created = await json<{ targetDir: string; manifest: string; manifestVersion: number; notes: number; excluded: Array<{ path: string }> }>(started.base, '/api/export', { method: 'POST', body: { targetDir: target } });
+        expect(created.status).toBe(201);
+        expect(created.body).toMatchObject({ targetDir: target, manifest: 'nodus-export.json', manifestVersion: 1, notes: 1, excluded: [{ path: 'unsupported.csv' }] });
+        expect((await stat(join(target, 'nodus-export.json'))).isFile()).toBe(true);
+      } finally { await stopApi(started); }
+      vault.dispose();
+    });
+  });
+
   it('rejects invalid backup target fields without writing', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');

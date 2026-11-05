@@ -2,6 +2,8 @@ import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { AlertCircle, Archive, CheckCircle2, Loader2 } from 'lucide-react';
 import type {
   BackupReport,
+  ExportReport,
+  ImportPreview,
   RestorePreview,
   UiBackupValidationResult,
 } from '../../src/ui-server/dto';
@@ -61,6 +63,12 @@ function IssueList({ issues }: { issues: string[] }) {
   );
 }
 
+function pathsOf(error: unknown): string[] | undefined {
+  return error instanceof ApiError && error.paths !== undefined && error.paths.length > 0
+    ? error.paths
+    : undefined;
+}
+
 function PathList({ paths }: { paths: string[] }) {
   return (
     <ul className="list-disc space-y-0.5 pl-4">
@@ -81,6 +89,14 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
   const [creating, setCreating] = useState(false);
   const [createResult, setCreateResult] = useState<BackupReport | null>(null);
   const [createError, setCreateError] = useState<unknown>(null);
+  const [portableTarget, setPortableTarget] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [portableResult, setPortableResult] = useState<ExportReport | null>(null);
+  const [portableError, setPortableError] = useState<unknown>(null);
+  const [importSource, setImportSource] = useState('');
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importPreviewError, setImportPreviewError] = useState<unknown>(null);
+  const [importPreviewing, setImportPreviewing] = useState(false);
 
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<UiBackupValidationResult | null>(null);
@@ -92,7 +108,7 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
 
   const [state, dispatch] = useReducer(restoreFlowReducer, initialRestoreFlow);
   const busy = state.phase === 'restoring';
-  const active = creating || validating || previewing || busy;
+  const active = creating || exporting || validating || previewing || importPreviewing || busy;
   const source = state.source.trim();
 
   useEffect(() => {
@@ -133,6 +149,30 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
     } finally {
       setCreating(false);
     }
+  }
+
+  async function runPortableExport(): Promise<void> {
+    const target = portableTarget.trim();
+    if (target === '' || exporting) return;
+    setExporting(true);
+    setPortableError(null);
+    setPortableResult(null);
+    try {
+      setPortableResult(await api.createPortableExport({ targetDir: target }));
+    } catch (error) {
+      setPortableError(error);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function runImportPreview(): Promise<void> {
+    const source = importSource.trim();
+    if (!source || importPreviewing) return;
+    setImportPreviewing(true); setImportPreviewError(null); setImportPreview(null);
+    try { setImportPreview(await api.previewImport({ dir: source })); }
+    catch (error) { setImportPreviewError(error); }
+    finally { setImportPreviewing(false); }
   }
 
   async function runValidate(): Promise<void> {
@@ -195,6 +235,33 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
       </p>
 
       <div className="space-y-4">
+        <div className="space-y-2.5 rounded-md border p-3">
+          <h3 className="text-xs font-semibold">Portable export</h3>
+          <p className="max-w-[62ch] text-[11px] leading-relaxed text-muted-foreground">
+            Create a vault-shaped folder with a versioned integrity manifest for moving this workspace. This is separate from a recovery backup; unsupported files are listed in the result.
+          </p>
+          <label className="text-[11px] font-medium text-muted-foreground" htmlFor="portable-export-target">Export folder</label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input id="portable-export-target" value={portableTarget} onChange={(event) => { setPortableTarget(event.target.value); setPortableResult(null); setPortableError(null); }} placeholder="/absolute/path/to/export" spellCheck={false} disabled={exporting || busy} className="h-8 font-mono text-[11px]" />
+            <Button type="button" size="sm" className="shrink-0" onClick={() => void runPortableExport()} disabled={exporting || busy || portableTarget.trim() === ''}>
+              {exporting ? <><Loader2 className="animate-spin" data-icon="inline-start" />Exporting…</> : 'Export workspace'}
+            </Button>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">Use an absolute folder outside the vault and inside an allowed backup root. The destination must be empty. This runtime accepts a typed path and does not support cancellation.</p>
+          {portableResult && <SuccessBlock><span>Portable export completed at <span className="font-mono break-all">{portableResult.targetDir}</span>.</span><span className="block">{portableResult.notes} notes, {portableResult.databases} databases, {portableResult.databaseViews} saved views, {portableResult.attachments ?? 0} attachments. Manifest {portableResult.manifest ?? 'nodus-export.json'} (v{portableResult.manifestVersion ?? 1}).</span></SuccessBlock>}
+          {portableResult && (portableResult.excluded?.length ?? 0) > 0 && <div role="note" aria-label="Files omitted from portable export" className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-800 dark:text-amber-200"><span>{portableResult.excluded!.length} path(s) were not included:</span><IssueList issues={portableResult.excluded!.map((item) => `${item.path}: ${item.reason}`)} /></div>}
+          {portableError !== null && <AlertBlock><span>{errorMessage(portableError)}</span>{issuesOf(portableError) === undefined ? null : <IssueList issues={issuesOf(portableError)!} />}</AlertBlock>}
+        </div>
+
+        <div className="space-y-2.5 rounded-md border p-3">
+          <h3 className="text-xs font-semibold">Preview import</h3>
+          <p className="text-[11px] text-muted-foreground">Read-only validation and conflict preview. No files will be imported.</p>
+          <label className="text-[11px] font-medium text-muted-foreground" htmlFor="portable-import-source">Source folder</label>
+          <div className="flex flex-col gap-2 sm:flex-row"><Input id="portable-import-source" value={importSource} onChange={(event) => { setImportSource(event.target.value); setImportPreview(null); setImportPreviewError(null); }} placeholder="/absolute/path/to/export" disabled={importPreviewing || busy} className="h-8 font-mono text-[11px]" /><Button type="button" size="sm" onClick={() => void runImportPreview()} disabled={importPreviewing || busy || importSource.trim() === ''}>{importPreviewing ? 'Checking…' : 'Preview import'}</Button></div>
+          {importPreviewError !== null && <AlertBlock><span>{errorMessage(importPreviewError)}</span>{issuesOf(importPreviewError) === undefined ? null : <IssueList issues={issuesOf(importPreviewError)!} />}{pathsOf(importPreviewError) === undefined ? null : <PathList paths={pathsOf(importPreviewError)!} />}</AlertBlock>}
+          {importPreview && <div role="status" className="space-y-1 text-[11px]"><p>Validated {importPreview.format === 'legacy-directory' ? 'legacy directory' : `portable export v${importPreview.manifestVersion}`} — {importPreview.counts.notes} notes, {importPreview.counts.databases} databases, {importPreview.counts.databaseViews} views, {importPreview.counts.attachments} attachments.</p><p>{importPreview.resources.filter((resource) => resource.status === 'new').length} new · {importPreview.resources.filter((resource) => resource.status === 'identical').length} identical · {importPreview.conflicts.length} conflicts</p>{importPreview.conflicts.map((conflict) => <p key={`${conflict.kind}:${conflict.id}`} className="text-destructive">{conflict.kind} {conflict.id}: {conflict.reason} (available: {conflict.safeChoices.join(', ')})</p>)}{importPreview.warnings.map((warning) => <p key={warning} className="text-amber-700 dark:text-amber-300">{warning}</p>)}</div>}
+        </div>
+
         <div className="space-y-2.5">
           <h3 className="text-xs font-semibold">Create backup</h3>
           <label
@@ -222,7 +289,7 @@ export function BackupRestoreSection({ onRestored, onActivityChange }: BackupRes
               size="sm"
               className="shrink-0"
               onClick={() => void runCreate()}
-              disabled={creating || busy || targetDir.trim() === ''}
+              disabled={creating || exporting || busy || targetDir.trim() === ''}
             >
               {creating ? (
                 <>

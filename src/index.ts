@@ -37,6 +37,17 @@ export {
   applyImport,
   createBackup,
   exportVault,
+  PORTABLE_EXPORT_FORMAT,
+  PORTABLE_EXPORT_VERSION,
+  PORTABLE_EXPORT_MANIFEST,
+  PORTABLE_RESOURCE_KINDS,
+  createPortableManifest,
+  portableManifestDigest,
+  portableSha256,
+  serializePortableManifest,
+  validatePortableExport,
+  validatePortableManifest,
+  validatePortablePath,
   isStorageError,
   planImport,
   previewRestore,
@@ -59,6 +70,10 @@ export {
   type DatabaseViewOrderStore,
   type DatabaseViewWriteOptions,
   type ExportReport,
+  type PortableExportManifest,
+  type PortableExportResource,
+  type PortableExportSnapshot,
+  type PortableResourceKind,
   type ImportOptions,
   type ImportPlan,
   type ImportReport,
@@ -126,3 +141,6 @@ export {
 } from './database/formula-contract.js';
 export { FORMULA_FUNCTIONS, parseFormula, validateFormula, evaluateFormula, type FormulaSchema, type FormulaProperty, type FormulaPropertyValues, type FormulaResult } from './database/formula-engine.js';
 export { tokenizeFormula, type FormulaToken, type FormulaTokenKind } from './database/formula-tokenizer.js';
+export { isDateOnly, resolveDateRange, type DateOnly, type DateRange, type DateRangeResult } from './temporal/date.js';
+export type { ExtractedTask, TaskDateStatus, TaskMetadata, TaskPriority } from './tasks/extract.js';
+export { projectCalendarEvents, type CalendarDatabaseRow, type CalendarEvent, type CalendarEventDateState, type CalendarEventProjectionInput, type CalendarEventSource, type CalendarEventTemporalKind, type DatabaseCalendarSource } from './calendar/events.js';

@@ -1,6 +1,9 @@
 import type { Property } from '../../src/database/schema.js';
 import type { DatabaseView, DatabaseViewType } from '../../src/database/database-view.js';
 import type { UiDatabase, UiDatabaseRow } from '../../src/ui-server/dto.js';
+import { isDateOnly, resolveDateRange } from '../../src/temporal/date.js';
+
+export { isDateOnly } from '../../src/temporal/date.js';
 
 /** Group only already-filtered/sorted rows; preserve their deterministic order. */
 export function kanbanColumns(rows: readonly UiDatabaseRow[], property: Property) {
@@ -9,12 +12,6 @@ export function kanbanColumns(rows: readonly UiDatabaseRow[], property: Property
     ...options.map((option) => ({ id: option.id, name: option.name, rows: rows.filter((row) => row.values[property.id] === option.id) })),
     { id: '', name: 'Unassigned', rows: rows.filter((row) => !options.some((option) => option.id === row.values[property.id])) },
   ];
-}
-
-export function isDateOnly(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 /** Today's local calendar date, never a UTC conversion of the local day. */
@@ -41,13 +38,33 @@ export function monthDays(month: string): Array<string | null> {
   return days;
 }
 
-export function calendarRows(rows: readonly UiDatabaseRow[], propertyId: string) {
+export function calendarRows(rows: readonly UiDatabaseRow[], propertyId: string, endPropertyId?: string, month?: string) {
   const dated = new Map<string, UiDatabaseRow[]>();
   const undated: UiDatabaseRow[] = [];
+  const monthDates = month === undefined ? undefined : monthDays(month).filter((date): date is string => date !== null);
+  const monthStart = monthDates?.[0];
+  const monthEnd = monthDates?.at(-1);
   for (const row of rows) {
-    const date = row.values[propertyId];
-    if (!isDateOnly(date)) undated.push(row);
-    else dated.set(date, [...(dated.get(date) ?? []), row]);
+    const start = row.values[propertyId];
+    const end = endPropertyId === undefined ? undefined : row.values[endPropertyId];
+    const invalidProperty = row.issues.some((issue) =>
+      (issue.propertyId === propertyId || (endPropertyId !== undefined && issue.propertyId === endPropertyId)) &&
+      (issue.code === 'TYPE_MISMATCH' || issue.code === 'INVALID_VALUE'),
+    );
+    const result = resolveDateRange(start === null || start === '' ? undefined : start, end === null || end === '' ? undefined : end);
+    if (invalidProperty || result.status !== 'valid') {
+      undated.push(row);
+      continue;
+    }
+    if (monthDates === undefined) {
+      if (endPropertyId === undefined) dated.set(result.range.startDate, [...(dated.get(result.range.startDate) ?? []), row]);
+      continue;
+    }
+    if (monthStart === undefined || monthEnd === undefined || result.range.endDate < monthStart || result.range.startDate > monthEnd) continue;
+    for (const date of monthDates) {
+      if (date < result.range.startDate || date > result.range.endDate) continue;
+      dated.set(date, [...(dated.get(date) ?? []), row]);
+    }
   }
   return { dated, undated };
 }
@@ -103,6 +120,6 @@ export function defaultView(database: UiDatabase, type: DatabaseViewType = 'tabl
     visiblePropertyIds: database.properties.map((property) => property.id),
     settings: type === 'kanban'
       ? { groupPropertyId: database.properties.find((property) => property.type === 'select')?.id }
-      : type === 'calendar' ? { datePropertyId: database.properties.find((property) => property.type === 'date')?.id } : {},
+      : type === 'calendar' ? { startDatePropertyId: database.properties.find((property) => property.type === 'date')?.id } : {},
   };
 }

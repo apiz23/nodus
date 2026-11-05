@@ -22,11 +22,13 @@ import { isStorageError } from '../storage/errors.js';
 import { isInsideRoot } from '../storage/fs/safe-path.js';
 import {
   createBackup,
+  exportVault as exportPortableVault,
   previewRestore,
   restoreBackup,
   validateBackup,
   type BackupManifest,
   type BackupReport,
+  type ExportReport,
   type ImportReport,
   type RestorePreview,
 } from '../storage/index.js';
@@ -36,7 +38,8 @@ import { graphFromLinkIndex } from '../links/graph.js';
 import { analyzeGraph } from '../links/graph-analytics.js';
 import { relatedNotes } from '../links/related-notes.js';
 import { analyzeOrganization, previewOrganizationMove } from '../organization/analysis.js';
-import { buildTaskProjection, extractTasksFromNote, setTaskChecked, type TaskProjection } from '../tasks/extract.js';
+import { buildTaskProjection, extractTasksFromNote, setTaskChecked, setTaskScheduledDate, type TaskProjection } from '../tasks/extract.js';
+import { isDateOnly, resolveDateRange } from '../temporal/date.js';
 import { shortestGraphPath, type GraphTraversalMode } from '../links/graph-paths.js';
 import { graphClusterInsights } from '../links/graph-cluster-insights.js';
 import { candidateSuggestions, countIncomingTitleLinks, createLinkSuggester, normalizeLinkText } from '../links/link-repair.js';
@@ -80,7 +83,7 @@ import { parseTemplate, resolveNoteTemplate, type NodusTemplate } from '../datab
 import { serializeDatabaseView } from '../database/database-view.js';
 import { databaseViewPath } from '../storage/fs/layout.js';
 import { projectNoteProperties } from '../database/note-properties.js';
-import { applyImport } from '../storage/portable/import.js';
+import { applyImport, previewImport as previewPortableImport } from '../storage/portable/import.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -663,6 +666,8 @@ export function createLocalApiMiddleware(
       if (current.hash !== input.baseHash) {
         throw new ApiError(409, 'STALE_WRITE', 'The note changed before this task update. Refresh the task list and try again.', { currentHash: current.hash });
       }
+      // Offsets and metadata are always derived from the revision just read;
+      // no cached task object participates in a write.
       const task = extractTasksFromNote(current.note, current.hash).find((candidate) => candidate.id === input.taskId);
       if (task === undefined) {
         throw new ApiError(409, 'STALE_TASK', 'This task is no longer present in the note. Refresh the task list and try again.');
@@ -681,6 +686,73 @@ export function createLocalApiMiddleware(
       const updatedTask = extractTasksFromNote(stored.note, stored.hash).find((candidate) => candidate.id === task.id);
       if (updatedTask === undefined) throw new ApiError(409, 'STALE_TASK', 'The task moved while it was being updated. Refresh the task list.');
       return sendJson(res, 200, { task: updatedTask, note: toUiNoteSummary(stored.note) } satisfies UiToggleTaskResponse);
+    }
+    const taskScheduleMatch = /^\/api\/notes\/([^/]+)\/tasks\/schedule$/.exec(path);
+    if (method === 'PUT' && taskScheduleMatch !== null) {
+      const noteId = decodeURIComponent(taskScheduleMatch[1] ?? '');
+      if (!isUuidV4(noteId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['taskId', 'scheduledDate', 'baseHash'], 'request');
+      const taskId = requireString(body.taskId, 'taskId');
+      const scheduledDate = requireString(body.scheduledDate, 'scheduledDate');
+      if (!isDateOnly(scheduledDate)) throw new ApiError(400, 'INVALID_INPUT', 'Scheduled date must use YYYY-MM-DD.');
+      const vault = await getVault();
+      const current = await vault.readNoteWithHash(noteId);
+      if (current.hash !== requireHash(body.baseHash)) throw new ApiError(409, 'STALE_WRITE', 'The note changed before scheduling. Refresh and try again.', { currentHash: current.hash });
+      const task = extractTasksFromNote(current.note, current.hash).find((item) => item.id === taskId);
+      if (!task) throw new ApiError(409, 'STALE_TASK', 'This task is no longer present in the note. Refresh and try again.');
+      let nextBody: string;
+      try { nextBody = setTaskScheduledDate(current.note.body, task, scheduledDate); }
+      catch (error) { throw new ApiError(422, 'TASK_DATE_INVALID', error instanceof Error ? error.message : 'Task scheduling metadata is invalid.'); }
+      if (nextBody === current.note.body) return sendJson(res, 200, { task, note: toUiNoteSummary(current.note), projection: tasksFor(vault, await indexFor(vault).get(true)) });
+      try { await vault.replaceNote({ ...current.note, body: nextBody, updatedAt: clock() }, { expectedHash: current.hash }); }
+      catch (error) { throw toStaleApiError(error, 'scheduling this task'); }
+      markProjectionCachesDirty();
+      const stored = await vault.readNoteWithHash(noteId);
+      const updatedTasks = extractTasksFromNote(stored.note, stored.hash);
+      const updatedTask = updatedTasks.find((item) => item.id === taskId);
+      if (!updatedTask) throw new ApiError(409, 'STALE_TASK', 'The task changed while it was being scheduled. Refresh the task list.');
+      const index = await indexFor(vault).get(true);
+      return sendJson(res, 200, { task: updatedTask, note: toUiNoteSummary(stored.note), projection: tasksFor(vault, index) });
+    }
+    const calendarRangeMatch = /^\/api\/notes\/([^/]+)\/calendar-range$/.exec(path);
+    if (method === 'PUT' && calendarRangeMatch !== null) {
+      const noteId = decodeURIComponent(calendarRangeMatch[1] ?? '');
+      if (!isUuidV4(noteId)) throw new ApiError(400, 'INVALID_INPUT', 'Note ID must be a lowercase UUID v4');
+      const body = await readJson(req);
+      requireAllowedKeys(body, ['databaseId', 'viewId', 'startDatePropertyId', 'startDate', 'endDatePropertyId', 'endDate', 'baseHash'], 'request');
+      const databaseId = requireUuid(body.databaseId, 'databaseId');
+      const viewId = requireUuid(body.viewId, 'viewId');
+      const startDatePropertyId = requireUuid(body.startDatePropertyId, 'startDatePropertyId');
+      const startDate = requireString(body.startDate, 'startDate');
+      const endDatePropertyId = body.endDatePropertyId === undefined ? undefined : requireUuid(body.endDatePropertyId, 'endDatePropertyId');
+      const endDate = body.endDate === null || body.endDate === undefined || body.endDate === '' ? undefined : requireString(body.endDate, 'endDate');
+      const range = resolveDateRange(startDate, endDate);
+      if (range.status !== 'valid') throw new ApiError(422, 'INVALID_DATE_RANGE', `Calendar range is invalid: ${range.reason}.`);
+      if (endDate !== undefined && endDatePropertyId === undefined) throw new ApiError(400, 'INVALID_INPUT', 'An end date property must be configured to write an end date.');
+      if (endDatePropertyId !== undefined && endDatePropertyId === startDatePropertyId) throw new ApiError(422, 'INVALID_CALENDAR_CONFIGURATION', 'Calendar start and end properties must be different.');
+      const vault = await getVault();
+      const savedView = await vault.readDatabaseView(databaseId, viewId);
+      const configuredStart = savedView.view.settings?.startDatePropertyId ?? savedView.view.settings?.datePropertyId;
+      if (savedView.view.type !== 'calendar' || configuredStart !== startDatePropertyId || (savedView.view.settings?.endDatePropertyId ?? undefined) !== endDatePropertyId) {
+        throw new ApiError(409, 'CALENDAR_CONFIGURATION_CHANGED', 'The saved Calendar configuration changed. Refresh the view before editing dates.');
+      }
+      const inputs = [{ databaseId, propertyId: startDatePropertyId, value: startDate }, ...(endDatePropertyId ? [{ databaseId, propertyId: endDatePropertyId, ...(endDate === undefined ? { remove: true as const } : { value: endDate }) }] : [])];
+      let result;
+      try {
+        result = await vault.setNotePropertiesAtomically(noteId, inputs, {
+          expectedHash: requireHash(body.baseHash), now: clock(),
+          calendarView: { databaseId, viewId, startDatePropertyId, ...(endDatePropertyId ? { endDatePropertyId } : {}), expectedViewHash: savedView.hash },
+        });
+      }
+      catch (error) { throw toStaleApiError(error, 'updating the Calendar range'); }
+      if (!result.ok) {
+        if ('confirmationRequired' in result) throw new ApiError(409, 'CONFIRMATION_REQUIRED', 'Add this note to the database before setting Calendar dates.');
+        throw new ApiError(422, 'STRUCTURED_DATA_INVALID', 'Calendar dates were not changed because a configured property is invalid.', { structuredDataIssues: result.issues });
+      }
+      markProjectionCachesDirty();
+      await indexFor(vault).get(true);
+      return sendJson(res, 200, await readLocalNoteProperties(vault, noteId));
     }
     const organizationApplyMatch = /^\/api\/organization\/([^/]+)\/apply$/.exec(path);
     if (method === 'POST' && organizationApplyMatch !== null) {
@@ -1148,6 +1220,11 @@ export function createLocalApiMiddleware(
       return sendJson(res, 201, await createVaultBackup(await getVault(), body));
     }
 
+    if (method === 'POST' && path === '/api/export') {
+      const body = await readJson(req);
+      return sendJson(res, 201, await createPortableVaultExport(await getVault(), body));
+    }
+
     if (method === 'POST' && path === '/api/backup/validate') {
       const body = await readJson(req);
       return sendJson(res, 200, await validateVaultBackup(await getVault(), body));
@@ -1156,6 +1233,13 @@ export function createLocalApiMiddleware(
     if (method === 'POST' && path === '/api/restore/preview') {
       const body = await readJson(req);
       return sendJson(res, 200, await previewVaultRestore(await getVault(), body));
+    }
+
+    if (method === 'POST' && path === '/api/import/preview') {
+      const body = await readJson(req);
+      const vault = await getVault();
+      const source = await requireBackupSource(requireString(body.dir, 'dir'), vault);
+      return sendJson(res, 200, await previewPortableImport(source, vault));
     }
 
     if (method === 'POST' && path === '/api/restore') {
@@ -1882,7 +1966,7 @@ function requireDatabaseViewInput(value: unknown) {
   try {
     const record = value as Record<string, unknown>;
     const settings = typeof record.settings === 'object' && record.settings !== null ? record.settings as Record<string, unknown> : {};
-    const hasV3 = record.type === 'list' || record.type === 'gallery' || 'sorts' in record || ((record.type === 'table' || record.type === 'list') && 'groupPropertyId' in settings) || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
+    const hasV3 = record.type === 'list' || record.type === 'gallery' || 'sorts' in record || ((record.type === 'table' || record.type === 'list') && 'groupPropertyId' in settings) || (record.type === 'calendar' && ('startDatePropertyId' in settings || 'endDatePropertyId' in settings)) || (Array.isArray(record.filters) && record.filters.some((filter) => typeof filter === 'object' && filter !== null && ['is-empty', 'is-not-empty'].includes(String((filter as Record<string, unknown>).operator))));
     const version = hasV3 ? DATABASE_VIEW_VERSION : ('type' in record || 'settings' in record) ? 2 : 1;
     const normalized = version >= 3 && !('sorts' in record) ? { ...record, sorts: [record.sort] } : record;
     return parseDatabaseView(JSON.stringify({ format: DATABASE_VIEW_FORMAT, version, ...normalized }));
@@ -2007,6 +2091,11 @@ async function createVaultBackup(
     vault.root,
   );
   return createBackup(vault, target);
+}
+
+async function createPortableVaultExport(vault: FileSystemVault, body: Record<string, unknown>): Promise<ExportReport> {
+  const target = await assertBackupTargetAllowed(requireString(body.targetDir, 'targetDir'), vault.root);
+  return exportPortableVault(vault, target);
 }
 
 async function validateVaultBackup(
@@ -2417,13 +2506,15 @@ function sendError(res: ServerResponse, error: unknown): void {
 export function storageErrorBody(error: {
   code: string;
   message: string;
+  path?: string;
   details?: { paths?: string[]; issues?: string[] };
 }): UiApiErrorBody {
+  const paths = error.details?.paths ?? (error.path === undefined ? undefined : [error.path]);
   return {
     error: {
       code: error.code,
       message: error.message,
-      ...(error.details?.paths === undefined ? {} : { paths: error.details.paths }),
+      ...(paths === undefined ? {} : { paths }),
       ...(error.details?.issues === undefined ? {} : { issues: error.details.issues }),
     },
   };

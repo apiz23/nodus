@@ -30,6 +30,15 @@ describe('backup request freshness', () => {
 });
 
 describe('backup and restore API client', () => {
+  it('posts a portable export destination and returns the completion manifest details', async () => {
+    const mock = stubFetch(async () => jsonResponse({ targetDir: '/exports/one', notes: 2, databases: 1, databaseViews: 1, manifest: 'nodus-export.json', manifestVersion: 1, excluded: [] }, 201));
+    const report = await api.createPortableExport({ targetDir: '/exports/one' });
+    expect(report.manifestVersion).toBe(1);
+    expect(mock.mock.calls[0]![0]).toBe('/api/export');
+    expect(mock.mock.calls[0]![1]?.method).toBe('POST');
+    expect(mock.mock.calls[0]![1]?.body).toBe('{"targetDir":"/exports/one"}');
+  });
+
   it('posts the target directory to /api/backup and returns the report', async () => {
     const mock = stubFetch(async () =>
       jsonResponse({ targetDir: '/backups/one', notes: 3, databases: 1, databaseViews: 0 }, 201),
