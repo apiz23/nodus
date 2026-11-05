@@ -88,7 +88,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Legacy Phase 26 — Whiteboards and Visual Workspace (superseded proposal)](#legacy-phase-26--whiteboards-and-visual-workspace-superseded-proposal)
      - [Phase 27 — Advanced Search](#phase-27--advanced-search)
      - [Phase 28 — AI Integration](#phase-28--ai-integration)
-     - [Phase 29 — Sync Architecture](#phase-29--sync-architecture)
+     - [Legacy Phase 29 — Sync Architecture (superseded proposal)](#legacy-phase-29--sync-architecture-superseded-proposal)
      - [Phase 30 — Conflict Resolution](#phase-30--conflict-resolution)
      - [Phase 31 — Mobile Experience](#phase-31--mobile-experience)
      - [Phase 32 — Security and Privacy](#phase-32--security-and-privacy)
@@ -182,7 +182,7 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 26 | Workspace Customization | COMPLETE WITH LIMITATIONS — integrated | PR #15 merged; browser-local global theme and vault-scoped layout preferences. |
 | 27 | Task Management | COMPLETE WITH LIMITATIONS — integrated | PR #16 merged; derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
 | 28 | Calendar & Timeline | PLANNED | Depends on task/date workflows. |
-| 29 | Advanced Import & Export | PLANNED | Preserve Markdown, metadata, and graph view portability. |
+| 29 | Advanced Import & Export | IN PROGRESS | Phase 29B portable export and Phase 29C import validation/preview are implemented and verified; Phase 29C awaits owner acceptance because previews are not revision-bound. Phase 29D has not started. |
 | 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
 | 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
 | 32 | Product Experience & UX Simplification | PLANNED | Precedes desktop integration. |
@@ -1494,7 +1494,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 | 26 | Whiteboards and Visual Workspace | SUPERSEDED PROPOSAL | Replaced by the current Phase 26 Workspace Customization milestone. |
 | 27 | Advanced Search | PARTIAL | 6, 9 review, 15, 24 |
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
-| 29 | Sync Architecture | BLOCKED | 3, 8, 30, 32 |
+| 29 | Sync Architecture (legacy; superseded) | SUPERSEDED PROPOSAL | Retained only as historical planning context; the active Phase 29 is Advanced Import & Export. |
 | 30 | Conflict Resolution | PLANNED | 3, 8 |
 | 31 | Mobile Experience | PLANNED | 26, 29, 30, 32 |
 | 32 | Security and Privacy | PLANNED | 8, 21, 29 |
@@ -1915,7 +1915,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 
 ---
 
-### Phase 29 — Sync Architecture
+### Legacy Phase 29 — Sync Architecture (superseded proposal)
 
 **Objective:** Turn the experimental relay/sync foundation into a production multi-device experience.
 
