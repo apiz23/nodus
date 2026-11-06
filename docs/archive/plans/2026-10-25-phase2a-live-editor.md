@@ -1,4 +1,4 @@
-# Phase 2A — Live Markdown Editor
+# Archived plan: Phase 2A — Live Markdown Editor
 
 **Goal:** Replace the plain `<textarea>` body editor with a source-preserving CodeMirror 6 live Markdown editor and add optional page icons.
 

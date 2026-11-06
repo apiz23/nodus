@@ -1,4 +1,6 @@
-# Nodus Phase 1: Domain Model and Portable Data Format (Plan Only)
+# Archived plan: Nodus Phase 1 Domain Model and Portable Data Format
+
+This proposal predates the repository and is retained as project history. The implemented contracts are documented in the current format guides and source code.
 
 **Status:** Plan only. No code, configuration, or dependencies were created.
 

@@ -43,7 +43,7 @@ Phase 2 adds a filesystem-backed vault adapter, portable export/import, and veri
 | `test/storage-backup.test.ts` | Manifest, hashes, tampering, missing files, restore conflicts, interrupted-write detection. |
 | `test/tmp.ts` | Isolated temp directories with cleanup. |
 | `docs/storage.md` | Contracts, layout, errors, safe writes, export/import, backup, limitations, future sync requirements. |
-| `PHASE2_REPORT.md` | This report. |
+| `docs/archive/phase-2-report.md` | This report. |
 
 ### Changed
 
