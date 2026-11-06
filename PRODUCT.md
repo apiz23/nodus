@@ -80,6 +80,13 @@ Undecided or not yet proven:
 3. **Never silently lose an edit.** Conflicts are explicit and divergent content is preserved.
 4. **Quiet utility over spectacle.** The workspace should disappear into the task.
 5. **Sync is optional, private, and understandable.** One owner, a home relay, and recoverable state.
+6. **Simple by default, powerful when needed.** Common actions should be understandable without a manual; advanced tools remain available through progressive disclosure.
+
+## Product and roadmap direction
+
+The canonical sequencing, verified integration status, milestone specifications, dependencies, and suggested model assignments live in the [master roadmap](docs/ROADMAP.md). Planned capabilities are not shipped by virtue of appearing there; use each milestone status and its integration evidence.
+
+The long-term product direction is a local-first, customizable workspace for notes, databases, projects, and user-defined workflows. It is documented in the [product vision](docs/product-vision.md). Optional external cloud backends, such as a user-configured Supabase connection, are future possibilities only: they are not dependencies, and multi-user collaboration is a separate problem from single-owner synchronization. A user who never configures a cloud provider must retain the complete local experience.
 
 ## Accessibility & Inclusion
 

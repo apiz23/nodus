@@ -85,6 +85,13 @@ describe('POST /api/import/preview', () => {
       const legacyDir = join(root, 'legacy');
       await mkdir(join(legacyDir, 'notes'), { recursive: true });
       await writeFile(join(legacyDir, 'notes', 'legacy.md'), serializeNote(createNote({ id: '3b4c6e80-1357-4b9d-8e0f-123456789abc', title: 'Legacy', path: 'notes/legacy.md', body: 'old package', now: NOW })));
+      const interruptedLegacyDir = join(root, 'interrupted-legacy');
+      await mkdir(join(interruptedLegacyDir, 'notes'), { recursive: true });
+      await writeFile(join(interruptedLegacyDir, 'notes', 'partial.md'), serializeNote(createNote({ id: NEW_NOTE_ID, title: 'Partial export', path: 'notes/partial.md', body: 'partial but parseable', now: NOW })));
+      const interruptedTempDir = join(root, 'interrupted-with-temp');
+      await mkdir(join(interruptedTempDir, 'notes'), { recursive: true });
+      await writeFile(join(interruptedTempDir, 'notes', 'partial.md'), serializeNote(createNote({ id: NEW_NOTE_ID, title: 'Partial export', path: 'notes/partial.md', body: 'partial but parseable', now: NOW })));
+      await writeFile(join(interruptedTempDir, '.nodus-tmp-manifest'), '{"partial":true}');
 
       const middleware = createLocalApiMiddleware({ vaultPath: activePath, preferencesPath, now: () => NOW });
       const server = createServer((req, res) => middleware(req, res, () => { res.statusCode = 404; res.end(); }));
@@ -105,23 +112,40 @@ describe('POST /api/import/preview', () => {
       expect(stableTarget.some((item) => item.startsWith('.nodus-templates/'))).toBe(true);
       expect(stableTarget.some((item) => item.startsWith('.nodus-automations/'))).toBe(true);
       try {
-      const portable = await request<{ format: string; manifestVersion: number; previewId: string; expiresAt: string; counts: { notes: number }; resources: Array<{ status: string; safeChoices: string[] }>; conflicts: Array<{ status: string; safeChoices: string[] }>; warnings: string[] }>(base, portableDir);
+      const portable = await request<{ format: string; completeness: string; manifestVersion: number; previewId: string; expiresAt: string; counts: { notes: number }; resources: Array<{ status: string; safeChoices: string[] }>; conflicts: Array<{ status: string; safeChoices: string[] }>; warnings: string[] }>(base, portableDir);
         expect(portable.status).toBe(200);
-        expect(portable.body).toMatchObject({ format: 'nodus-portable-export', manifestVersion: 1, counts: { notes: 4 } });
+        expect(portable.body).toMatchObject({ format: 'nodus-portable-export', completeness: 'manifest-validated', manifestVersion: 1, counts: { notes: 4 } });
         expect(portable.body.previewId).toMatch(/^[A-Za-z0-9_-]{43}$/);
         expect(Date.parse(portable.body.expiresAt)).toBeGreaterThan(Date.parse(NOW));
         expect(portable.body.resources.map((resource) => resource.status).sort()).toEqual(['conflict', 'conflict', 'identical', 'new']);
         expect(portable.body.conflicts.map((resource) => resource.safeChoices).sort((a, b) => a.length - b.length)).toEqual([['skip'], ['skip', 'replace']]);
         expect(portable.body.warnings.some((warning) => warning.includes('ignored.csv') || warning.includes('excluded from source export'))).toBe(true);
 
-        const legacy = await request<{ format: string; counts: { notes: number }; errors: string[] }>(base, legacyDir);
+        const legacy = await request<{ format: string; completeness: string; counts: { notes: number }; errors: string[]; warnings: string[] }>(base, legacyDir);
         expect(legacy.status).toBe(200);
-        expect(legacy.body).toMatchObject({ format: 'legacy-directory', counts: { notes: 1 }, errors: [] });
+        expect(legacy.body).toMatchObject({ format: 'legacy-directory', completeness: 'unverified-legacy', counts: { notes: 1 }, errors: [] });
+        expect(legacy.body.warnings).toContain('No portable manifest is present. Recognized resources were validated, but directory completeness cannot be established; this may be an interrupted export.');
+
+        const interruptedLegacy = await request<{ format: string; completeness: string; warnings: string[]; counts: { notes: number } }>(base, interruptedLegacyDir);
+        expect(interruptedLegacy.status).toBe(200);
+        expect(interruptedLegacy.body).toMatchObject({ format: 'legacy-directory', completeness: 'unverified-legacy', counts: { notes: 1 } });
+        expect(interruptedLegacy.body.warnings.join(' ')).toMatch(/completeness cannot be established.*interrupted export/i);
+
+        const interruptedTemp = await request<{ error: { code: string; message: string } }>(base, interruptedTempDir);
+        expect(interruptedTemp.status).toBe(422);
+        expect(interruptedTemp.body.error).toMatchObject({ code: 'INVALID_CONTENT' });
+        expect(interruptedTemp.body.error.message).toMatch(/temporary files/i);
 
         const malformed = await request<{ error: { code: string; message: string; paths?: string[] } }>(base, malformedDir);
         expect(malformed.status).toBe(422);
         expect(malformed.body.error.code).toBe('INVALID_CONTENT');
         expect(malformed.body.error.message).toMatch(/manifest.*malformed/i);
+
+        await writeFile(join(portableDir, 'notes', 'source.md'), Buffer.concat([await readFile(join(portableDir, 'notes', 'source.md')), Buffer.from('\n')]));
+        const corruptedPortable = await request<{ error: { code: string; message: string } }>(base, portableDir);
+        expect(corruptedPortable.status).toBe(422);
+        expect(corruptedPortable.body.error.code).toBe('INVALID_CONTENT');
+        expect(corruptedPortable.body.error.message).toMatch(/resource changed|checksum|byte length/i);
 
         const missing = await request<{ error: { code: string } }>(base, join(root, 'not-found'));
         expect(missing.status).toBe(404);
@@ -178,6 +202,38 @@ describe('POST /api/import/preview', () => {
 });
 
 describe('POST /api/import/execute', () => {
+  it('keeps manifest-free legacy preview and import compatibility while exposing the completeness warning', async () => {
+    await withTempDir(async (root) => {
+      const active = await FileSystemVault.open(join(root, 'workspace'));
+      const legacyDir = join(root, 'legacy');
+      await mkdir(join(legacyDir, 'notes'), { recursive: true });
+      const legacyId = 'bb4c6e80-1357-4b9d-8e0f-123456789abc';
+      await writeFile(join(legacyDir, 'notes', 'legacy.md'), serializeNote(createNote({ id: legacyId, title: 'Legacy import', path: 'notes/legacy.md', body: 'preserve legacy support', now: NOW })));
+      const middleware = createLocalApiMiddleware({ vaultPath: active.root, now: () => NOW });
+      const server = createServer((req, res) => middleware(req, res, () => { res.statusCode = 404; res.end(); }));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test API address');
+      const base = `http://127.0.0.1:${address.port}`;
+      try {
+        const preview = await request<{ previewId: string; completeness: string; warnings: string[]; resources: Array<{ kind: string; id: string; path: string; safeChoices: string[] }> }>(base, legacyDir);
+        expect(preview.status).toBe(200);
+        expect(preview.body.completeness).toBe('unverified-legacy');
+        expect(preview.body.warnings.join(' ')).toMatch(/completeness cannot be established/i);
+        const decisions = preview.body.resources.map((resource) => ({ kind: resource.kind, id: resource.id, path: resource.path, choice: 'add' }));
+        const result = await execute<{ state: string }>(base, { previewId: preview.body.previewId, confirm: true, decisions });
+        expect(result.status).toBe(200);
+        expect(result.body.state).toBe('completed');
+        expect((await active.readNote(legacyId)).body).toBe('preserve legacy support');
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        await middleware.dispose();
+        active.dispose();
+      }
+    });
+  });
+
   it('publishes only the explicit choices bound to a fresh preview and rejects handle reuse', async () => {
     await withTempDir(async (root) => {
       const activePath = join(root, 'workspace');

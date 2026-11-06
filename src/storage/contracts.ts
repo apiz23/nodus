@@ -265,6 +265,8 @@ export interface ImportPreviewResource {
 export interface ImportPreview {
   source: string;
   format: 'legacy-directory' | 'nodus-portable-export';
+  /** Whether package completeness is established by the portable manifest. */
+  completeness: 'manifest-validated' | 'unverified-legacy';
   manifestVersion?: number;
   counts: { notes: number; databases: number; databaseViews: number; attachments: number; otherResources: number };
   resources: ImportPreviewResource[];

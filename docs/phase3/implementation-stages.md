@@ -1,4 +1,6 @@
-# Phase 3 Implementation Roadmap
+# Phase 3 Implementation Stages
+
+This historical implementation plan contains stage-level detail for the experimental relay and sync work. [`docs/ROADMAP.md`](../ROADMAP.md) is the authoritative source for current project status and sequencing.
 
 ## Stage 0 — Gates (done)
 - Verified Node.js `>=24.0.0` and unflagged `node:sqlite` (experimental warning remains); Node 22.12.0 requires `--experimental-sqlite`.

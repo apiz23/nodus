@@ -18,7 +18,7 @@ try {
   await mkdir(join(legacyImportSource, 'notes'), { recursive: true });
   const importedMarkdown = '# Browser imported note\n\nThis note was written through the reviewed import workflow.\n';
   await writeFile(join(legacyImportSource, 'notes', 'browser-import.md'), importedMarkdown, 'utf8');
-  server = await createServer({ configFile: 'ui/vite.config.ts', server: { port: 0, strictPort: false } });
+  server = await createServer({ configFile: 'ui/vite.config.ts', cacheDir: join(root, '.vite-cache'), server: { port: 0, strictPort: false } });
   await server.listen();
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
   process.env.NODUS_ALLOWED_ORIGINS = base;
@@ -150,7 +150,7 @@ try {
   await page.getByRole('alert').filter({ hasText: /not found|does not exist/i }).waitFor();
   await importPath.fill(exportTarget);
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await backupRegion.getByRole('status').filter({ hasText: 'Validated portable export v1' }).waitFor();
+  await backupRegion.getByRole('status').filter({ hasText: 'Portable export v1 manifest and inventory validated' }).waitFor();
   let releasePreview;
   let previewReached;
   const previewPending = new Promise((resolve) => { previewReached = resolve; });
@@ -159,7 +159,7 @@ try {
     previewReached();
     await previewGate;
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-      source: exportTarget, format: 'nodus-portable-export', manifestVersion: 1,
+      source: exportTarget, format: 'nodus-portable-export', completeness: 'manifest-validated', manifestVersion: 1,
       previewId: 'P'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(),
       counts: { notes: 3, databases: 1, databaseViews: 1, attachments: 0, otherResources: 0 },
       resources: [
@@ -217,7 +217,7 @@ try {
   await page.unroute('**/api/import/execute');
   await page.unroute('**/api/import/preview');
   const retryPreview = {
-    source: exportTarget, format: 'nodus-portable-export', manifestVersion: 1,
+    source: exportTarget, format: 'nodus-portable-export', completeness: 'manifest-validated', manifestVersion: 1,
     previewId: 'R'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(),
     counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 },
     resources: [{ kind: 'note', id: 'retry-id', path: 'retry.md', status: 'new', safeChoices: ['add', 'skip'] }],
@@ -226,13 +226,13 @@ try {
   await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(retryPreview) }));
   await page.route('**/api/import/execute', (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STALE_PREVIEW', message: 'The destination changed after preview. Create a fresh preview.' } }) }));
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await backupRegion.getByText(/Validated portable export v1/).waitFor();
+  await backupRegion.getByText(/Portable export v1 manifest and inventory validated/).waitFor();
   await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).click();
   await backupRegion.getByRole('alert').filter({ hasText: 'destination changed after preview' }).waitFor();
   assert.equal(await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).count(), 0, 'A stale preview cannot be submitted again');
   await page.unroute('**/api/import/execute');
   await backupRegion.getByRole('button', { name: 'Create a fresh preview', exact: true }).click();
-  await backupRegion.getByText(/Validated portable export v1/).waitFor();
+  await backupRegion.getByText(/Portable export v1 manifest and inventory validated/).waitFor();
   await page.route('**/api/import/execute', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
     operationId: '22222222-2222-4222-8222-222222222222', state: 'completed', startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
     counts: { notes: 1, databases: 0, databaseViews: 0 }, resources: [{ kind: 'note', id: 'retry-id', path: 'retry.md', decision: 'add', status: 'published', sha256: 'c'.repeat(64) }],
@@ -248,15 +248,17 @@ try {
   await page.unroute('**/api/import/preview');
   await importPath.fill(exportTarget);
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await backupRegion.getByRole('status').filter({ hasText: 'Validated portable export v1' }).waitFor();
-  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: exportTarget, format: 'legacy-directory', counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 }, previewId: 'L'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(), resources: [], warnings: [], errors: [], conflicts: [] }) }));
+  await backupRegion.getByRole('status').filter({ hasText: 'Portable export v1 manifest and inventory validated' }).waitFor();
+  await page.route('**/api/import/preview', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ source: exportTarget, format: 'legacy-directory', completeness: 'unverified-legacy', counts: { notes: 1, databases: 0, databaseViews: 0, attachments: 0, otherResources: 0 }, previewId: 'L'.repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(), resources: [], warnings: ['No portable manifest is present. Recognized resources were validated, but directory completeness cannot be established; this may be an interrupted export.'], errors: [], conflicts: [] }) }));
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await backupRegion.getByRole('status').filter({ hasText: 'Validated legacy directory' }).waitFor();
+  await backupRegion.getByRole('status').filter({ hasText: 'Legacy directory preview; recognized resources validated, completeness unverified' }).waitFor();
+  await backupRegion.getByRole('note').filter({ hasText: 'directory completeness cannot be established' }).waitFor();
   await page.unroute('**/api/import/preview');
   assert.equal(await page.getByRole('button', { name: 'Confirm and import', exact: true }).count(), 0, 'Execution action is absent without an active preview');
   await importPath.fill(legacyImportSource);
   await backupRegion.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await backupRegion.getByRole('status').filter({ hasText: 'Validated legacy directory' }).waitFor();
+  await backupRegion.getByRole('status').filter({ hasText: 'Legacy directory preview; recognized resources validated, completeness unverified' }).waitFor();
+  await backupRegion.getByRole('note').filter({ hasText: 'directory completeness cannot be established' }).waitFor();
   await backupRegion.getByRole('button', { name: 'Confirm and import', exact: true }).click();
   await backupRegion.getByText(/Import completed · operation/).waitFor();
   assert.equal(await readFile(join(root, 'notes', 'browser-import.md'), 'utf8'), importedMarkdown, 'The real preview-to-execution flow publishes the exact source note bytes');

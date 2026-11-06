@@ -275,3 +275,7 @@ No persistent relationship index exists. Restarting Nodus rebuilds everything fr
 ## Content-assisted related notes (Phase 24)
 
 Related notes now combine bounded text similarity, shared tags/headings and capped graph evidence from the shared Markdown snapshot. Folder proximity alone no longer qualifies a recommendation. See [Knowledge retrieval](knowledge-retrieval.md) for evidence labels, thresholds, privacy and lifecycle details. No links are modified automatically.
+
+## Future direction
+
+A future unified knowledge graph could compose this note graph with database relations, tasks, calendar events, and attachment references. That capability is not implemented. See [Unified knowledge graph — future architecture and feasibility](future/unified-knowledge-graph.md) for the evidence-based audit, identity constraints, proposed edge model, risks, and staged proposal. The roadmap remains authoritative for status and sequencing.

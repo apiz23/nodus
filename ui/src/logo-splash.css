@@ -1,0 +1,72 @@
+.nodus-logo-splash {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.nodus-logo-splash__mark {
+  width: min(56vmin, 14rem);
+  height: auto;
+}
+
+.nodus-logo-splash__frame,
+.nodus-logo-splash__measure {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: nodus-logo-draw 720ms cubic-bezier(.65, 0, .35, 1) forwards;
+}
+
+.nodus-logo-splash__frame {
+  animation-delay: 120ms;
+}
+
+.nodus-logo-splash__measure {
+  animation-delay: 960ms;
+}
+
+.nodus-logo-splash__node,
+.nodus-logo-splash__signal {
+  opacity: 0;
+  animation: nodus-logo-snap 1ms steps(1, end) forwards;
+}
+
+.nodus-logo-splash__node--top {
+  animation-delay: 1.76s;
+}
+
+.nodus-logo-splash__node--left {
+  animation-delay: 1.88s;
+}
+
+.nodus-logo-splash__node--right {
+  animation-delay: 2s;
+}
+
+.nodus-logo-splash__signal {
+  animation-delay: 2.68s;
+}
+
+@keyframes nodus-logo-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes nodus-logo-snap {
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nodus-logo-splash__frame,
+  .nodus-logo-splash__measure {
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+
+  .nodus-logo-splash__node,
+  .nodus-logo-splash__signal {
+    opacity: 1;
+    animation: none;
+  }
+}

@@ -340,11 +340,13 @@ The labels below are planning subdivisions only; they do not create new official
 
 ## Acceptance gate for Phase 29D
 
-Phase 29D is ready for owner acceptance only after all six planned work packages are reviewed and
-verified; portable and legacy paths have no silent conflict reinterpretation; stale previews fail
-closed; failure injection demonstrates detectable recovery; user data outside selected operations is
-unchanged; and all verification is recorded against the final implementation. Phase 29 must remain
-IN PROGRESS until its complete official roadmap scope is separately reviewed.
+Phase 29D is ready for owner acceptance only after all six planned implementation work packages are
+reviewed and verified; portable and legacy paths have no silent conflict reinterpretation; stale
+previews fail closed; failure injection demonstrates detectable recovery; user data outside selected
+operations is unchanged; and all verification is recorded against the final implementation. The
+owner-requested 29D.7 operational follow-up additionally reviews near-limit behavior and the
+manifest-free interrupted-export ambiguity. Phase 29 must remain IN PROGRESS until its complete
+official roadmap scope is separately reviewed.
 
 ## Implementation-state record — 2026-11-05
 
@@ -356,6 +358,7 @@ IN PROGRESS until its complete official roadmap scope is separately reviewed.
 | 29D.4 API | Implemented | Execute, operation list/status, rollback, retry. Execution is synchronous; status is durable after an operation boundary but does not stream live progress. |
 | 29D.5 UI | Implemented | Settings → Backup & restore review, explicit replacement consent, confirmation, loading/errors/success, safe retry/rollback presentation using existing shadcn primitives. |
 | 29D.6 reliability gate | Implemented and verified; owner acceptance pending | `docs/phase29d-handoff.md` records measured 2,204-resource planning/preview, explicit operational limits, injected ENOSPC staging failure, and real child-process SIGKILL/restart browser recovery at staging, addition, replacement, rollback, and ambiguous external-edit boundaries. Final regression evidence is recorded there; no Phase 29D acceptance is claimed. |
+| 29D.7 operational follow-up | Implemented and verified with documented limits; owner acceptance pending | Add an explicit `manifest-validated` versus `unverified-legacy` preview classification and completeness warning without disabling legacy import. API tests cover valid, corrupt, manifest-free incomplete, and temp-bearing interrupted packages; the browser smoke verifies the warning and legacy import. Near-limit and process-recovery evidence and the remaining platform, power-loss, retention, cleanup-diagnostic, and memory risks are recorded in `docs/phase29d-handoff.md`. |
 
 ### Implemented transaction semantics
 
@@ -369,9 +372,15 @@ Settings shows a request loading state; there is no live progress stream or canc
 
 Import planning enforces at most 10,000 resources, 20,000 total filesystem inventory entries, 64 MiB per resource, 256 MiB aggregate resource bytes, 16 MiB for the portable manifest, and 64 path segments. Descriptor-based reads are bounded, reject symlinks, compare opened-file identity with the initial lstat result, and detect observed size/mtime/inode changes. The portable exporter uses the same manifest bounds, so it will not write a v1 export whose manifest is rejected by this importer. Managed attachments retain the stricter 10 MiB validator.
 
-On Node `v24.22.2`, an isolated workload of 2,204 resources (1,500 small Markdown notes, 500 Markdown database records, 200 destination conflicts, one database schema, an 8 MiB Markdown note, a 10 MiB attachment, and a 40-level folder path) contained 18.32 MiB of resource bytes. `planImport` took 1,504 ms and preview took 1,618 ms; process RSS increased from 130 MiB to 199 MiB. This is a single planning/preview measurement, not a maximum-size or full execution benchmark. Execution at the configured ceiling and sustained memory pressure remain unmeasured; the bounds are an operational stop, not an SLA.
+On Node `v24.22.2`, an isolated workload of 2,204 resources (1,500 small Markdown notes, 500 Markdown database records, 200 destination conflicts, one database schema, an 8 MiB Markdown note, a 10 MiB attachment, and a 40-level folder path) contained 18.32 MiB of resource bytes. `planImport` took 1,504 ms and preview took 1,618 ms; process RSS increased from 130 MiB to 199 MiB. A separate D.7 operational workload reached 266,334,369 resource bytes (99.22% of the aggregate limit) across 20 resources and 43 filesystem entries; the largest resource was 67,104,929 bytes. Import completed with matching final hashes in 34.028 seconds but peaked at 1,656,372 KiB RSS (~1.58 GiB). This does not exercise 10,000-resource execution, sustained OS memory pressure, or a full boundary matrix; temporary/final disk-use breakdown was not retained. Treat high RSS and host-dependent capacity as an unresolved operational risk, not an SLA.
 
 No automated cleanup is performed. Completed and failed-terminal transaction directories remain on disk indefinitely. A future retention design must retain every stage, backup, and journal required by `staging`, `staged`, `publishing`, `recovery-required`, or `corrupt` operations; the owner should review a manual cleanup/export policy before any deletion behavior is introduced.
+
+### 29D.7 incomplete-export and operational observations
+
+The portable manifest is written last, but the legacy importer accepts manifest-free directories. A partial export without a surviving `.nodus-tmp-*` therefore cannot be distinguished from a legitimate legacy directory. Preview now marks the former package shape as `unverified-legacy`, warns that completeness cannot be established, and preserves explicit legacy execution after user confirmation. A present invalid manifest fails closed; a leftover temp file rejects preview. The API and Backup & Restore UI use the same distinction. This warning does not authenticate a legacy source or convert it into a verified complete export.
+
+An earlier isolated D.7 fault injection showed that a cleanup `EACCES` can be suppressed while the primary write error is returned. The staging journal remains discoverable and explicit recovery reports the failed staging operation, but the original failure response does not include the cleanup failure. No automatic cleanup/retention is implemented: completed journals, stage data, and replacement backups remain indefinitely pending an owner-approved policy. External filesystem writers can race operations despite the cooperative vault lock. Operational testing was on local macOS/APFS only; other OS/filesystem combinations and power-loss durability are unverified. Atomic writes sync file bytes and attempt directory sync where supported, but directory-sync errors are ignored. No package-wide atomicity or power-loss guarantee is claimed.
 
 ### Final verification record — 2026-11-05
 

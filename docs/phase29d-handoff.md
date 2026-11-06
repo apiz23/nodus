@@ -2,9 +2,9 @@
 
 **Official milestone:** Phase 29 — Advanced Import & Export (**IN PROGRESS**)
 
-**Work packages:** 29D.1–29D.6 implementation and final reliability verification are recorded in this isolated worktree; formal acceptance remains pending owner review.
+**Work packages:** 29D.1–29D.6 implementation and reliability verification were recorded in the isolated worktree; the owner-requested D.7 operational follow-up is recorded below. Formal acceptance remains pending owner review.
 
-**Status:** Phase 29D is implemented and verified in this isolated worktree, but remains unaccepted pending owner review. Phase 29C remains owner-accepted. No commit or push has been made.
+**Status:** Phase 29D.1–29D.6 implementation and the owner-requested D.7 operational follow-up are implemented and verified to the extent recorded below. Phase 29 remains IN PROGRESS; Phase 29D and Phase 29 remain unaccepted pending owner review. Phase 29C remains owner-accepted. No commit or push has been made.
 
 ## 29D.1 contract
 
@@ -53,7 +53,7 @@ These checks verify the current uncommitted worktree. They do not constitute Pha
 - Preview handles remain process-local and expire after five minutes. Restarting the UI server invalidates a preview and requires re-previewing.
 - Startup does not automatically roll back incomplete imports; pending/corrupt operations are detected and surfaced for explicit recovery. A process killed while holding the root lock leaves a stale lock that Nodus will not automatically steal. The documented manual stale-lock procedure is required before recovery can acquire that vault.
 - A crash after creating an operation directory but before its first durable journal may leave an unreadable orphan directory. Publication has not started at that boundary; preserve the vault and manually inspect the orphan rather than deleting it automatically.
-- Import bounds are 10,000 resources, 20,000 filesystem inventory entries, 64 MiB per resource, 256 MiB aggregate resource bytes, 16 MiB manifest, and 64 path segments. This bounds input allocation, but execution at the configured maximum and sustained memory pressure have not been measured.
+- Import bounds are 10,000 resources, 20,000 filesystem inventory entries, 64 MiB per resource, 256 MiB aggregate resource bytes, 16 MiB manifest, and 64 path segments. A near-aggregate workload was measured during D.7 (details below), but it peaked at about 1.58 GiB RSS and did not exercise 10,000-resource execution or forced OS memory pressure. The limit is not a guarantee that all workloads fit every host.
 - Snapshot, backup, and export APIs now fail closed while an import journal is staged, publishing, recovery-required, or corrupt. Import-internal snapshots may exclude only their own operation while holding the root lock. Regression assertions verify snapshot refusal during interrupted publication and for a corrupt journal, plus availability after rollback.
 - The full suite and smoke checks passed, but they do not eliminate the documented external-writer race, stale-lock recovery requirement, or orphan-operation-directory window before the first durable journal.
 
@@ -83,3 +83,25 @@ Node `v24.22.2` was used. An isolated workload of 2,204 resources (1,500 small M
 `test/storage-import-execution.test.ts` injects `ENOSPC` while finalizing staged data and verifies no destination resource was published and the durable staging operation can be safely marked interrupted. `test/storage-import-limits.test.ts` verifies resource count, per-resource, aggregate bytes, path-depth bounds, and pre-parse rejection from inventory sizes. These safeguards bound input allocation but do not prove maximum-size execution fits every host.
 
 See [the Phase 29 plan](phase29d-plan.md), [audit](phase29-audit.md), [storage contract](storage.md), and [official roadmap](ROADMAP.md) for the broader portability and acceptance context.
+
+## Phase 29D.7 — Operational verification and incomplete-export distinction
+
+Portable export writes `nodus-export.json` last. A crash after writing resources but before that marker can leave a parseable directory. Since manifest-free legacy imports are intentionally supported, absence of the manifest cannot establish that the directory is complete. The import preview now returns `completeness: "manifest-validated"` for a package whose manifest, resource identities, sizes, checksums, and inventory validate, and `completeness: "unverified-legacy"` for a manifest-free directory. The latter includes a visible warning: recognized resources were validated, but completeness cannot be established and the source may be an interrupted export. The UI preserves explicit legacy import while displaying that warning. A present malformed/corrupt manifest still fails closed; a leftover `.nodus-tmp-*` file is rejected. This is a warning and classification, not proof that an unverified legacy directory is complete.
+
+The D.7 isolated operational workload previously exercised 266,334,369 resource bytes (99.22% of the configured 256 MiB aggregate ceiling), 20 resources and 43 filesystem entries. The largest resource was 67,104,929 bytes (just below the 64 MiB per-resource cap). All 20 published resources matched their expected sizes and SHA-256 hashes, and a pre-existing destination note remained unchanged. Wall time was 34.028 seconds and peak RSS was 1,656,372 KiB (about 1.58 GiB). The recorded evidence does not include a separately measured destination/staging disk-usage breakdown. Separate tests covered 400 legacy resources with hash verification, a 500-record/200-conflict import preserving all 200 original hashes, the exact 20,000-entry inventory boundary and the 10,000-resource validator boundary; the latter did not execute 10,000 resources end to end.
+
+Interrupted-export observations: SIGKILL after resource writes with no manifest and no temporary file produced a directory that preview accepts as `unverified-legacy`; the new warning makes this ambiguity visible, while explicit legacy import remains compatible. SIGKILL leaving a `.nodus-tmp-*` file is rejected. An injected manifest-write `EFBIG` after 400 resource writes likewise left a manifest-free source accepted as legacy, which was successfully imported with all 400 resource hashes verified. These behaviors show why neither missing-manifest legacy preview nor a partial directory can be represented as a validated complete portable export.
+
+Operational limitations remain: a controlled cleanup `EACCES` during a staging failure was suppressed while the primary `EFBIG` was returned; the residual operation remained discoverable and explicit recovery reported the staging failure, but the original API error did not identify the cleanup failure. Journals, staged payloads, and replacement backups are retained indefinitely; no automatic cleanup is safe without an owner-reviewed retention/recovery policy. The near-limit RSS is substantial and sustained memory pressure was not forced. The observed tests ran on local macOS/APFS; Windows, Linux, network/synchronized filesystems and power-loss durability are unverified. Atomic file writes sync file contents and attempt a directory sync where supported, but directory-sync failures are ignored and no power-loss guarantee is claimed. External filesystem writers remain outside the cooperative root lock and can race replacement. Do not infer package atomicity or filesystem-wide crash safety from these tests.
+
+The follow-up verification on Node `v24.18.1` passed:
+
+- Focused portable/import/recovery/API tests: 5 files, 43 tests.
+- Related storage, backup, attachment, portable-diagnostics, and UI backup regression tests: 10 files, 189 tests.
+- `pnpm run typecheck` — passed.
+- `pnpm run test:workspace` — passed. The browser smoke checks the manifest-validated label, visible unverified-legacy warning, and successful explicit legacy import.
+- `node scripts/import-recovery-process-smoke.mjs` — passed with actual process interruption/restart, rollback/retry, and ambiguous external-edit preservation. The Vite cache for this smoke is isolated under its temporary workspace.
+- Production Vite build to `/private/tmp/nodus-phase29-build.GS8Ng1/output` — passed. Existing repository `dist/` file names, sizes, and SHA-256 hashes matched before and after. Vite retained its advisory that the App chunk is larger than 500 kB (940.35 kB minified).
+- `git diff --check` and `git diff --cached --check` — passed after the final changes.
+
+The first focused run exposed an overly narrow test assertion (resource parsing correctly failed before a checksum-specific message); the fixture was changed to preserve the note identity while changing its bytes, and the final focused run passed. The first recovery-smoke attempt was stopped after Vite used its default cache; the smoke now uses a disposable cache directory. A subsequent browser assertion was updated for the new legacy status text, after which the process-restart smoke passed. No full Vitest suite was rerun for this narrow additive contract/UI change. The original repository `node_modules/.vite` cache may have been touched by the stopped default-cache attempt; it was not deleted or cleaned, and no pre-attempt cache hash inventory was captured, so exact byte-for-byte preservation of that ignored cache cannot be asserted.

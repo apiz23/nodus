@@ -229,7 +229,11 @@ export async function createImportPreviewSnapshot(sourceDir: string, vault: Vaul
   if (target.propertyCatalog) existing.push({ kind: 'property-catalog', id: 'property-catalog', path: target.propertyCatalog.path, bytes: target.propertyCatalog.rawBytes });
   for (const order of target.databaseViewOrders) existing.push({ kind: 'database-view-order', id: order.databaseId, path: order.path, bytes: order.rawBytes });
   const resources = incoming.map((entry) => classifyResource(entry, existing));
-  const warnings = [...(plan.excluded ?? []).map((item) => `${item.path}: excluded from source export (${item.reason})`), ...databaseWarnings(plan)];
+  const warnings = [
+    ...(plan.portableManifest ? [] : ['No portable manifest is present. Recognized resources were validated, but directory completeness cannot be established; this may be an interrupted export.']),
+    ...(plan.excluded ?? []).map((item) => `${item.path}: excluded from source export (${item.reason})`),
+    ...databaseWarnings(plan),
+  ];
   const counts = {
     notes: resources.filter((item) => item.kind === 'note').length,
     databases: resources.filter((item) => item.kind === 'database').length,
@@ -237,7 +241,7 @@ export async function createImportPreviewSnapshot(sourceDir: string, vault: Vaul
     attachments: resources.filter((item) => item.kind === 'attachment').length,
     otherResources: resources.filter((item) => !['note','database','database-view','attachment'].includes(item.kind)).length,
   };
-  const preview = { source, format: plan.portableManifest ? 'nodus-portable-export' as const : 'legacy-directory' as const, ...(plan.portableManifest ? { manifestVersion: plan.portableManifest.version } : {}), counts, resources, warnings, errors: [], conflicts: resources.filter((item) => item.status === 'conflict') };
+  const preview = { source, format: plan.portableManifest ? 'nodus-portable-export' as const : 'legacy-directory' as const, completeness: plan.portableManifest ? 'manifest-validated' as const : 'unverified-legacy' as const, ...(plan.portableManifest ? { manifestVersion: plan.portableManifest.version } : {}), counts, resources, warnings, errors: [], conflicts: resources.filter((item) => item.status === 'conflict') };
   const binding: ImportPreviewBinding = {
     sourcePath: source,
     destinationPath: resolve(vault.root),

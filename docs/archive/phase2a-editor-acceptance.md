@@ -6,7 +6,7 @@ The user subsequently confirmed that **all manual editor acceptance checks liste
 
 ## Plan criteria
 
-The controlling plan is [`2026-10-25-phase2a-live-editor.md`](superpowers/plans/2026-10-25-phase2a-live-editor.md). Task 6 requires `pnpm test`, `pnpm typecheck`, and `pnpm build`; a measured bundle delta; manual-test results; and an acceptance gate for IME, caret/selection, CRLF, accessibility, and performance. A failed gate means stop and report evidence; it does not prescribe a numeric bundle-size ceiling. Tasks 1–5 specify icon/alias projection, a raw-Markdown CodeMirror document with manual save and stale-write protection, viewport-scoped live decorations, task-list/wiki-link behavior, and page-icon UI.
+The controlling plan is [`2026-10-25-phase2a-live-editor.md`](plans/2026-10-25-phase2a-live-editor.md). Task 6 requires `pnpm test`, `pnpm typecheck`, and `pnpm build`; a measured bundle delta; manual-test results; and an acceptance gate for IME, caret/selection, CRLF, accessibility, and performance. A failed gate means stop and report evidence; it does not prescribe a numeric bundle-size ceiling. Tasks 1–5 specify icon/alias projection, a raw-Markdown CodeMirror document with manual save and stale-write protection, viewport-scoped live decorations, task-list/wiki-link behavior, and page-icon UI.
 
 ## Bundle comparison
 

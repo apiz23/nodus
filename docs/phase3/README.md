@@ -1,5 +1,7 @@
 # Nodus Phase 3 — Personal Cross-Device Sync
 
+This folder documents the experimental relay and sync subsystem. For current project status and sequencing, see the [master roadmap](../ROADMAP.md).
+
 ## Goal
 Add secure, local-first, personal cross-device synchronization to Nodus while preserving Phase 1 note/database formats and Phase 2 storage, import/export, and backup behavior.
 
@@ -33,7 +35,7 @@ Add secure, local-first, personal cross-device synchronization to Nodus while pr
 - `protocol.md` — wire protocol and invariants
 - `threat-model.md` — assets, threats, mitigations
 - `acceptance-tests.md` — required test coverage
-- `roadmap.md` — implementation stages
+- `implementation-stages.md` — Phase 3 stage detail; `docs/ROADMAP.md` is authoritative for current project status and sequencing.
 
 ## Decisions already approved
 - Runtime: Node.js `>=24.0.0` with built-in `node:sqlite` (verified on 24.0.0; experimental warning remains; 22.12.0 requires `--experimental-sqlite`).
