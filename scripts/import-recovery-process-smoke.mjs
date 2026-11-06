@@ -89,7 +89,7 @@ async function openImportPanel(page, source) {
   const panel = page.getByRole('region', { name: 'Backup and restore', exact: true });
   await panel.getByLabel('Source folder', { exact: true }).fill(source);
   await panel.getByRole('button', { name: 'Preview import', exact: true }).click();
-  await panel.getByText(/Validated legacy directory/, { exact: false }).waitFor();
+  await panel.getByText(/Legacy directory preview; recognized resources validated, completeness unverified/, { exact: false }).waitFor();
   return panel;
 }
 
@@ -131,7 +131,7 @@ async function triggerAndKill(page, source, mode, path, boundary, choice) {
 
 process.env.NODUS_VAULT = vault;
 await mkdir(vault, { recursive: true });
-uiServer = await createServer({ configFile: 'ui/vite.config.ts', server: { port: 0, strictPort: false } });
+uiServer = await createServer({ configFile: 'ui/vite.config.ts', cacheDir: join(root, '.vite-cache'), server: { port: 0, strictPort: false } });
 await uiServer.listen();
 const uiBase = `http://127.0.0.1:${uiServer.httpServer.address().port}`;
 browser = await chromium.launch({ headless: true });
