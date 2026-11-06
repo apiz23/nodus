@@ -45,6 +45,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
 ## Table of Contents
 
 1. [How to Read This Roadmap](#1-how-to-read-this-roadmap)
+   - [Long-term product direction](#long-term-product-direction)
 2. [Current State at a Glance](#2-current-state-at-a-glance)
    - [Current Forward Sequence (verified 2026-11-05)](#current-forward-sequence-verified-2026-11-05)
 3. [Completed and Historical Milestones](#3-completed-and-historical-milestones)
@@ -81,7 +82,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Phase 19 — Calendar and Timeline Improvements](#phase-19--calendar-and-timeline-improvements)
      - [Phase 20 — Notifications and Reminders](#phase-20--notifications-and-reminders)
      - [Phase 21 — Import and Migration](#phase-21--import-and-migration)
-     - [Phase 22 — Plugin and Extension Architecture](#phase-22--plugin-and-extension-architecture)
+     - [Legacy Phase 22 — Plugin and Extension Architecture (historical proposal)](#phase-22--plugin-and-extension-architecture)
      - [Phase 23 — Graph View](#phase-23--graph-view)
      - [Phase 24 — Backlinks and Knowledge Discovery](#phase-24--backlinks-and-knowledge-discovery)
      - [Phase 25 — Smart Organization](#phase-25--smart-organization)
@@ -130,6 +131,12 @@ Every coding agent working on Nodus must complete these steps before, during, an
 ### Scope of this document
 
 This roadmap covers the application, storage, database, editor, search, UI, tests, and the experimental sync layer. It does not authorize product implementation. A future phase begins only after its objective, dependencies, and acceptance criteria are reviewed and approved.
+
+### Long-term product direction
+
+Nodus is a local-first, customizable workspace for notes, databases, projects, and user-defined workflows. Local vaults, Markdown files, and user-owned data remain the foundation. A user who never configures a cloud provider must retain the complete core experience.
+
+The [product vision](product-vision.md) describes flexible workspace and database goals, optional future cloud connectivity with Supabase as one possible provider, and the distinction between synchronization and multi-user collaboration. This direction does not authorize implementation, add official phases, or change the current sequence.
 
 ---
 
@@ -183,13 +190,15 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 27 | Task Management | COMPLETE WITH LIMITATIONS — integrated | PR #16 merged; derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
 | 28 | Calendar & Timeline | COMPLETE / ACCEPTED | Formally accepted 2026-11-04; bounded month-card Timeline remains the accepted Phase 28 scope. |
 | 29 | Advanced Import & Export | IN PROGRESS | Phase 29A audit and 29B portable export are complete; 29C import validation/preview was accepted by the owner on 2026-11-05. Phase 29D.1–29D.6 implementation and final reliability verification are recorded in the isolated worktree handoff; formal Phase 29D acceptance remains pending owner review. Publication is recoverable, not package-atomic; external filesystem races, a pre-journal initialization window, stale process-lock recovery, and indefinite journal retention remain documented limits. Import bounds are 10,000 resources / 20,000 filesystem entries / 256 MiB package / 64 MiB per resource / 64 path segments. Phase 29 remains IN PROGRESS. See [Phase 29D handoff](phase29d-handoff.md) and [Phase 29D plan](phase29d-plan.md). |
-| 30 | Plugin Architecture | PLANNED | Requires stable internal interfaces and security review. |
+| 30 | Conflict Resolution | PLANNED | Official Phase 30 per the owner-approved 2026-11-06 decision. See the retained conflict-resolution specification in Section 4; review it before treating its historical acceptance criteria as current. Plugin Architecture is tracked separately in the P0–P8 workstream. |
 | 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
 | 32 | Product Experience & UX Simplification | PLANNED | Precedes desktop integration. |
 | 33 | Tauri Desktop Experience | PLANNED | Integrate the existing React/Vite app; do not duplicate its architecture. |
 | 34 | Synchronization | DEFERRED / EXPERIMENTAL | Relay groundwork is unwired; requires a separate architecture review. |
 | 35 | Security & Performance | PLANNED | Keep security and performance distinct from sync. |
 | 36 | Release Readiness | PLANNED | Final quality and compatibility review. |
+
+**Phase 30 numbering clarification:** The current official Phase 30 is Conflict Resolution. The earlier current-forward row naming Plugin Architecture is superseded by the owner-approved 2026-11-06 decision. Plugin Architecture is an independent P0–P8 workstream and does not replace an official phase. The Conflict Resolution material in Section 4 is retained historical planning text; its scope and acceptance criteria require review before implementation.
 
 Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**. It is not the current Phase 28 calendar work and should be resolved before enabling automatic note or folder moves from organization suggestions.
 
@@ -1422,7 +1431,7 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ### Phase 22G — Portable Graph Views & Deeper Exploration
 
-**Numbering note:** the roadmap reserves Phase 22 for the proposed plugin architecture. This delivered graph work is recorded as **22G** to avoid renumbering that future milestone.
+**Numbering note:** Official Phase 22 is **Portable Graph Views & Deeper Exploration**, represented by the completed graph work in this section and the current-forward sequence above. Plugin Architecture is a separate P0–P8 workstream, not an official Phase 22 milestone. The historical 22G/22H labels are retained as implementation-trace identifiers within the delivered Phase 22 work.
 
 **Status:** **COMPLETE WITH LIMITATIONS** (feature branch `feat/phase-22-portable-graph-views`)
 
@@ -1487,7 +1496,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 | 19 | Calendar and Timeline Improvements | PLANNED | 7B, 10, 18 |
 | 20 | Notifications and Reminders | PLANNED | 12, 18, 19 |
 | 21 | Import and Migration | PLANNED | 7A, 8, 13 |
-| 22 | Plugin and Extension Architecture | PLANNED | 15, 17, 32 |
+| 22 | Plugin and Extension Architecture (historical proposal; superseded numbering) | SUPERSEDED HISTORICAL PROPOSAL — plugin work is tracked separately in P0–P8 | 15, 17, 32 |
 | 23 | Graph View | PLANNED | 6, 9 review, 24, 27 |
 | 24 | Backlinks and Knowledge Discovery | PLANNED | 6, 27 |
 | 25 | Advanced Markdown | SUPERSEDED PROPOSAL | Replaced by the current Phase 25 Smart Organization milestone. |
@@ -1687,6 +1696,8 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 ---
 
 ### Phase 22 — Plugin and Extension Architecture
+
+**Historical numbering clarification:** This is a proposal from the superseded sequence in Section 4, not the official Phase 22. Official Phase 22 is Portable Graph Views & Deeper Exploration and is marked complete in the current-forward sequence. Plugin Architecture is now tracked separately by the internal P0–P8 workstream; see `docs/plugin-workstream-roadmap.md`.
 
 **Objective:** Allow controlled extension of Nodus without granting arbitrary filesystem or network access by default.
 
@@ -1894,7 +1905,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - No hidden network calls, telemetry, or vault upload by default.
 - Clear separation between generated text and stored user content.
 
-**Dependencies:** Phase 22 (extension boundary), Phase 27 (search/retrieval), Phase 32 (security/privacy).
+**Dependencies:** The historical Plugin Architecture proposal (now the separate P0–P8 workstream), Phase 27 (search/retrieval), Phase 32 (security/privacy).
 
 **Potential architecture impact**
 
