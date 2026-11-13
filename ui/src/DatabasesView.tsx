@@ -109,6 +109,9 @@ interface DatabasesViewProps {
   onOpenNote: (id: string) => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  /** Rising counter from the command palette that opens the automations dialog. */
+  openAutomationsRequest?: number;
+  onOpenAutomationsRequestHandled?: () => void;
 }
 
 interface EditingProperty {
@@ -413,8 +416,18 @@ export function DatabasesView({
   onOpenNote,
   sidebarCollapsed,
   onToggleSidebar,
+  openAutomationsRequest,
+  onOpenAutomationsRequestHandled,
 }: DatabasesViewProps) {
   const selected = databases.find((database) => database.id === selectedId) ?? databases[0] ?? null;
+  // Consume the palette's automations request only once the dialog has had a
+  // chance to see it (content mounted), so a later database switch or view
+  // re-entry does not reopen the dialog.
+  useEffect(() => {
+    if (openAutomationsRequest === undefined || openAutomationsRequest <= 0) return;
+    if (loading || selected === null) return;
+    onOpenAutomationsRequestHandled?.();
+  }, [openAutomationsRequest, onOpenAutomationsRequestHandled, loading, selected]);
   const [rowData, setRowData] = useState<UiDatabaseRowsResponse | null>(null);
   const [taskProjection, setTaskProjection] = useState<UiTasksResponse | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -1196,7 +1209,7 @@ export function DatabasesView({
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    <DatabaseAutomations key={`${vaultKey}:${selected.id}`} database={selected} />
+                    <DatabaseAutomations key={`${vaultKey}:${selected.id}`} database={selected} openSignal={openAutomationsRequest} />
                     <Button type="button" size="sm" variant="outline" onClick={() => openSchemaEditor(false)} disabled={schemaSaving}>
                       Edit schema
                     </Button>

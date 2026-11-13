@@ -12,6 +12,7 @@ import { DEFAULT_GRAPH_RENDER_LIMIT, type GraphPoint, type SavedGraphViewConfig 
 import { GraphSavedViews } from './GraphSavedViews';
 import { GraphPathExplorer } from './GraphPathExplorer';
 import { GraphClusterInsights } from './GraphClusterInsights';
+import { SidebarToggle } from './SidebarToggle';
 import { api } from './api';
 import { graphConnections, graphFolders, positionGraph, visibleGraph } from './graph-model';
 import { cn } from '@/lib/utils';
@@ -27,7 +28,7 @@ import {
   type GraphViewport,
 } from './graph-viewport';
 
-interface Props { revision: number; initialNoteId: string | null; vaultKey: string; onOpenNote: (id: string) => void }
+interface Props { revision: number; initialNoteId: string | null; vaultKey: string; onOpenNote: (id: string) => void; sidebarCollapsed: boolean; onToggleSidebar: () => void }
 const ALL_FOLDERS = '__all__';
 const ALL_CLUSTERS = '__all__';
 const ISOLATED_CLUSTER = '__isolated__';
@@ -36,7 +37,7 @@ type Interaction =
   | { type: 'pan'; pointerId: number; startClientX: number; startClientY: number; origin: GraphViewport; moved: boolean; captureTarget: Element }
   | { type: 'node'; pointerId: number; nodeId: string; startClientX: number; startClientY: number; originX: number; originY: number; moved: boolean; captureTarget: Element };
 
-export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Props) {
+export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote, sidebarCollapsed, onToggleSidebar }: Props) {
   const [graph, setGraph] = useState<UiNoteGraph | null>(null);
   const [clusters, setClusters] = useState<UiGraphCluster[]>([]);
   const [clusterError, setClusterError] = useState<string | null>(null);
@@ -273,6 +274,7 @@ export function GraphView({ revision, initialNoteId, vaultKey, onOpenNote }: Pro
 
   return <section className="flex min-h-0 flex-1 flex-col" aria-label="Local note graph">
     <header className="flex min-h-12 flex-wrap items-center gap-2 border-b px-4 py-2">
+      <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
       <Network className="size-4 text-muted-foreground" aria-hidden="true" />
       <h1 className="flex-1 text-sm font-medium">Local graph</h1>
       <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(true)}><RefreshCw data-icon="inline-start" />Refresh from disk</Button>

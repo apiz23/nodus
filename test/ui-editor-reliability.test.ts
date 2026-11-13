@@ -979,3 +979,115 @@ describe('external note change checks', () => {
     expect(mockApi.saveNote).not.toHaveBeenCalled();
   });
 });
+
+describe('phase 32B navigation recovery and palette wiring', () => {
+  function findFocusBar(): Record<string, any> | undefined {
+    function walk(node: unknown): Record<string, any> | undefined {
+      if (Array.isArray(node)) return node.map(walk).find(Boolean);
+      if (typeof node !== 'object' || node === null || !('props' in node)) return undefined;
+      const element = node as Record<string, any>;
+      // FocusModeBar is a real component in App's tree; match by component name
+      // because the root test config cannot import .tsx modules.
+      const isFocusBar = typeof element.type === 'function' && element.type.name === 'FocusModeBar';
+      return isFocusBar ? element : walk(element.props.children);
+    }
+    return walk(tree);
+  }
+
+  it('shows the focus-mode exit bar on every view and clears it on exit', async () => {
+    await mount();
+    expect(findFocusBar()).toBeUndefined();
+
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(findFocusBar()).toBeDefined();
+
+    for (const view of ['notes', 'tasks', 'databases', 'templates', 'graph', 'discovery', 'insights', 'organization', 'settings']) {
+      props('test-palette').onView(view);
+      await flush();
+      expect(findFocusBar(), `focus bar missing on view ${view}`).toBeDefined();
+    }
+
+    // Recovery through the bar's own control (sidebar is hidden in focus mode).
+    findFocusBar()!.props.onExit();
+    await flush();
+    expect(findFocusBar()).toBeUndefined();
+
+    // Recovery through the palette command, both directions.
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(findFocusBar()).toBeDefined();
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(findFocusBar()).toBeUndefined();
+  });
+
+  it('keeps the sidebar state consistent when focus mode is toggled', async () => {
+    await mount();
+    props('test-palette').onToggleSidebar();
+    await flush();
+    expect(props('test-palette').sidebarCollapsed).toBe(true);
+    // Focus mode disables the plain sidebar toggle: the exit command is the
+    // supported path while the sidebar is unmounted.
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(props('test-palette').canToggleSidebar).toBe(false);
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(props('test-palette').canToggleSidebar).toBe(true);
+  });
+
+  it('opens the sidebar search panels from the palette', async () => {
+    await mount();
+    props('test-palette').onOpenSearchFilters();
+    await flush();
+    expect(props('test-sidebar').openSearchPanel).toBe('filters');
+    props('test-palette').onOpenSearchLibrary();
+    await flush();
+    expect(props('test-sidebar').openSearchPanel).toBe('library');
+    props('test-sidebar').onSearchPanelChange(null);
+    await flush();
+    expect(props('test-sidebar').openSearchPanel).toBeNull();
+  });
+
+  it('shares one filter state between the sidebar and the palette', async () => {
+    await mount();
+    expect(props('test-palette').filters).toEqual([]);
+    props('test-sidebar').onFiltersChange([{ type: 'tag', operator: 'contains', value: 'project' }], 'or');
+    await flush();
+    expect(props('test-palette').filters).toHaveLength(1);
+    expect(props('test-palette').filterLogic).toBe('or');
+    props('test-sidebar').onFiltersChange([], 'and');
+    await flush();
+    expect(props('test-palette').filters).toHaveLength(0);
+    expect(props('test-palette').filterLogic).toBe('and');
+  });
+
+  it('navigates the palette into the backup settings section and consumes the request', async () => {
+    await mount();
+    expect(props('test-palette').filters).toBeDefined();
+    props('test-palette').onOpenSettingsSection('backup');
+    await flush();
+    expect(props('test-settings').focusSection).toBe('backup');
+    props('test-settings').onFocusSectionConsumed();
+    await flush();
+    expect(props('test-settings').focusSection).toBeNull();
+  });
+
+  it('opens database automations from the palette and consumes the request', async () => {
+    await mount();
+    props('test-palette').onOpenAutomations();
+    await flush();
+    expect(props('test-databases').openAutomationsRequest).toBe(1);
+    props('test-databases').onOpenAutomationsRequestHandled();
+    await flush();
+    expect(props('test-databases').openAutomationsRequest).toBe(0);
+  });
+
+  it('gates note commands on an open note', async () => {
+    await mount();
+    expect(props('test-palette').canManageNote).toBe(false);
+    await open(a.id);
+    expect(props('test-palette').canManageNote).toBe(true);
+  });
+});

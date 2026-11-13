@@ -47,6 +47,7 @@ interface SidebarProps {
   query: string;
   onQueryChange: (value: string) => void;
   searchRef: RefObject<HTMLInputElement | null>;
+  navigationTriggerRef?: RefObject<HTMLButtonElement | null>;
   onCreate: () => void;
   onCreateInFolder: (folder: string) => void;
   onCreateFolder: (path: string) => Promise<void>;
@@ -84,6 +85,9 @@ interface SidebarProps {
   filters?: readonly NoteFilter[];
   filterLogic?: NoteFilterLogic;
   onFiltersChange?: (filters: NoteFilter[], logic: NoteFilterLogic) => void;
+  /** Which search panel the shell has opened (command-palette driven); null when closed. */
+  openSearchPanel?: 'filters' | 'library' | null;
+  onSearchPanelChange?: (panel: 'filters' | 'library' | null) => void;
   searchRevision?: number;
   metadataIssueCount?: number;
   catalogIssue?: string;
@@ -107,6 +111,7 @@ export function Sidebar({
   query,
   onQueryChange,
   searchRef,
+  navigationTriggerRef,
   onCreate,
   onCreateInFolder,
   onCreateFolder,
@@ -144,6 +149,8 @@ export function Sidebar({
   filters = [],
   filterLogic = 'and',
   onFiltersChange = () => {},
+  openSearchPanel = null,
+  onSearchPanelChange = () => {},
   searchRevision = 0,
   metadataIssueCount = 0,
   catalogIssue,
@@ -152,16 +159,22 @@ export function Sidebar({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const openSearchPanelRef = useRef(openSearchPanel);
   onCloseRef.current = onClose;
+  openSearchPanelRef.current = openSearchPanel;
   let queryConstraints: ReturnType<typeof parseSearchQuery>['constraints'] = [];
   try { queryConstraints = parseSearchQuery(query).constraints; } catch { /* The API reports the syntax error beside results. */ }
 
   useEffect(() => {
     if (!open) return undefined;
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    previousFocusRef.current = navigationTriggerRef?.current?.isConnected
+      ? navigationTriggerRef.current
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // The portaled search popover owns Escape until it has closed.
+        if (event.defaultPrevented || openSearchPanelRef.current !== null) return;
         event.preventDefault();
         onCloseRef.current();
         return;
@@ -336,8 +349,10 @@ export function Sidebar({
               </kbd>
             ) : null}
           </div>
-          <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange} />
+          <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange}
+            open={openSearchPanel === 'filters'} onOpenChange={(next) => onSearchPanelChange(next ? 'filters' : (openSearchPanel === 'filters' ? null : openSearchPanel))} />
           <SearchLibraryPopover vaultKey={status?.vault.path ?? ''} query={query} filters={filters} logic={filterLogic} searching={searching} error={searchError}
+            open={openSearchPanel === 'library'} onOpenChange={(next) => onSearchPanelChange(next ? 'library' : (openSearchPanel === 'library' ? null : openSearchPanel))}
             onRestore={(nextQuery, nextFilters, nextLogic) => { onQueryChange(nextQuery); onFiltersChange(nextFilters, nextLogic); onView('notes'); }} />
           </div>
         )}

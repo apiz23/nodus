@@ -43,6 +43,32 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${base}/app`);
+  await page.getByRole('searchbox', { name: 'Search notes', exact: true }).waitFor();
+  // Focus recovery must work through the keyboard palette, including when a
+  // search action needs to reveal the hidden sidebar.
+  const focusModifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+  const runPalette = async (label) => {
+    await page.keyboard.press(`${focusModifier}+k`);
+    const dialog = page.getByRole('dialog', { name: 'Command palette' });
+    await dialog.waitFor({ state: 'visible' });
+    await dialog.getByRole('combobox').fill(label);
+    await dialog.getByRole('option', { name: label, exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+  };
+  await runPalette('Enter focus mode');
+  await page.getByText('Focus mode is on — the sidebar is hidden.').waitFor();
+  await runPalette('Exit focus mode');
+  await page.getByRole('searchbox', { name: 'Search notes', exact: true }).waitFor();
+  await runPalette('Enter focus mode');
+  await runPalette('Search filters');
+  await page.getByLabel('Filter value').waitFor();
+  await page.keyboard.press('Escape');
+  await page.getByLabel('Filter value').waitFor({ state: 'hidden' });
+  await page.getByRole('searchbox', { name: 'Search notes', exact: true }).focus();
+  await runPalette('Enter focus mode');
+  await runPalette('Saved searches');
+  await page.getByText('Saved searches are stored in this browser for this vault.').waitFor();
+  await page.keyboard.press('Escape');
   const search = page.getByRole('searchbox', { name: 'Search notes', exact: true });
   const rows = page.locator('[data-search-result="true"]');
   const waitRows = async (count) => page.waitForFunction((n) => document.querySelectorAll('[data-search-result="true"]').length === n, count);

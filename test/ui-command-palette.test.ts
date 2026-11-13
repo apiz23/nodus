@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   dedupeCommands,
   executeCommand,
@@ -292,5 +293,13 @@ describe('recent-note navigation persistence', () => {
     };
     expect(readRecentNotes(throwing, '/vault')).toEqual([]);
     expect(recordRecentNote(throwing, '/vault', note('a'))).toEqual([]);
+  });
+});
+
+describe('shortcut reference accuracy (Phase 32B)', () => {
+  it('keeps the shortcut reference claim accurate', () => {
+    const source = readFileSync(new URL('../ui/src/ShortcutReferenceDialog.tsx', import.meta.url), 'utf8');
+    expect(source).not.toContain('can run every action');
+    expect(source).toContain('command palette');
   });
 });
