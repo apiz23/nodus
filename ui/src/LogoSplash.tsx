@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react';
 import './logo-splash.css';
+import { NODUS_LOOP_PATH } from './NodusMark';
 
 type LogoSplashProps = {
   onDone?: () => void;
 };
 
-/** A one-shot, reduced-motion-aware animation of Nodus's existing mark. */
+/** A one-shot, reduced-motion-aware animation of Nodus's linked-loop mark. */
 export function LogoSplash({ onDone }: LogoSplashProps) {
   const onDoneRef = useRef(onDone);
   const completedRef = useRef(false);
@@ -42,32 +43,24 @@ export function LogoSplash({ onDone }: LogoSplashProps) {
         fill="none"
       >
         <path
-          className="nodus-logo-splash__frame"
-          d="M7.5 23.5 16 7.5l8.5 16H7.5Z"
+          className="nodus-logo-splash__loop"
+          d={NODUS_LOOP_PATH}
           pathLength="1"
           stroke="currentColor"
-          strokeWidth="1.8"
+          strokeWidth="2.6"
+          strokeLinecap="round"
           strokeLinejoin="round"
         />
         <path
-          className="nodus-logo-splash__measure"
-          d="M11.5 18.2h9"
-          pathLength="1"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          opacity=".38"
-        />
-        <circle className="nodus-logo-splash__node nodus-logo-splash__node--top" cx="16" cy="7.5" r="2.4" fill="currentColor" />
-        <circle className="nodus-logo-splash__node nodus-logo-splash__node--left" cx="7.5" cy="23.5" r="2.4" fill="currentColor" />
-        <circle className="nodus-logo-splash__node nodus-logo-splash__node--right" cx="24.5" cy="23.5" r="2.4" fill="currentColor" />
-        <circle
           className="nodus-logo-splash__signal"
-          cx="16"
-          cy="18.2"
-          r="1.8"
-          fill="var(--success)"
+          d="M14.7 14.3C15.1 14.7 15.4 15.2 16 16C16.6 16.8 16.9 17.3 17.3 17.7"
+          fill="none"
+          stroke="var(--success)"
+          strokeWidth="3.1"
+          strokeLinecap="round"
+          pathLength="1"
           onAnimationEnd={(event) => {
-            if (event.animationName !== 'nodus-logo-snap' || completionTimeoutRef.current !== null) return;
+            if (event.animationName !== 'nodus-logo-connect' || completionTimeoutRef.current !== null) return;
             completionTimeoutRef.current = window.setTimeout(complete, 2000);
           }}
         />

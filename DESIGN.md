@@ -1,6 +1,6 @@
 ---
 name: Nodus
-description: Local-first Markdown knowledge workspace — warm paper neutrals, ink text, one Geist family, moss green as the sole accent.
+description: Local-first Markdown knowledge workspace — warm paper neutrals, ink text, wide, confident Sora headings over neutral Inter UI and body, moss green as the sole accent.
 colors:
   background: "#fbfaf7"
   foreground: "#2b2a26"
@@ -30,31 +30,31 @@ colors:
   tooltip-foreground: "#fbfaf7"
 typography:
   display:
-    fontFamily: "\"Geist Variable\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+    fontFamily: "\"Sora\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
     fontSize: "34px"
-    fontWeight: 600
+    fontWeight: 700
     lineHeight: 1.15
-    letterSpacing: "-0.025em"
+    letterSpacing: "-0.02em"
   headline:
-    fontFamily: "\"Geist Variable\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+    fontFamily: "\"Sora\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
     fontSize: "1.7em"
-    fontWeight: 600
+    fontWeight: 700
     lineHeight: 1.3
     letterSpacing: "-0.015em"
   title:
-    fontFamily: "\"Geist Variable\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+    fontFamily: "\"Sora\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
     fontSize: "1.4em"
-    fontWeight: 600
+    fontWeight: 700
     lineHeight: 1.3
     letterSpacing: "-0.015em"
   body:
-    fontFamily: "\"Geist Variable\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+    fontFamily: "\"Inter\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
     fontSize: "17px"
     fontWeight: 400
     lineHeight: 1.7
     letterSpacing: "normal"
   label:
-    fontFamily: "\"Geist Variable\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
+    fontFamily: "\"Inter\", ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif"
     fontSize: "12px"
     fontWeight: 500
     lineHeight: 1.4
@@ -126,7 +126,7 @@ The system is monochrome-plus-one. Ink (`#2b2a26`) does all structural and actio
 
 **Key Characteristics:**
 - Warm paper neutrals (light) / cooler graphite neutrals (dark); no pure gray
-- One family, Geist Variable, everywhere; monospace only for machine strings (paths, IDs, hashes, code)
+- Wide, confident Sora headings over neutral Inter UI and body; monospace only for machine strings (paths, IDs, hashes, code)
 - Ink primary buttons; moss green is the sole accent and appears on ≤~10% of any screen
 - 12px container radius; 1px borders or a soft shadow on a surface — never both
 - Quiet 100–250ms state motion; `prefers-reduced-motion` collapses all of it
@@ -157,21 +157,21 @@ Palette is warm neutral ladder plus one moss accent; the dark theme is a restate
 
 ## Typography
 
-**Display Font:** Geist Variable (`"Geist Variable"` with `ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif` fallback)
-**Body Font:** Geist Variable (same stack)
+**Display Font:** Sora (`"Sora"` with `ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif` fallback)
+**Body Font:** Inter (`"Inter"` with `ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif` fallback)
 **Mono Font:** `ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace` — machine strings only: vault paths, note IDs, SHA hashes, code spans, fenced code, inline key hints
 
-**Character:** One humanist sans does every job from a 40px page title to an 11px status line. The voice is calm and slightly tight at large sizes (negative tracking on titles), open at reading size. There is no second display face and no serif anywhere in chrome or prose.
+**Character:** Clean and minimalist: Sora brings wide, confident headings; Inter keeps UI chrome, labels, and editor prose neutral and highly legible. Keep display tracking slightly tight (−0.01 to −0.02em) and let Sora carry the weight. Mono remains quarantined to machine-owned strings.
 
 ### Hierarchy
-- **Page title** (600, 34px mobile / 40px `sm:up`, line-height 1.15, tracking −0.025em): the note-title input at the top of the editor.
-- **Prose H1** (600, 1.7em, line-height 1.3, tracking −0.015em): first-level markdown heading inside the editor.
-- **Prose H2–H5** (600, 1.4em → 1em, same line-height/tracking): stepped down per level; H6 shrinks to 0.9em, uppercase, tracking 0.04em.
-- **Body** (400, 17px, line-height 1.7): editor prose. Strong text is weight 650; emphasis is italic.
-- **UI label** (400–600, 12–13px): sidebar rows 13px, breadcrumb 12px, meta lines 12.5px, status/kbd/tags 11–12px.
+- **Page title** (Sora 700, 34px mobile / 40px `sm:up`, line-height 1.15, tracking −0.02em): the note-title input at the top of the editor.
+- **Prose H1** (Sora 700, 1.7em, line-height 1.3, tracking −0.015em): first-level markdown heading inside the editor.
+- **Prose H2–H5** (Sora 700, 1.4em → 1em, same line-height/tracking): stepped down per level; H6 shrinks to 0.9em, uppercase, tracking 0.04em.
+- **Body** (Inter 400, 17px, line-height 1.7): editor prose. Strong text is weight 700; emphasis is italic.
+- **UI label** (Inter 400–600, 12–13px): sidebar rows 13px, breadcrumb 12px, meta lines 12.5px, status/kbd/tags 11–12px.
 
 ### Named Rules
-**The One Family Rule.** Geist Variable is the only proportional face. Mono is quarantined to strings a machine owns (paths, IDs, hashes, code). Never introduce a serif, a second sans, or a "display" family for titles — scale and tracking do that work.
+**The Two Family Rule.** Sora is the display and heading face; Inter is the only UI and body sans. Mono is quarantined to strings a machine owns (paths, IDs, hashes, code). Do not introduce a third family or a decorative display face — Sora's confident shapes do the work.
 
 ## Layout
 
@@ -252,7 +252,7 @@ Lucide React icons, 16px default (`size-4`), stroke-width 1.75 globally. Page ic
 - **Do** keep moss green (`#2f7d63` / `#7fbfa6`) on state and connection only: links, caret, selection, focus rings, active nav/tree, dirty-save, status dot.
 - **Do** make primary actions ink (`bg-primary`), sized 32px with rounded-md (9.6px) and a `ring-2 ring-ring/80` focus ring.
 - **Do** separate surfaces with 1px borders and tonal steps; reach for `shadow-sm`/overlay shadow only as state or floating elevation.
-- **Do** set every proportional glyph in Geist Variable; use mono only for paths, IDs, hashes, and code.
+- **Do** set Sora for headings and Inter for UI and body; use mono only for paths, IDs, hashes, and code.
 - **Do** keep editor prose at 17px/1.7 inside a 65–75-character measure (max-w-[43rem] sheet).
 - **Do** respect `prefers-reduced-motion`: state changes stay within 100–250ms and collapse to instant under reduced motion.
 - **Do** render icons as Lucide line icons at stroke-width 1.75.
@@ -260,7 +260,7 @@ Lucide React icons, 16px default (`size-4`), stroke-width 1.75 globally. Page ic
 ### Don't:
 - **Don't** fill large surfaces, page backgrounds, or body text with moss green — the Moss Rule caps it at small state marks.
 - **Don't** pair a 1px border and a shadow on the same resting container.
-- **Don't** introduce a second font family, a serif, or a decorative display face for titles.
+- **Don't** introduce a third font family or a decorative display face for titles.
 - **Don't** add kickers, eyebrows, or hard offset (neobrutalist) shadows; the system has neither and must not grow them.
 - **Don't** substitute text glyphs or emoji for UI icons.
 - **Don't** use pure gray neutrals (`#888`-family) or pure black/white chrome; every neutral stays on the warm (light) or graphite (dark) ladder.

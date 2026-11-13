@@ -33,6 +33,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { NodusMark } from './NodusMark';
 import { NoteFiltersPopover } from './NoteFiltersPopover';
 import { SearchLibraryPopover } from './SearchLibraryPopover';
 import { parseSearchQuery } from '../../src/search/query.js';
@@ -227,9 +228,7 @@ export function Sidebar({
         inert={navigationLocked || undefined}
       >
         <div className={cn('flex w-full items-center gap-2 px-1', compact && 'md:justify-center')}>
-          <div className="grid size-6 shrink-0 place-items-center rounded-md bg-foreground text-[11px] font-semibold text-background">
-            N
-          </div>
+          <NodusMark className="size-7 shrink-0 text-foreground" />
           {compact ? null : (
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[13px] font-semibold tracking-tight">Nodus</div>

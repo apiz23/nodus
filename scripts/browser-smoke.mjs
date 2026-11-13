@@ -29,6 +29,22 @@ async function captureScreenshot(page, name) {
   console.log(`Screenshot: ${join(artifactsDir, `${name}.png`)}`);
 }
 
+async function assertLandingHero(page) {
+  const hero = page.locator('section[data-enter]').first();
+  const heading = hero.getByRole('heading', { level: 1 });
+  await heading.waitFor({ state: 'visible' });
+  const headingText = (await heading.innerText()).replace(/\s+/g, ' ').trim();
+  assert.match(headingText, /local workspace/i, 'Landing headline describes the local workspace');
+  assert.match(headingText, /notes and projects/i, 'Landing headline names the supported work');
+
+  const primaryAction = hero.locator('a[href="/app"]').first();
+  await primaryAction.waitFor({ state: 'visible' });
+  const actionText = (await primaryAction.innerText()).replace(/\s+/g, ' ').trim();
+  assert.match(actionText, /\b(?:write|writing|workspace)\b/i, 'Landing primary action is understandable');
+  assert.equal(await primaryAction.getAttribute('href'), '/app', 'Landing primary action opens the workspace');
+  return primaryAction;
+}
+
 async function reserveLoopbackPort() {
   const server = createServer();
   await new Promise((resolveListen, reject) => {
@@ -166,17 +182,11 @@ async function main() {
 
     const landingNavigation = await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     assert.equal(landingNavigation?.status(), 200, 'Nodus landing page did not load');
-    await page.getByRole('heading', { level: 1, name: 'Your knowledge. Your files. Your rules.' }).waitFor({ state: 'visible' });
-    assert.equal(
-      await page.getByRole('link', { name: 'Explore Nodus' }).getAttribute('href'),
-      '/app',
-      'Landing primary CTA does not point at the workspace route',
-    );
-    assert.equal(
-      await page.getByRole('link', { name: 'View on GitHub' }).getAttribute('href'),
-      'https://github.com/apiz23/nodus',
-      'Landing GitHub link does not match the configured repository',
-    );
+    await assertLandingHero(page);
+    const githubLink = page.locator('a[href="https://github.com/apiz23/nodus"]').first();
+    await githubLink.waitFor({ state: 'visible' });
+    assert.match((await githubLink.innerText()).trim(), /github/i, 'Landing repository link is discoverable');
+    assert.equal(await githubLink.getAttribute('href'), 'https://github.com/apiz23/nodus', 'Landing GitHub link matches the configured repository');
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
       true,
@@ -187,7 +197,7 @@ async function main() {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.getByRole('heading', { level: 1, name: 'Your knowledge. Your files. Your rules.' }).waitFor({ state: 'visible' });
+    await assertLandingHero(page);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
       true,
@@ -197,7 +207,7 @@ async function main() {
     await page.getByRole('menuitem', { name: 'Features' }).waitFor({ state: 'visible' });
     await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.getByRole('link', { name: 'Explore Nodus' }).click();
+    await (await assertLandingHero(page)).click();
     await page.waitForURL(`${baseUrl}/app`);
     await page.getByRole('heading', { name: 'Open a note to begin' }).waitFor({ state: 'visible' });
     await page.getByText('No pages yet', { exact: true }).waitFor({ state: 'visible' });
