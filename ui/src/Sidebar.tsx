@@ -9,6 +9,7 @@ import {
   FileText,
   FolderClosed,
   FolderOpen,
+  GitMerge,
   ListTodo,
   Moon,
   Network,
@@ -97,6 +98,7 @@ const paletteShortcut = shortcutLabel(shortcutById('command-palette').binding, d
 
 const navItems = [  { id: 'notes' as const, label: 'All notes', icon: FileText },
   { id: 'tasks' as const, label: 'Tasks', icon: ListTodo },
+  { id: 'conflicts' as const, label: 'Conflicts', icon: GitMerge },
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'insights' as const, label: 'Knowledge health', icon: Activity },
@@ -389,7 +391,7 @@ export function Sidebar({
         </Button>
 
         <nav className={cn('flex w-full flex-col gap-0.5', compact && 'md:items-center')} aria-label="Primary">
-          {[navItems[0]!, ...sidebarSectionOrder
+          {[navItems[0]!, navItems.find((item) => item.id === 'conflicts')!, ...sidebarSectionOrder
             .filter((id) => !hiddenSidebarSections.includes(id))
             .map((id) => navItems.find((item) => item.id === id))
             .filter((item): item is typeof navItems[number] => item !== undefined)].map((item) => {

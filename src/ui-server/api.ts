@@ -85,6 +85,8 @@ import { databaseViewPath } from '../storage/fs/layout.js';
 import { projectNoteProperties } from '../database/note-properties.js';
 import { applyImport, createImportPreviewSnapshot, planImport } from '../storage/portable/import.js';
 import { ImportPreviewSessionStore, parseImportResourceDecisions, validateImportResourceDecisions } from '../storage/portable/preview-session.js';
+import { SyncClient } from '../sync/client.js';
+import type { ResolutionIntent } from '../sync/resolution-decisions.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -154,6 +156,29 @@ export function createLocalApiMiddleware(
   let startupPromise: Promise<void> | undefined;
   let disposed = false;
   let disposalPromise: Promise<void> | undefined;
+  let syncClient: SyncClient | null = null;
+  let syncVaultPath: string | null = null;
+  let syncConnection: { vaultId: string; epoch: number } | null = null;
+  const closeSyncClient = () => {
+    syncClient?.close();
+    syncClient = null;
+    syncVaultPath = null;
+    syncConnection = null;
+  };
+  const localSyncClient = async (): Promise<SyncClient> => {
+    const vault = await getVault();
+    if (syncClient === null || syncVaultPath !== vault.root) {
+      closeSyncClient();
+      syncClient = new SyncClient({ vault, baseUrl: 'http://127.0.0.1', token: '' });
+      syncVaultPath = vault.root;
+    }
+    return syncClient;
+  };
+  const currentSyncClient = async (): Promise<SyncClient> => {
+    const client = await localSyncClient();
+    if (syncConnection === null) throw new ApiError(409, 'SYNC_NOT_CONNECTED', 'Connect to a relay from Conflicts before using network actions.');
+    return client;
+  };
   type KnowledgeSnapshot = { notes: Note[]; hashes: Map<string, string>; catalog: PropertyCatalog; catalogIssue?: string };
   const loadKnowledgeSnapshot = async (vault: FileSystemVault): Promise<KnowledgeSnapshot> => {
     const stored = await vault.snapshotNotesWithHashes();
@@ -349,7 +374,11 @@ export function createLocalApiMiddleware(
     }
     if (disposed) { nextVault.dispose(); throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.'); }
     const previous = await vaultPromise?.catch(() => undefined);
-    if (previous && previous !== nextVault) { previous.dispose(); ownedVaults.delete(previous); }
+    if (previous && previous !== nextVault) {
+      closeSyncClient();
+      previous.dispose();
+      ownedVaults.delete(previous);
+    }
     ownedVaults.add(nextVault);
     activeVaultPath = nextVault.root;
     vaultPromise = Promise.resolve(nextVault);
@@ -392,6 +421,125 @@ export function createLocalApiMiddleware(
 
     const method = req.method ?? 'GET';
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    if (method === 'POST' && path === '/api/sync/connect') {
+      const body = await readJson(req);
+      if (typeof body.relayUrl !== 'string' || typeof body.pairingCode !== 'string' || body.pairingCode.length < 8 || body.pairingCode.length > 256) {
+        throw new ApiError(400, 'INVALID_INPUT', 'Enter a relay address and a valid one-time pairing code.');
+      }
+      let relay: URL;
+      try { relay = new URL(body.relayUrl); } catch { throw new ApiError(400, 'INVALID_INPUT', 'Enter a valid relay address.'); }
+      const localHttp = relay.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(relay.hostname);
+      if ((!localHttp && relay.protocol !== 'https:') || relay.username || relay.password || relay.search || relay.hash || !['', '/'].includes(relay.pathname)) {
+        throw new ApiError(400, 'INVALID_INPUT', 'Use an HTTPS relay address (HTTP is allowed only for localhost) without credentials or a path.');
+      }
+      const vault = await getVault();
+      closeSyncClient();
+      let paired;
+      try { paired = await SyncClient.pair(relay.origin, body.pairingCode, 'Nodus workspace'); }
+      catch { throw new ApiError(502, 'SYNC_PAIR_FAILED', 'Pairing failed. Check the relay address and one-time code, then try again.'); }
+      const nextClient = new SyncClient({ vault, baseUrl: relay.origin, token: paired.token, deviceId: paired.deviceId });
+      try {
+        const identity = await nextClient.identity();
+        syncClient = nextClient;
+        syncVaultPath = vault.root;
+        syncConnection = identity;
+        return sendJson(res, 200, { connected: true, ...identity });
+      } catch (error) {
+        nextClient.close();
+        throw error;
+      }
+    }
+    if (method === 'POST' && path === '/api/sync/disconnect') {
+      closeSyncClient();
+      return sendJson(res, 200, { connected: false });
+    }
+    if (method === 'GET' && path === '/api/sync/connection') {
+      const currentVault = await getVault();
+      if (syncClient !== null && syncVaultPath !== currentVault.root) closeSyncClient();
+      return sendJson(res, 200, syncClient !== null && syncVaultPath === currentVault.root && syncConnection !== null
+        ? { connected: true, ...syncConnection } : { connected: false });
+    }
+    if (method === 'POST' && path === '/api/sync/pull') {
+      const client = await currentSyncClient();
+      await client.pull();
+      return sendJson(res, 200, { pulled: true });
+    }
+    if (path === '/api/sync/conflicts' && method === 'GET') {
+      return sendJson(res, 200, (await localSyncClient()).listConflicts());
+    }
+    const conflictRoute = /^\/api\/sync\/conflicts\/([A-Za-z0-9_-]+)(?:\/(history))?$/.exec(path);
+    if (conflictRoute && method === 'GET') {
+      const client = await localSyncClient();
+      const conflictId = conflictRoute[1]!;
+      if (conflictRoute[2] === 'history') {
+        const detail = client.getConflictDetails(conflictId);
+        if (detail === null) throw new ApiError(404, 'NOT_FOUND', 'Conflict was not found in this vault.');
+        const limitText = url.searchParams.get('limit');
+        const limit = limitText === null ? 50 : Number(limitText);
+        const after = url.searchParams.get('after') ?? undefined;
+        return sendJson(res, 200, client.listResolutionHistory({ vaultId: detail.vaultId, epoch: detail.epoch }, conflictId, limit, after));
+      }
+      const detail = await client.inspectConflict(conflictId);
+      if (detail === null) throw new ApiError(404, 'NOT_FOUND', 'Conflict was not found in this vault.');
+      return sendJson(res, 200, detail);
+    }
+    if (method === 'POST' && path === '/api/sync/resolutions/prepare') {
+      const client = await localSyncClient();
+      const body = await readJson(req);
+      const intent = body.intent as ResolutionIntent | undefined;
+      const reviewed = body.reviewed as { localHash?: unknown; remoteHash?: unknown; copyHash?: unknown } | undefined;
+      if (intent === undefined || reviewed === undefined || typeof reviewed.remoteHash !== 'string') throw new ApiError(400, 'INVALID_INPUT', 'Reviewed conflict evidence is required.');
+      try {
+        const detail = await client.inspectConflict(intent.conflictId);
+        if (detail === null) throw new Error('Conflict not found');
+        return sendJson(res, 200, await client.prepareReviewedResolutionDecision(
+          { vaultId: detail.summary.vaultId, epoch: detail.summary.epoch }, intent,
+          { localHash: reviewed.localHash as string | null, remoteHash: reviewed.remoteHash, copyHash: reviewed.copyHash as string | null },
+        ));
+      } catch (error) {
+        throw new ApiError(409, 'STALE_REVIEW', error instanceof Error ? error.message : 'Conflict evidence changed. Reload before deciding.');
+      }
+    }
+    if (method === 'POST' && path === '/api/sync/resolutions/merged-preview') {
+      const client = await localSyncClient();
+      const body = await readJson(req);
+      if (typeof body.conflictId !== 'string' || typeof body.draftContent !== 'string' || body.reviewed === null || typeof body.reviewed !== 'object') {
+        throw new ApiError(400, 'INVALID_INPUT', 'A conflict reference, merged content, and reviewed hashes are required.');
+      }
+      try {
+        return sendJson(res, 200, await client.previewMergedCopy(body.conflictId, body.draftContent,
+          body.reviewed as { localHash: string | null; remoteHash: string; copyHash: string | null }));
+      } catch (error) {
+        throw new ApiError(409, 'STALE_REVIEW', error instanceof Error ? error.message : 'Conflict evidence changed. Reload before preparing a merged copy.');
+      }
+    }
+    if (method === 'POST' && path === '/api/sync/resolutions/remote-preview') {
+      const client = await localSyncClient();
+      const body = await readJson(req);
+      if (typeof body.conflictId !== 'string' || body.reviewed === null || typeof body.reviewed !== 'object') {
+        throw new ApiError(400, 'INVALID_INPUT', 'A conflict reference and reviewed hashes are required.');
+      }
+      try {
+        return sendJson(res, 200, await client.previewRemoteResolution(body.conflictId,
+          body.reviewed as { localHash: string | null; remoteHash: string; copyHash: string | null }));
+      } catch (error) {
+        throw new ApiError(409, 'STALE_REVIEW', error instanceof Error ? error.message : 'Conflict evidence changed. Reload before preparing a resolution.');
+      }
+    }
+    const executeRoute = /^\/api\/sync\/resolutions\/([0-9a-f-]{36})\/execute$/.exec(path);
+    if (executeRoute && method === 'POST') {
+      const client = await currentSyncClient();
+      const decision = client.getResolutionDecisionFromId(executeRoute[1]!);
+      if (decision === null) throw new ApiError(404, 'NOT_FOUND', 'Resolution decision was not found.');
+      const scope = { vaultId: decision.vaultId, epoch: decision.epoch };
+      const result = decision.intent.action === 'keep-local'
+        ? await client.executeKeepLocalDecision(scope, decision.intent.decisionId)
+        : decision.intent.action === 'keep-remote'
+          ? await client.executeKeepRemoteDecision(scope, decision.intent.decisionId)
+          : await client.executeMergedCopyDecision(scope, decision.intent.decisionId);
+      return sendJson(res, 200, result);
+    }
 
     if (method === 'GET' && path === '/api/assets/image') {
       const imagePath = url.searchParams.get('path');
@@ -1326,6 +1474,7 @@ export function createLocalApiMiddleware(
     disposalPromise = (async () => {
       await startupPromise?.catch(() => undefined);
       await vaultPromise?.catch(() => undefined);
+      closeSyncClient();
       for (const vault of ownedVaults) vault.dispose();
       ownedVaults.clear();
       vaultPromise = undefined;

@@ -34,6 +34,7 @@ import { TasksView } from './TasksView';
 import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
+import { ConflictsView } from './ConflictsView';
 import { Sidebar } from './Sidebar';
 import { VaultOnboarding } from './VaultOnboarding';
 import { useNoteSearch } from './useNoteSearch';
@@ -2112,6 +2113,17 @@ export default function App() {
           />
         ) : null}
 
+
+        {view === 'conflicts' ? (
+          <ConflictsView
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+            onOpenDocument={(kind, id) => {
+              if (kind === 'note') { setView('notes'); void openNoteById(id); }
+              else { setSelectedDatabaseId(id); setView('databases'); }
+            }}
+          />
+        ) : null}
 
         {view === 'settings' ? (
           <SettingsView

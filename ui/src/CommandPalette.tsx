@@ -8,6 +8,7 @@ import {
   CopyPlus,
   Database,
   FileText,
+  GitMerge,
   FolderClosed,
   FolderOpen,
   HardDrive,
@@ -193,6 +194,14 @@ export function buildPaletteCommands(deps: PaletteCommandDeps): PaletteCommand[]
       category: 'Navigation',
       icon: <ListTodo />,
       run: () => deps.onView('tasks'),
+    },
+    {
+      id: 'view-conflicts',
+      title: 'Conflicts',
+      keywords: 'sync conflict resolution relay',
+      category: 'Navigation',
+      icon: <GitMerge />,
+      run: () => deps.onView('conflicts'),
     },
     {
       id: 'view-discovery',

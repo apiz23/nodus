@@ -42,10 +42,15 @@ export async function writeFileAtomic(
 }
 
 /** Atomically creates a new file without replacing an existing destination. */
-export async function writeFileAtomicExclusive(target: string, bytes: Uint8Array): Promise<void> {
+export async function writeFileAtomicExclusive(
+  target: string, bytes: Uint8Array,
+  options: { beforePublish?: (temporaryPath: string) => Promise<void>; retainTemporary?: boolean; temporaryPrefix?: string } = {},
+): Promise<void> {
   const directory = dirname(target);
   await mkdir(directory, { recursive: true });
-  const temporary = join(directory, `${TEMP_PREFIX}${randomUUID()}`);
+  const prefix = options.temporaryPrefix ?? TEMP_PREFIX;
+  if (!prefix.startsWith('.') || prefix.includes('/') || prefix.includes('\\')) throw new Error('Invalid exclusive temporary prefix');
+  const temporary = join(directory, `${prefix}${randomUUID()}`);
   let handle: FileHandle | undefined;
   try {
     handle = await open(temporary, 'wx', 0o600);
@@ -53,13 +58,17 @@ export async function writeFileAtomicExclusive(target: string, bytes: Uint8Array
     await handle.sync();
     await handle.close();
     handle = undefined;
+    // Persist publication ownership before making the inode visible at its final path.
+    await options.beforePublish?.(temporary);
     // Hard-link creation is atomic and fails with EEXIST instead of replacing.
     await link(temporary, target);
-    await rm(temporary, { force: true }).catch(() => undefined);
+    // Some durable workflows keep this hard link as ownership evidence so a
+    // later retry can distinguish their publication from an identical file.
+    if (!options.retainTemporary) await rm(temporary, { force: true }).catch(() => undefined);
     await syncDirectory(directory);
   } catch (error) {
     if (handle !== undefined) await handle.close().catch(() => undefined);
-    await rm(temporary, { force: true }).catch(() => undefined);
+    if (!options.retainTemporary) await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
 }
