@@ -37,9 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
-import { BacklinksPanel } from './BacklinksPanel';
-import { RelationBacklinksPanel } from './RelationBacklinksPanel';
-import { RelatedNotesPanel } from './RelatedNotesPanel';
+import { ConnectionsSheet } from './ConnectionsSheet';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
 import { TagEditor } from './editor/TagEditor';
@@ -388,6 +386,7 @@ export function Editor({
               <SelectItem value="split">Split</SelectItem>
             </SelectContent>
           </Select>
+          <ConnectionsSheet panels={panels} key={`${vaultIdentity}:${note.id}`} noteId={note.id} title={title} revision={backlinksRevision} onOpenNote={onOpenNote} />
           <Popover open={outlineOpen} onOpenChange={setOutlineOpen}>
             <PopoverTrigger asChild>
               <Button type="button" variant="ghost" size="sm" className="gap-1.5" aria-label="Document outline">
@@ -645,9 +644,6 @@ export function Editor({
             </ResizablePanelGroup>
           </div>
 
-          {panels.backlinks ? <BacklinksPanel noteId={note.id} revision={backlinksRevision} onOpenNote={onOpenNote} /> : null}
-          {panels.relationBacklinks ? <RelationBacklinksPanel noteId={note.id} revision={backlinksRevision} onOpenNote={onOpenNote} /> : null}
-          {panels.relatedNotes ? <RelatedNotesPanel key={`${vaultIdentity}:${note.id}`} noteId={note.id} revision={backlinksRevision} onOpenNote={onOpenNote} /> : null}
         </div>
       </ScrollArea>
 
