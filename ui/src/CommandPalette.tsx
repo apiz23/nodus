@@ -198,7 +198,7 @@ export function buildPaletteCommands(deps: PaletteCommandDeps): PaletteCommand[]
     {
       id: 'view-conflicts',
       title: 'Conflicts',
-      keywords: 'sync conflict resolution relay',
+      keywords: 'sync conflict resolution relay incoming local remote merge recovery history',
       category: 'Navigation',
       icon: <GitMerge />,
       run: () => deps.onView('conflicts'),

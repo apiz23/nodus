@@ -1002,7 +1002,7 @@ describe('phase 32B navigation recovery and palette wiring', () => {
     await flush();
     expect(findFocusBar()).toBeDefined();
 
-    for (const view of ['notes', 'tasks', 'databases', 'templates', 'graph', 'discovery', 'insights', 'organization', 'settings']) {
+    for (const view of ['notes', 'tasks', 'databases', 'templates', 'graph', 'discovery', 'insights', 'organization', 'settings', 'conflicts']) {
       props('test-palette').onView(view);
       await flush();
       expect(findFocusBar(), `focus bar missing on view ${view}`).toBeDefined();

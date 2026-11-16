@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { FocusModeBar } from '@/FocusModeBar';
 import { GraphView } from '@/GraphView';
+import { ConflictsView } from '@/ConflictsView';
+import { conflictLabel } from '@/conflictPresentation';
+import { SIDEBAR_SECTIONS } from '@/workspacePreferences';
 import { TemplatesView } from '@/TemplatesView';
 
 function render(node: React.ReactNode): string {
@@ -48,5 +52,25 @@ describe('templates sidebar expansion', () => {
     }));
     expect(html).toMatch(/aria-label="Collapse sidebar"/);
     expect(html).toContain('Templates');
+  });
+});
+
+describe('conflicts navigation and presentation', () => {
+  it('uses the shared sidebar recovery control', () => {
+    const html = render(createElement(ConflictsView, { onOpenDocument: () => {}, sidebarCollapsed: true, onToggleSidebar: () => {} }));
+    expect(html).toContain('aria-label="Expand sidebar"');
+  });
+  it('keeps shortcut help claims bounded to supported actions', () => {
+    const help = readFileSync(new URL('../ui/src/ShortcutReferenceDialog.tsx', import.meta.url), 'utf8');
+    expect(help).toContain('including Conflicts');
+    expect(help).not.toContain('every view');
+  });
+  it('keeps the recovery entry outside hideable sections', () => {
+    expect(SIDEBAR_SECTIONS).not.toContain('conflicts');
+  });
+  it('labels a merged copy without resolving the original or fabricating recovery', () => {
+    expect(conflictLabel({ status: 'open', mergedCopyCount: 1 })).toBe('Open — merged copy created');
+    expect(conflictLabel({ status: 'needs-recovery', mergedCopyCount: 1 })).toContain('needs recovery');
+    expect(conflictLabel({ status: 'needs-recovery', mergedCopyCount: 0 })).toBe('needs recovery');
   });
 });

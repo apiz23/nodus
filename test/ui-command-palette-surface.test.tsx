@@ -211,6 +211,18 @@ describe('buildPaletteCommands', () => {
     }
   });
 
+  it('finds and executes the Conflicts navigation command', async () => {
+    const onView = vi.fn();
+    const commands = buildPaletteCommands({ ...deps, onView });
+    const conflict = commands.find((command) => command.id === 'view-conflicts')!;
+    expect(conflict.keywords).toContain('resolution');
+    expect(conflict.keywords).toContain('merge');
+    expect(searchCommands(commands, 'merge resolution').map((command) => command.id)).toContain('view-conflicts');
+    await conflict.run();
+    expect(onView).toHaveBeenCalledWith('conflicts');
+    expect(commands.filter((command) => command.id === conflict.id)).toHaveLength(1);
+  });
+
   it('routes the Conflicts command to the conflict view', async () => {
     const onView = vi.fn();
     const commands = buildPaletteCommands({ ...deps, onView });
