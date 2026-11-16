@@ -55,8 +55,16 @@ import type {
   UiApiErrorBody,
   UiFolderImpact,
   UiAttachment,
+  UiConflictPage,
+  UiConflictInspection,
+  UiResolutionDecision,
+  UiResolutionHistoryEntry,
+  UiResolutionHistoryPage,
+  UiResolutionPrepareInput,
+  UiSyncConnection,
 } from '../../src/ui-server/dto.js';
 import type { DatabaseView } from '../../src/database/database-view.js';
+import type { ResolutionSnapshot } from '../../src/sync/resolution-decisions.js';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -143,6 +151,40 @@ function jsonBody(value: unknown): string {
 }
 
 export const api = {
+  syncConnection(): Promise<UiSyncConnection> {
+    return request('/api/sync/connection');
+  },
+  connectSync(input: { relayUrl: string; pairingCode: string }): Promise<UiSyncConnection> {
+    return request('/api/sync/connect', { method: 'POST', body: jsonBody(input) });
+  },
+  disconnectSync(): Promise<UiSyncConnection> {
+    return request('/api/sync/disconnect', { method: 'POST' });
+  },
+  pullSync(): Promise<{ pulled: true }> {
+    return request('/api/sync/pull', { method: 'POST' });
+  },
+  conflicts(): Promise<UiConflictPage> {
+    return request('/api/sync/conflicts');
+  },
+  inspectConflict(conflictId: string): Promise<UiConflictInspection> {
+    return request(`/api/sync/conflicts/${encodeURIComponent(conflictId)}`);
+  },
+  resolutionHistory(conflictId: string, after?: string): Promise<UiResolutionHistoryPage> {
+    const query = new URLSearchParams({ limit: '50', ...(after === undefined ? {} : { after }) });
+    return request(`/api/sync/conflicts/${encodeURIComponent(conflictId)}/history?${query.toString()}`);
+  },
+  prepareResolution(input: UiResolutionPrepareInput): Promise<UiResolutionDecision> {
+    return request('/api/sync/resolutions/prepare', { method: 'POST', body: jsonBody(input) });
+  },
+  previewRemoteResolution(input: { conflictId: string; reviewed: { localHash: string | null; remoteHash: string; copyHash: string | null } }): Promise<ResolutionSnapshot> {
+    return request('/api/sync/resolutions/remote-preview', { method: 'POST', body: jsonBody(input) });
+  },
+  previewMergedCopy(input: { conflictId: string; draftContent: string; reviewed: { localHash: string | null; remoteHash: string; copyHash: string | null } }): Promise<ResolutionSnapshot> {
+    return request('/api/sync/resolutions/merged-preview', { method: 'POST', body: jsonBody(input) });
+  },
+  executeResolution(decisionId: string): Promise<UiResolutionDecision> {
+    return request(`/api/sync/resolutions/${encodeURIComponent(decisionId)}/execute`, { method: 'POST' });
+  },
   scheduleTask(noteId: string, input: { taskId: string; scheduledDate: string; baseHash: string }): Promise<{ task: import('../../src/tasks/extract.js').ExtractedTask; projection: UiTasksResponse }> {
     return request(`/api/notes/${encodeURIComponent(noteId)}/tasks/schedule`, { method: 'PUT', body: jsonBody(input) });
   },

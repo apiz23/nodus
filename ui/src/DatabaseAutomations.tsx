@@ -35,7 +35,7 @@ function ValueEditor({ property, value, label, onChange, multiple = false }: { p
   return <Input aria-label={label} type={date ? 'date' : numeric ? 'number' : 'text'} value={array ? value.join(', ') : String(value ?? '')} onChange={(event) => onChange(array || (property.type === 'relation' && property.relation?.cardinality === 'many') ? event.target.value.split(',').map((item) => item.trim()).filter(Boolean) : numeric ? Number(event.target.value) : event.target.value)} />;
 }
 
-export function DatabaseAutomations({ database }: { database: UiDatabase }) {
+export function DatabaseAutomations({ database, openSignal }: { database: UiDatabase; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -56,6 +56,8 @@ export function DatabaseAutomations({ database }: { database: UiDatabase }) {
     finally { setLoading(false); }
   }
   useEffect(() => { if (open) void refresh(); }, [open, database.id]);
+  // A rising signal from the command palette opens the same dialog as the header button.
+  useEffect(() => { if (openSignal !== undefined && openSignal > 0) setOpen(true); }, [openSignal]);
 
   async function persist(next: DatabaseAutomation[]): Promise<boolean> {
     setSaving(true); setError(null);

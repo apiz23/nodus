@@ -17,6 +17,7 @@ import type { NotePropertyValue } from '../../src/properties/catalog';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters';
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
+import { FocusModeBar } from './FocusModeBar';
 import { RecentNotesDialog } from './RecentNotesDialog';
 import { ShortcutReferenceDialog } from './ShortcutReferenceDialog';
 import { DatabasesView } from './DatabasesView';
@@ -33,6 +34,7 @@ import { TasksView } from './TasksView';
 import { GettingStartedGuide } from './GettingStartedGuide';
 import { DeleteDialog, RenameDialog } from './NoteDialogs';
 import { SettingsView } from './SettingsView';
+import { ConflictsView } from './ConflictsView';
 import { Sidebar } from './Sidebar';
 import { VaultOnboarding } from './VaultOnboarding';
 import { useNoteSearch } from './useNoteSearch';
@@ -146,6 +148,7 @@ export default function App() {
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const commandReturnFocusRef = useRef<HTMLElement | null>(null);
   const [recentNotesOpen, setRecentNotesOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [recentEntries, setRecentEntries] = useState<RecentNote[]>([]);
@@ -164,6 +167,9 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(initialTheme);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [openSearchPanel, setOpenSearchPanel] = useState<'filters' | 'library' | null>(null);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<'backup' | null>(null);
+  const [automationsRequest, setAutomationsRequest] = useState(0);
   const [desktop, setDesktop] = useState(() => window.matchMedia?.('(min-width: 768px)').matches ?? true);
   const previousDesktopRef = useRef(desktop);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
@@ -210,11 +216,12 @@ export default function App() {
   }, [desktop]);
 
   useEffect(() => {
-    if (!workspacePreferencesReady) return;
-    sidebarPanelRef.current?.resize(!desktop ? 0 : sidebarCollapsed ? 64 : workspacePreferences.sidebar.width);
+    if (!workspacePreferencesReady || focusMode || !desktop) return;
+    sidebarPanelRef.current?.resize(sidebarCollapsed ? 64 : workspacePreferences.sidebar.width);
   }, [desktop, sidebarCollapsed, focusMode, workspacePreferences.sidebar.width, workspacePreferencesReady]);
   const [vaultSwitching, setVaultSwitching] = useState(false);
   const [vaultWorkInFlight, setVaultWorkInFlight] = useState(false);
+  const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const activeNoteRef = useRef(activeNote);
   const draftRevisionRef = useRef(0);
@@ -515,6 +522,9 @@ export default function App() {
     setVaultSetupError(null);
     setVaultPathDraft(nextStatus.vault.path);
     setQuery('');
+    setOpenSearchPanel(null);
+    setSettingsFocusSection(null);
+    setAutomationsRequest(0);
     setActiveNote(null);
     baseNoteRef.current = null;
     setNoteConflict(null);
@@ -575,6 +585,27 @@ export default function App() {
     if (shouldReloadSelected && selectedNoteId !== null) {
       await openNoteById(selectedNoteId, false);
     }
+  }
+
+  /** Palette navigation into a Settings section (backup/import/export live there). */
+  function openSettingsSection(section: 'backup'): void {
+    setSettingsFocusSection(section);
+    setView('settings');
+  }
+
+  /** Palette entry for the sidebar search panels: reveal the sidebar first. */
+  function openSearchPanelFromCommand(panel: 'filters' | 'library'): void {
+    if (focusMode) setFocusMode(false);
+    setSidebarCollapsed(false);
+    if (!desktop) setSidebarOpen(true);
+    setOpenSearchPanel(panel);
+  }
+
+  /** Focus mode hides the sidebar; keep its toggle consistent with the editor button. */
+  function toggleFocusModeFromCommand(): void {
+    if (!desktop && !focusMode) return;
+    if (!focusMode) setOpenSearchPanel(null);
+    setFocusMode(!focusMode);
   }
 
   async function chooseVault(): Promise<void> {
@@ -1654,11 +1685,8 @@ export default function App() {
 
       event.preventDefault();
       if (shortcut === 'command-palette') {
-        // Keep form and CodeMirror shortcuts intact. The sidebar search remains
-        // an intentional launch point for the command palette.
-        if (!commandOpen && document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
-        }
+        // Capture focus before the dialog mounts and moves it into the palette.
+        if (!commandOpen) commandReturnFocusRef.current = event.target instanceof HTMLElement ? event.target : document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setCommandOpen((open) => !open);
         return;
       }
@@ -1767,11 +1795,14 @@ export default function App() {
           filters={noteFilters}
           filterLogic={filterLogic}
           onFiltersChange={(filters, logic) => { setNoteFilters(filters); setFilterLogic(logic); }}
+          openSearchPanel={openSearchPanel}
+          onSearchPanelChange={setOpenSearchPanel}
           searchRevision={searchRevision}
           metadataIssueCount={metadataIssueCount}
           catalogIssue={catalogIssue}
           onQueryChange={setQuery}
           searchRef={searchRef}
+          navigationTriggerRef={sidebarTriggerRef}
           onCreate={() => void createNote()}
           onCreateInFolder={(folder) => void createNote(folder)}
           onCreateFolder={createFolder}
@@ -1825,6 +1856,7 @@ export default function App() {
             type="button"
             variant="ghost"
             size="icon-sm"
+            ref={sidebarTriggerRef}
             aria-label="Open navigation"
             onClick={() => {
               setFocusMode(false);
@@ -1840,6 +1872,8 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {focusMode ? <FocusModeBar onExit={() => setFocusMode(false)} /> : null}
 
         {gettingStartedVisible ? (
           <GettingStartedGuide
@@ -2005,6 +2039,8 @@ export default function App() {
             initialNoteId={selectedNoteId}
             vaultKey={status?.vault.path ?? 'no-vault'}
             onOpenNote={(id) => void openNoteById(id)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
           />
         ) : null}
 
@@ -2063,11 +2099,30 @@ export default function App() {
             onOpenNote={(id) => void openNoteById(id)}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+            openAutomationsRequest={automationsRequest}
+            onOpenAutomationsRequestHandled={() => setAutomationsRequest(0)}
           />
         ) : null}
 
         {view === 'templates' ? (
-          <TemplatesView databases={databases} onApplied={() => { void Promise.all([refreshNotes(true), refreshDatabases()]); }} />
+          <TemplatesView
+            databases={databases}
+            onApplied={() => { void Promise.all([refreshNotes(true), refreshDatabases()]); }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+          />
+        ) : null}
+
+
+        {view === 'conflicts' ? (
+          <ConflictsView
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+            onOpenDocument={(kind, id) => {
+              if (kind === 'note') { setView('notes'); void openNoteById(id); }
+              else { setSelectedDatabaseId(id); setView('databases'); }
+            }}
+          />
         ) : null}
 
         {view === 'settings' ? (
@@ -2099,6 +2154,8 @@ export default function App() {
             onApplyWorkspacePreset={applyWorkspacePreset}
             onUndoWorkspacePreset={undoWorkspacePreset}
             onResetWorkspace={resetWorkspace}
+            focusSection={settingsFocusSection}
+            onFocusSectionConsumed={() => setSettingsFocusSection(null)}
           />
         ) : null}
       </main>
@@ -2111,6 +2168,8 @@ export default function App() {
         revision={searchRevision}
         open={commandOpen && !vaultSwitching && !vaultWorkInFlight}
         onOpenChange={setCommandOpen}
+        returnFocusRef={commandReturnFocusRef}
+        fallbackFocusRef={searchRef}
         onCreateNote={() => createNote()}
         onSaveNote={() => saveNote()}
         canSaveNote={activeNote !== null && dirty && saveState !== 'saving' && !vaultSwitching && !vaultWorkInFlight}
@@ -2134,6 +2193,27 @@ export default function App() {
         recentNotes={resolvedRecentNotes.slice(0, 5)}
         theme={theme}
         onToggleTheme={toggleTheme}
+        filters={noteFilters}
+        filterLogic={filterLogic}
+        focusMode={focusMode}
+        onToggleFocusMode={toggleFocusModeFromCommand}
+        sidebarCollapsed={sidebarCollapsed}
+        canToggleSidebar={desktop && !focusMode}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+        onOpenGettingStarted={() => setGettingStartedVisible(true)}
+        onOpenSearchFilters={() => openSearchPanelFromCommand('filters')}
+        onOpenSearchLibrary={() => openSearchPanelFromCommand('library')}
+        onOpenSettingsSection={openSettingsSection}
+        onSwitchVault={() => { void chooseVault(); }}
+        canManageNote={activeNote !== null}
+        onRenameNote={() => { if (activeNote !== null) void requestRenameForNote(activeNote.id); }}
+        onDeleteNote={() => { if (activeNote !== null) void requestDeleteForNote(activeNote.id); }}
+        onReloadNote={() => { void reloadNote(); }}
+        canOpenAutomations={databases.length > 0}
+        onOpenAutomations={() => {
+          setView('databases');
+          setAutomationsRequest((value) => value + 1);
+        }}
       />
 
       <RecentNotesDialog

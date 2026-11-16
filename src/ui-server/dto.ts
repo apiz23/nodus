@@ -22,6 +22,8 @@ import type {
 import type { TagOperation } from '../domain/tags.js';
 import type { OrganizationAnalysis, OrganizationMovePreview } from '../organization/analysis.js';
 import type { ExtractedTask, TaskCounts, TaskProjection } from '../tasks/extract.js';
+import type { ConflictPage, ConflictSummary } from '../sync/conflict-registry.js';
+import type { ResolutionDecision, ResolutionHistoryEntry, ResolutionIntent } from '../sync/resolution-decisions.js';
 
 export type {
   BackupManifest,
@@ -223,6 +225,36 @@ export interface UiVaultStatus {
     detail: string;
   };
 }
+
+export interface UiConflictInspection {
+  summary: ConflictSummary;
+  local: { id: string; path: string; hash: string; content: string } | null;
+  remote: { id: string; path: string; version: number; hash: string; operation: string; timestamp: string; content: string | null; verified: boolean } | null;
+  copy: { id: string; path: string; expectedHash: string; actualHash: string | null; actualPath: string | null; verified: boolean; content: string | null } | null;
+  diagnostics: string[];
+}
+
+export interface UiResolutionPrepareInput {
+  intent: ResolutionIntent;
+  reviewed: { localHash: string | null; remoteHash: string; copyHash: string | null };
+}
+
+export interface UiMergedPreviewInput {
+  conflictId: string;
+  draftContent: string;
+  reviewed: { localHash: string | null; remoteHash: string; copyHash: string | null };
+}
+
+export interface UiSyncConnection {
+  connected: boolean;
+  vaultId?: string;
+  epoch?: number;
+}
+
+export type UiConflictPage = ConflictPage;
+export type UiResolutionDecision = ResolutionDecision;
+export type UiResolutionHistoryEntry = ResolutionHistoryEntry;
+export interface UiResolutionHistoryPage { decisions: UiResolutionHistoryEntry[]; next: string | null }
 
 export type UiVaultSetupReason = 'first-run' | 'saved-vault-unavailable' | 'preferences-invalid' | 'environment-vault-unavailable';
 

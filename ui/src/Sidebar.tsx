@@ -9,6 +9,7 @@ import {
   FileText,
   FolderClosed,
   FolderOpen,
+  GitMerge,
   ListTodo,
   Moon,
   Network,
@@ -32,6 +33,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { NodusMark } from './NodusMark';
 import { NoteFiltersPopover } from './NoteFiltersPopover';
 import { SearchLibraryPopover } from './SearchLibraryPopover';
 import { parseSearchQuery } from '../../src/search/query.js';
@@ -47,6 +49,7 @@ interface SidebarProps {
   query: string;
   onQueryChange: (value: string) => void;
   searchRef: RefObject<HTMLInputElement | null>;
+  navigationTriggerRef?: RefObject<HTMLButtonElement | null>;
   onCreate: () => void;
   onCreateInFolder: (folder: string) => void;
   onCreateFolder: (path: string) => Promise<void>;
@@ -84,6 +87,9 @@ interface SidebarProps {
   filters?: readonly NoteFilter[];
   filterLogic?: NoteFilterLogic;
   onFiltersChange?: (filters: NoteFilter[], logic: NoteFilterLogic) => void;
+  /** Which search panel the shell has opened (command-palette driven); null when closed. */
+  openSearchPanel?: 'filters' | 'library' | null;
+  onSearchPanelChange?: (panel: 'filters' | 'library' | null) => void;
   searchRevision?: number;
   metadataIssueCount?: number;
   catalogIssue?: string;
@@ -93,6 +99,7 @@ const paletteShortcut = shortcutLabel(shortcutById('command-palette').binding, d
 
 const navItems = [  { id: 'notes' as const, label: 'All notes', icon: FileText },
   { id: 'tasks' as const, label: 'Tasks', icon: ListTodo },
+  { id: 'conflicts' as const, label: 'Conflicts', icon: GitMerge },
   { id: 'discovery' as const, label: 'Discovery', icon: Compass },
   { id: 'graph' as const, label: 'Local graph', icon: Network },
   { id: 'insights' as const, label: 'Knowledge health', icon: Activity },
@@ -107,6 +114,7 @@ export function Sidebar({
   query,
   onQueryChange,
   searchRef,
+  navigationTriggerRef,
   onCreate,
   onCreateInFolder,
   onCreateFolder,
@@ -144,6 +152,8 @@ export function Sidebar({
   filters = [],
   filterLogic = 'and',
   onFiltersChange = () => {},
+  openSearchPanel = null,
+  onSearchPanelChange = () => {},
   searchRevision = 0,
   metadataIssueCount = 0,
   catalogIssue,
@@ -152,16 +162,22 @@ export function Sidebar({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const openSearchPanelRef = useRef(openSearchPanel);
   onCloseRef.current = onClose;
+  openSearchPanelRef.current = openSearchPanel;
   let queryConstraints: ReturnType<typeof parseSearchQuery>['constraints'] = [];
   try { queryConstraints = parseSearchQuery(query).constraints; } catch { /* The API reports the syntax error beside results. */ }
 
   useEffect(() => {
     if (!open) return undefined;
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    previousFocusRef.current = navigationTriggerRef?.current?.isConnected
+      ? navigationTriggerRef.current
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // The portaled search popover owns Escape until it has closed.
+        if (event.defaultPrevented || openSearchPanelRef.current !== null) return;
         event.preventDefault();
         onCloseRef.current();
         return;
@@ -212,9 +228,7 @@ export function Sidebar({
         inert={navigationLocked || undefined}
       >
         <div className={cn('flex w-full items-center gap-2 px-1', compact && 'md:justify-center')}>
-          <div className="grid size-6 shrink-0 place-items-center rounded-md bg-foreground text-[11px] font-semibold text-background">
-            N
-          </div>
+          <NodusMark className="size-7 shrink-0 text-foreground" />
           {compact ? null : (
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[13px] font-semibold tracking-tight">Nodus</div>
@@ -336,8 +350,10 @@ export function Sidebar({
               </kbd>
             ) : null}
           </div>
-          <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange} />
+          <NoteFiltersPopover vaultKey={status?.vault.path ?? ''} revision={searchRevision} filters={filters} logic={filterLogic} onChange={onFiltersChange}
+            open={openSearchPanel === 'filters'} onOpenChange={(next) => onSearchPanelChange(next ? 'filters' : (openSearchPanel === 'filters' ? null : openSearchPanel))} />
           <SearchLibraryPopover vaultKey={status?.vault.path ?? ''} query={query} filters={filters} logic={filterLogic} searching={searching} error={searchError}
+            open={openSearchPanel === 'library'} onOpenChange={(next) => onSearchPanelChange(next ? 'library' : (openSearchPanel === 'library' ? null : openSearchPanel))}
             onRestore={(nextQuery, nextFilters, nextLogic) => { onQueryChange(nextQuery); onFiltersChange(nextFilters, nextLogic); onView('notes'); }} />
           </div>
         )}
@@ -374,7 +390,7 @@ export function Sidebar({
         </Button>
 
         <nav className={cn('flex w-full flex-col gap-0.5', compact && 'md:items-center')} aria-label="Primary">
-          {[navItems[0]!, ...sidebarSectionOrder
+          {[navItems[0]!, navItems.find((item) => item.id === 'conflicts')!, ...sidebarSectionOrder
             .filter((id) => !hiddenSidebarSections.includes(id))
             .map((id) => navItems.find((item) => item.id === id))
             .filter((item): item is typeof navItems[number] => item !== undefined)].map((item) => {

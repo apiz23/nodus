@@ -4,6 +4,7 @@ export type CommandCategory =
   | 'Recent notes'
   | 'Notes'
   | 'Navigation'
+  | 'Search'
   | 'Databases'
   | 'Folders'
   | 'Appearance'

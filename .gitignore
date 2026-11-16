@@ -1,5 +1,6 @@
 node_modules/
 dist/
+native/executor-lock/build/
 coverage/
 /vault/
 .DS_Store

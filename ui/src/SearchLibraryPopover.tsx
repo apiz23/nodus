@@ -6,11 +6,16 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { clearSearchHistory, readSearchPreferences, removeSearchDefinition, removeSearchHistory, saveSearchDefinition, type SearchDefinition, type SearchHistoryEntry } from './searchPersistence';
 
-interface Props { vaultKey: string; query: string; filters: readonly NoteFilter[]; logic: NoteFilterLogic; searching: boolean; error: string | null; onRestore(query: string, filters: NoteFilter[], logic: NoteFilterLogic): void }
+interface Props { vaultKey: string; query: string; filters: readonly NoteFilter[]; logic: NoteFilterLogic; searching: boolean; error: string | null; onRestore(query: string, filters: NoteFilter[], logic: NoteFilterLogic): void; /** Optional controlled open state so the command palette can open this panel. */ open?: boolean; onOpenChange?(open: boolean): void }
 function storage() { try { return window.localStorage; } catch { return null; } }
 
-export function SearchLibraryPopover({ vaultKey, query, filters, logic, searching, error, onRestore }: Props) {
-  const [open, setOpen] = useState(false);
+export function SearchLibraryPopover({ vaultKey, query, filters, logic, searching, error, onRestore, open: controlledOpen, onOpenChange }: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const [name, setName] = useState('');
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');

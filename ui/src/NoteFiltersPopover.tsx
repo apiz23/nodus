@@ -15,10 +15,18 @@ interface Props {
   filters: readonly NoteFilter[];
   logic: NoteFilterLogic;
   onChange(filters: NoteFilter[], logic: NoteFilterLogic): void;
+  /** Optional controlled open state so the command palette can open this panel. */
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
 }
 
-export function NoteFiltersPopover({ vaultKey, revision, filters, logic, onChange }: Props) {
-  const [open, setOpen] = useState(false);
+export function NoteFiltersPopover({ vaultKey, revision, filters, logic, onChange, open: controlledOpen, onOpenChange }: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const [tags, setTags] = useState<string[]>([]);
   const [properties, setProperties] = useState<NotePropertyDefinition[]>([]);
   const [catalogIssue, setCatalogIssue] = useState<string | null>(null);

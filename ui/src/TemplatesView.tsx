@@ -6,13 +6,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from './api';
+import { SidebarToggle } from './SidebarToggle';
 import type { UiDatabase } from '../../src/ui-server/dto';
 import type { DatabaseTemplate, NodusTemplate, NoteTemplate } from '../../src/database/templates';
 
 function message(error: unknown) { return error instanceof Error ? error.message : 'The template request failed.'; }
 function uid() { return globalThis.crypto?.randomUUID?.() ?? `template-${Date.now()}`; }
 
-export function TemplatesView({ databases, onApplied }: { databases: UiDatabase[]; onApplied: () => void }) {
+export function TemplatesView({ databases, onApplied, sidebarCollapsed, onToggleSidebar }: { databases: UiDatabase[]; onApplied: () => void; sidebarCollapsed: boolean; onToggleSidebar: () => void }) {
   const [templates, setTemplates] = useState<NodusTemplate[]>([]);
   const [hash, setHash] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -109,7 +110,7 @@ export function TemplatesView({ databases, onApplied }: { databases: UiDatabase[
   return <main className="mx-auto flex h-full w-full max-w-6xl flex-col gap-5 overflow-auto px-6 py-7">
     <header className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-5">
       <div><p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Reusable structures</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Templates</h1><p className="mt-1 max-w-xl text-sm text-muted-foreground">Create notes and databases from saved structures. Every apply action creates a new item after preview.</p></div>
-      <div className="flex flex-wrap items-center gap-3"><Button variant="outline" disabled={loading} onClick={addNote}><FilePlus2 />Note template</Button><label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeStarterRows} onCheckedChange={(checked) => setIncludeStarterRows(checked === true)} />Include current rows</label><select aria-label="Create database template" disabled={loading} className="h-9 max-w-56 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50" value="" onChange={(event) => { if (event.target.value) void addDatabase(event.target.value); }}><option value="">From database…</option>{databases.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+      <div className="flex flex-wrap items-center gap-3"><SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} /><Button variant="outline" disabled={loading} onClick={addNote}><FilePlus2 />Note template</Button><label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeStarterRows} onCheckedChange={(checked) => setIncludeStarterRows(checked === true)} />Include current rows</label><select aria-label="Create database template" disabled={loading} className="h-9 max-w-56 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50" value="" onChange={(event) => { if (event.target.value) void addDatabase(event.target.value); }}><option value="">From database…</option>{databases.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
     </header>
     {error ? <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</div> : null}
     {notice ? <div role="status" className="rounded-md border border-border bg-muted/40 p-3 text-sm">{notice}</div> : null}

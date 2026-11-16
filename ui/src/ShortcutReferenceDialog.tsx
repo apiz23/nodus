@@ -28,7 +28,7 @@ export function ShortcutReferenceDialog({ open, onOpenChange }: ShortcutReferenc
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
           <DialogDescription>
-            Shortcuts respect focused text fields. The command palette can run every action without a shortcut.
+            Shortcuts respect focused text fields. The command palette opens workspace views, including Conflicts, backup and restore, search tools, and note commands; some controls stay in their own surface.
           </DialogDescription>
         </DialogHeader>
         <ScrollArea className="max-h-[min(60vh,420px)] min-h-0 pr-3">

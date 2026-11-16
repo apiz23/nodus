@@ -1,7 +1,6 @@
 import { lazy, StrictMode, Suspense, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import '@fontsource-variable/geist';
 import { LogoSplash } from './LogoSplash';
 import './index.css';
 

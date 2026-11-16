@@ -12,60 +12,34 @@
   height: auto;
 }
 
-.nodus-logo-splash__frame,
-.nodus-logo-splash__measure {
+.nodus-logo-splash__loop,
+.nodus-logo-splash__signal {
   stroke-dasharray: 1;
+}
+
+.nodus-logo-splash__loop {
   stroke-dashoffset: 1;
-  animation: nodus-logo-draw 720ms cubic-bezier(.65, 0, .35, 1) forwards;
+  animation: nodus-logo-draw 1s cubic-bezier(.65, 0, .35, 1) 120ms forwards;
 }
 
-.nodus-logo-splash__frame {
-  animation-delay: 120ms;
-}
-
-.nodus-logo-splash__measure {
-  animation-delay: 960ms;
-}
-
-.nodus-logo-splash__node,
 .nodus-logo-splash__signal {
   opacity: 0;
-  animation: nodus-logo-snap 1ms steps(1, end) forwards;
-}
-
-.nodus-logo-splash__node--top {
-  animation-delay: 1.76s;
-}
-
-.nodus-logo-splash__node--left {
-  animation-delay: 1.88s;
-}
-
-.nodus-logo-splash__node--right {
-  animation-delay: 2s;
-}
-
-.nodus-logo-splash__signal {
-  animation-delay: 2.68s;
+  stroke-dashoffset: 1;
+  animation: nodus-logo-connect 320ms ease-out 1.12s forwards;
 }
 
 @keyframes nodus-logo-draw {
   to { stroke-dashoffset: 0; }
 }
 
-@keyframes nodus-logo-snap {
-  to { opacity: 1; }
+@keyframes nodus-logo-connect {
+  to { stroke-dashoffset: 0; opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nodus-logo-splash__frame,
-  .nodus-logo-splash__measure {
-    stroke-dashoffset: 0;
-    animation: none;
-  }
-
-  .nodus-logo-splash__node,
+  .nodus-logo-splash__loop,
   .nodus-logo-splash__signal {
+    stroke-dashoffset: 0;
     opacity: 1;
     animation: none;
   }

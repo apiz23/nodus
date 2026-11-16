@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir, rm } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import type {
   AutomationStore,
   DatabaseStore,
@@ -55,7 +55,7 @@ import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
 import type { ConditionalWriteOptions } from '../contracts.js';
 import { linkFileAtomicExclusive, writeFileAtomic, writeFileAtomicExclusive } from './atomic.js';
-import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, IMPORT_TRANSACTION_DIR, TEMP_PREFIX, isReservedNotePath } from './layout.js';
+import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, IMPORT_TRANSACTION_DIR, TEMP_PREFIX, MERGED_PUBLICATION_PREFIX, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
 import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
@@ -170,6 +170,34 @@ function staleWrite(path: string, currentHash?: string): StorageError {
 /** SHA-256 of raw file bytes, as lowercase hex. */
 export function sha256Hex(bytes: Buffer | string): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Capability valid only for the duration of withSyncWrite. */
+export type SyncWriteSession = Pick<FileSystemVault,
+  'createNote' | 'replaceNote' | 'relocateNote' | 'deleteNote' |
+  'createDatabase' | 'replaceDatabase' | 'deleteDatabase'> & {
+    publishReviewedDocument(kind: 'note' | 'database', target: ReviewedDocument,
+      beforePublish: (evidence: PublicationIdentity) => Promise<void>, stagingPath?: string): Promise<void>;
+  };
+
+export interface ReviewedDocument {
+  id: string;
+  path: string;
+  content: string;
+  contentHash: string;
+}
+
+export interface PublicationIdentity {
+  dev: string;
+  ino: string;
+  stagingPath: string;
+}
+
+interface ReviewedPublication {
+  text: string;
+  beforePublish: (temporaryPath: string) => Promise<void>;
+  stagingPath?: string;
+  temporaryPrefix: string;
 }
 
 /**
@@ -376,6 +404,112 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return { note: located.note, hash: sha256Hex(located.bytes), text: located.text };
   }
 
+  /** One existing vault lock across guarded writes and the caller's sync state commit. */
+  async withSyncWrite<T>(operation: (writes: SyncWriteSession) => Promise<T>): Promise<T> {
+    return withVaultRootLock(this.root, async () => {
+      let active = true;
+      let tail = Promise.resolve();
+      const invoke = <R>(write: () => Promise<R>): Promise<R> => {
+        if (!active) return Promise.reject(new Error('Sync write session has ended'));
+        const result = tail.then(write);
+        tail = result.then(() => undefined, () => undefined);
+        return result;
+      };
+      const writes: SyncWriteSession = {
+        publishReviewedDocument: (kind, target, beforePublish, stagingPath) =>
+          invoke(() => this.publishReviewedDocumentUnlocked(kind, target, beforePublish, stagingPath)),
+        createNote: (note) => invoke(() => this.createNoteUnlocked(note)),
+        replaceNote: (note, options) => invoke(() => this.replaceNoteUnlocked(note, options)),
+        relocateNote: (id, path, options, note) => invoke(() => this.relocateNoteUnlocked(id, path, options, note)),
+        deleteNote: (id, options) => invoke(() => this.deleteNoteUnlocked(id, options)),
+        createDatabase: (database) => invoke(() => this.createDatabaseUnlocked(database)),
+        replaceDatabase: (database, options) => invoke(() => this.replaceDatabaseUnlocked(database, options)),
+        deleteDatabase: (id, options) => invoke(() => this.deleteDatabaseUnlocked(id, options)),
+      };
+      try {
+        return await operation(writes);
+      } finally {
+        active = false;
+        await tail;
+      }
+    });
+  }
+
+  private async publishReviewedDocumentUnlocked(
+    kind: 'note' | 'database', target: ReviewedDocument,
+    beforePublish: (evidence: PublicationIdentity) => Promise<void>, stagingPath?: string,
+  ): Promise<void> {
+    if (sha256Hex(target.content) !== target.contentHash) {
+      throw new StorageError('INVALID_CONTENT', 'Reviewed publication hash does not match its bytes');
+    }
+    const publication: ReviewedPublication = {
+      text: target.content,
+      beforePublish: async (temporary) => {
+        const info = await lstat(temporary, { bigint: true });
+        if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Invalid publication inode');
+        await beforePublish({
+          dev: String(info.dev), ino: String(info.ino),
+          stagingPath: relative(this.root, temporary).split(sep).join('/'),
+        });
+      },
+      temporaryPrefix: MERGED_PUBLICATION_PREFIX,
+      ...(stagingPath === undefined ? {} : { stagingPath }),
+    };
+    if (kind === 'note') {
+      const note = parseNote(target.content, target.path);
+      if (note.id !== target.id) throw new StorageError('INVALID_CONTENT', 'Reviewed note identity mismatch');
+      await this.createNoteUnlocked(note, publication);
+    } else {
+      const database = parseDatabase(target.content);
+      if (database.id !== target.id || target.path !== databasePath(database.id)) {
+        throw new StorageError('INVALID_CONTENT', 'Reviewed database identity mismatch');
+      }
+      await this.createDatabaseUnlocked(database, publication);
+    }
+  }
+
+  /** Exact destination bytes and inode identity for recovery, using the existing path guards. */
+  async inspectReviewedPublication(kind: 'note' | 'database', target: ReviewedDocument):
+    Promise<{ dev: string; ino: string; hash: string } | null> {
+    const absolute = await this.reviewedTargetPath(kind, target);
+    return this.inspectReviewedPath(absolute, target.path);
+  }
+
+  /** Verify the retained hard-link anchor that proves a retry owns the target inode. */
+  async inspectReviewedPublicationAnchor(kind: 'note' | 'database', target: ReviewedDocument, stagingPath: string):
+    Promise<{ dev: string; ino: string; hash: string } | null> {
+    await this.reviewedTargetPath(kind, target);
+    if (!isMergedPublicationAnchorName(basename(stagingPath)) || dirname(stagingPath) !== dirname(target.path)) {
+      throw new StorageError('UNSAFE_PATH', 'Invalid merged publication anchor path', { path: stagingPath });
+    }
+    const absolute = await this.validateInternalPath(stagingPath);
+    return this.inspectReviewedPath(absolute, stagingPath);
+  }
+
+  private async reviewedTargetPath(kind: 'note' | 'database', target: ReviewedDocument): Promise<string> {
+    const absolute = kind === 'note' ? await this.validateNoteTarget(target.path) : await this.validateInternalPath(target.path);
+    if (kind === 'database' && target.path !== databasePath(target.id)) {
+      throw new StorageError('INVALID_INPUT', 'Invalid reviewed database path');
+    }
+    return absolute;
+  }
+
+  private async inspectReviewedPath(absolute: string, path: string): Promise<{ dev: string; ino: string; hash: string } | null> {
+    try {
+      const info = await lstat(absolute, { bigint: true });
+      if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Publication is not a regular file');
+      const bytes = await this.readBytesAt(absolute, path);
+      const afterRead = await lstat(absolute, { bigint: true });
+      if (afterRead.dev !== info.dev || afterRead.ino !== info.ino) {
+        throw new StorageError('STALE_WRITE', 'Publication changed while it was being verified', { path });
+      }
+      return { dev: String(info.dev), ino: String(info.ino), hash: sha256Hex(bytes) };
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+  }
+
   async createNote(note: Note): Promise<void> {
     return withVaultRootLock(this.root, () => this.createNoteUnlocked(note));
   }
@@ -501,7 +635,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     });
   }
 
-  private async createNoteUnlocked(note: Note): Promise<void> {
+  private async createNoteUnlocked(note: Note, publication?: ReviewedPublication): Promise<void> {
     try {
       validateNote(note);
     } catch (error) {
@@ -535,11 +669,24 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    await this.writeDocument(note.path, this.serializeNoteInput(note));
+    try {
+      if (publication?.stagingPath !== undefined) {
+        await this.publishStagedReviewedBytes(absolute, note.path, publication.text, publication.stagingPath);
+      } else {
+        await writeFileAtomicExclusive(absolute, Buffer.from(publication?.text ?? this.serializeNoteInput(note)), publication === undefined ? {} : {
+          beforePublish: publication.beforePublish, retainTemporary: true, temporaryPrefix: publication.temporaryPrefix,
+        });
+      }
+    } catch (error) {
+      throw storageFailure(error, 'Create note', note.path);
+    }
   }
 
-  async replaceNote(note: Note, options: ConditionalWriteOptions = {}): Promise<void> {
-    return withVaultRootLock(this.root, async () => {
+  async replaceNote(note: Note, options: ConditionalWriteOptions & { expectedPath?: string } = {}): Promise<void> {
+    return withVaultRootLock(this.root, () => this.replaceNoteUnlocked(note, options));
+  }
+
+  private async replaceNoteUnlocked(note: Note, options: ConditionalWriteOptions & { expectedPath?: string } = {}): Promise<void> {
     try {
       validateNote(note);
     } catch (error) {
@@ -547,6 +694,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     const current = await this.findNote(note.id);
+    if (options.expectedPath !== undefined && current.note.path !== options.expectedPath) {
+      throw staleWrite(current.note.path);
+    }
     if (current.note.path !== note.path) {
       throw new StorageError(
         'CONFLICT',
@@ -558,7 +708,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     const absolute = await this.validateNoteTarget(note.path);
     await this.assertUnchanged(absolute, note.path, options.expectedHash);
     await this.writeDocument(note.path, this.serializeNoteInput(note));
-    });
   }
 
   async moveNote(
@@ -566,9 +715,26 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     toPath: string,
     options: ConditionalWriteOptions = {},
   ): Promise<Note> {
-    return withVaultRootLock(this.root, async () => {
+    return this.relocateNote(id, toPath, options);
+  }
+
+  /** Publishes a remote replacement at its new path under the same source revision check. */
+  async relocateNote(id: string, toPath: string, options: ConditionalWriteOptions & { expectedPath?: string }, replacement?: Note): Promise<Note> {
+    return withVaultRootLock(this.root, () => this.relocateNoteUnlocked(id, toPath, options, replacement));
+  }
+
+  private async relocateNoteUnlocked(id: string, toPath: string, options: ConditionalWriteOptions & { expectedPath?: string }, replacement?: Note): Promise<Note> {
+    if (replacement !== undefined && (replacement.id !== id || replacement.path !== toPath)) {
+      throw new StorageError('INVALID_INPUT', 'Replacement identity or path does not match the relocation');
+    }
     const current = await this.findNote(id);
-    if (toPath === current.note.path) return current.note;
+    if (options.expectedPath !== undefined && current.note.path !== options.expectedPath) {
+      throw staleWrite(current.note.path);
+    }
+    if (toPath === current.note.path) {
+      if (replacement !== undefined) throw staleWrite(current.note.path);
+      return current.note;
+    }
 
     const source = await this.validateReadPath(current.note.path);
     const absolute = await this.validateNoteTarget(toPath);
@@ -591,11 +757,15 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
 
     await this.assertUnchanged(source, current.note.path, options.expectedHash);
-    const movedText =
+    const movedText = replacement !== undefined ? this.serializeNoteInput(replacement) :
       current.note.sourceFormat === 'plain-markdown'
         ? this.serializeNoteInput({ ...current.note, path: toPath, sourceFormat: undefined })
         : current.text;
-    await this.writeDocument(toPath, movedText);
+    try {
+      await writeFileAtomicExclusive(absolute, Buffer.from(movedText));
+    } catch (error) {
+      throw storageFailure(error, 'Publish moved note', toPath);
+    }
 
     try {
       await unlink(source);
@@ -610,13 +780,18 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       );
     }
 
-    return { ...current.note, path: toPath };
-    });
+    return replacement ?? { ...current.note, path: toPath };
   }
 
-  async deleteNote(id: string, options: ConditionalWriteOptions = {}): Promise<void> {
-    return withVaultRootLock(this.root, async () => {
+  async deleteNote(id: string, options: ConditionalWriteOptions & { expectedPath?: string } = {}): Promise<void> {
+    return withVaultRootLock(this.root, () => this.deleteNoteUnlocked(id, options));
+  }
+
+  private async deleteNoteUnlocked(id: string, options: ConditionalWriteOptions & { expectedPath?: string } = {}): Promise<void> {
     const current = await this.findNote(id);
+    if (options.expectedPath !== undefined && current.note.path !== options.expectedPath) {
+      throw staleWrite(current.note.path);
+    }
     const source = await this.validateReadPath(current.note.path);
     await this.assertUnchanged(source, current.note.path, options.expectedHash);
     try {
@@ -625,7 +800,6 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       if (isMissing(error)) throw NOTE_NOT_FOUND(id);
       throw storageFailure(error, 'Delete note', current.note.path);
     }
-    });
   }
 
   /** Updates tags alone under the shared vault lock and the note's raw-byte revision. */
@@ -818,7 +992,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   /** Reads a database definition and its raw-byte revision token from one read. */
-  async readDatabaseWithHash(id: string): Promise<{ database: DatabaseDefinition; hash: string }> {
+  async readDatabaseWithHash(id: string): Promise<{ database: DatabaseDefinition; hash: string; text: string }> {
     if (!isUuidV4(id)) throw DATABASE_NOT_FOUND(id);
     const path = databasePath(id);
     const absolute = await this.validateInternalPath(path);
@@ -837,11 +1011,14 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         details: { ids: [database.id, id], paths: [path] },
       });
     }
-    return { database, hash: sha256Hex(bytes) };
+    return { database, hash: sha256Hex(bytes), text };
   }
 
   async createDatabase(database: DatabaseDefinition): Promise<void> {
-    return withVaultRootLock(this.root, async () => {
+    return withVaultRootLock(this.root, () => this.createDatabaseUnlocked(database));
+  }
+
+  private async createDatabaseUnlocked(database: DatabaseDefinition, publication?: ReviewedPublication): Promise<void> {
     const text = this.serializeDatabaseInput(database);
     const path = databasePath(database.id);
     const absolute = await this.validateInternalPath(path);
@@ -851,12 +1028,24 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         details: { ids: [database.id], paths: [path] },
       });
     }
-    await this.writeDocument(path, text, true);
-    });
+    try {
+      if (publication?.stagingPath !== undefined) {
+        await this.publishStagedReviewedBytes(absolute, path, publication.text, publication.stagingPath);
+      } else {
+        await writeFileAtomicExclusive(absolute, Buffer.from(publication?.text ?? text), publication === undefined ? {} : {
+          beforePublish: publication.beforePublish, retainTemporary: true, temporaryPrefix: publication.temporaryPrefix,
+        });
+      }
+    } catch (error) {
+      throw storageFailure(error, 'Create database', path);
+    }
   }
 
   async replaceDatabase(database: DatabaseDefinition, options: ConditionalWriteOptions = {}): Promise<void> {
-    return withVaultRootLock(this.root, async () => {
+    return withVaultRootLock(this.root, () => this.replaceDatabaseUnlocked(database, options));
+  }
+
+  private async replaceDatabaseUnlocked(database: DatabaseDefinition, options: ConditionalWriteOptions = {}): Promise<void> {
     const text = this.serializeDatabaseInput(database);
     const path = databasePath(database.id);
     const absolute = await this.validateInternalPath(path);
@@ -880,21 +1069,23 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       if (currentHash !== options.expectedHash) throw staleWrite(path, currentHash);
     }
     await this.writeDocument(path, text, true);
-    });
   }
 
-  async deleteDatabase(id: string): Promise<void> {
-    return withVaultRootLock(this.root, async () => {
+  async deleteDatabase(id: string, options: ConditionalWriteOptions = {}): Promise<void> {
+    return withVaultRootLock(this.root, () => this.deleteDatabaseUnlocked(id, options));
+  }
+
+  private async deleteDatabaseUnlocked(id: string, options: ConditionalWriteOptions = {}): Promise<void> {
     if (!isUuidV4(id)) throw DATABASE_NOT_FOUND(id);
     await assertNotSymlink(resolveInsideRoot(this.root, 'databases'), 'databases');
     const absolute = await this.validateInternalPath(databasePath(id));
+    await this.assertUnchanged(absolute, databasePath(id), options.expectedHash);
     try {
       await unlink(absolute);
     } catch (error) {
       if (isMissing(error)) throw DATABASE_NOT_FOUND(id);
       throw storageFailure(error, 'Delete database', databasePath(id));
     }
-    });
   }
 
   /** Reads only the canonical catalog file; this does not walk or parse the note vault. */
@@ -3191,6 +3382,26 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return this.validateInternalPath(valid);
   }
 
+  private async publishStagedReviewedBytes(destination: string, destinationPath: string, text: string, stagingPath: string): Promise<void> {
+    if (!isMergedPublicationAnchorName(basename(stagingPath)) || dirname(stagingPath) !== dirname(destinationPath)) {
+      throw new StorageError('UNSAFE_PATH', 'Invalid merged publication anchor path', { path: stagingPath });
+    }
+    const source = await this.validateInternalPath(stagingPath);
+    const info = await lstat(source, { bigint: true });
+    if (!info.isFile() || info.isSymbolicLink()) throw new StorageError('INVALID_CONTENT', 'Merged publication anchor is not a regular file');
+    const bytes = await this.readBytesAt(source, stagingPath);
+    const afterRead = await lstat(source, { bigint: true });
+    if (afterRead.dev !== info.dev || afterRead.ino !== info.ino) {
+      throw new StorageError('STALE_WRITE', 'Merged publication anchor changed while it was being verified', { path: stagingPath });
+    }
+    if (!bytes.equals(Buffer.from(text))) throw new StorageError('STALE_WRITE', 'Merged publication anchor differs from reviewed bytes', { path: stagingPath });
+    try {
+      await linkFileAtomicExclusive(source, destination);
+    } catch (error) {
+      throw storageFailure(error, 'Publish merged document', destinationPath);
+    }
+  }
+
   /** For Nodus-owned paths built from validated IDs, such as database files. */
   private async validateInternalPath(path: string): Promise<string> {
     const absolute = resolveInsideRoot(this.root, path);
@@ -3360,6 +3571,11 @@ function isImportTransactionFile(value: unknown): value is ImportTransactionFile
 
 function isAtomicTemporaryName(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith(TEMP_PREFIX) && isUuidV4(value.slice(TEMP_PREFIX.length));
+}
+
+function isMergedPublicationAnchorName(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith(MERGED_PUBLICATION_PREFIX) &&
+    isUuidV4(value.slice(MERGED_PUBLICATION_PREFIX.length));
 }
 
 function isImportDecision(value: unknown): value is ImportConflictDecision {

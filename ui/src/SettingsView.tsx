@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -46,6 +46,9 @@ interface SettingsViewProps {
   onApplyWorkspacePreset: (preset: WorkspacePresetId) => void;
   onUndoWorkspacePreset: () => void;
   onResetWorkspace: () => void;
+  /** Section the shell asked the palette to reveal (e.g. "backup"); null when idle. */
+  focusSection?: 'backup' | null;
+  onFocusSectionConsumed?: () => void;
 }
 
 function Section({
@@ -93,7 +96,20 @@ export function SettingsView({
   onApplyWorkspacePreset,
   onUndoWorkspacePreset,
   onResetWorkspace,
+  focusSection = null,
+  onFocusSectionConsumed,
 }: SettingsViewProps) {
+  // Reveal and focus the requested section once it exists (it renders only
+  // after the vault status has loaded), then report back so the shell can
+  // clear the request and later visits do not re-scroll.
+  useEffect(() => {
+    if (focusSection !== 'backup') return;
+    const element = document.getElementById('settings-backup');
+    if (element === null) return;
+    element.scrollIntoView({ block: 'start' });
+    element.focus({ preventScroll: true });
+    onFocusSectionConsumed?.();
+  }, [focusSection, loading, status, onFocusSectionConsumed]);
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label="Settings">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-4 sm:px-6">
@@ -314,7 +330,7 @@ export function SettingsView({
                 />
               </div>
 
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-2" id="settings-backup" tabIndex={-1} aria-label="Backup and restore" data-focus-section="backup">
                 <BackupRestoreSection onRestored={onRestored} onActivityChange={onVaultWorkChange} />
               </div>
             </div>

@@ -2,8 +2,8 @@
 
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
-**Last updated:** 2026-11-05
-**Latest verified integrated baseline:** `origin/main` at `fed2b32f5d5235d7b29523bb9565bf66f38c85dd` (Phase 29B/29C PR #19 squash-merged; checked 2026-11-05).
+**Last updated:** 2026-11-16
+**Audited local baseline:** `main` at `c819c0a4ffd1fc6638c7beac59f6e67e08e5d426`; live `origin/main` at `c5bf78b41fa4bcd05ca93f99155d8e586e1a33ff`, checked 2026-11-16. Local and remote ancestry remain divergent pending verified reconciliation.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -74,6 +74,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 16 — Markdown Editor Enhancements](#phase-16--markdown-editor-enhancements)
    - [Phase 17G — Knowledge Graph and Relationship Exploration](#phase-17g--knowledge-graph-and-relationship-exploration)
    - [Phase 18L — Link Integrity and Repair](#phase-18l--link-integrity-and-repair)
+   - [Phase 31 — Automation & Workflow Engine](#phase-31--automation--workflow-engine)
 4. [Legacy Proposed Milestones (superseded sequence)](#4-legacy-proposed-milestones-superseded-sequence)
    - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
@@ -91,8 +92,8 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Phase 28 — AI Integration](#phase-28--ai-integration)
      - [Legacy Phase 29 — Sync Architecture (superseded proposal)](#legacy-phase-29--sync-architecture-superseded-proposal)
      - [Phase 30 — Conflict Resolution](#phase-30--conflict-resolution)
-     - [Phase 31 — Mobile Experience](#phase-31--mobile-experience)
-     - [Phase 32 — Security and Privacy](#phase-32--security-and-privacy)
+     - [Historical Phase 31 — Mobile Experience (superseded proposal)](#historical-phase-31--mobile-experience-superseded-proposal)
+     - [Historical Phase 32 — Security and Privacy (superseded proposal)](#historical-phase-32--security-and-privacy-superseded-proposal)
      - [Phase 33 — Performance and Scalability](#phase-33--performance-and-scalability)
      - [Phase 34 — Release Preparation](#phase-34--release-preparation)
 5. [Feature Inventory](#5-feature-inventory)
@@ -190,15 +191,15 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 27 | Task Management | COMPLETE WITH LIMITATIONS — integrated | PR #16 merged; derived GFM checkboxes, due/priority text metadata, safe completion, and source navigation. No separate task store. |
 | 28 | Calendar & Timeline | COMPLETE / ACCEPTED | Formally accepted 2026-11-04; bounded month-card Timeline remains the accepted Phase 28 scope. |
 | 29 | Advanced Import & Export | IN PROGRESS | Phase 29A audit and 29B portable export are complete; 29C import validation/preview was accepted by the owner on 2026-11-05. Phase 29D.1–29D.6 implementation and final reliability verification are recorded in the isolated worktree handoff; formal Phase 29D acceptance remains pending owner review. Publication is recoverable, not package-atomic; external filesystem races, a pre-journal initialization window, stale process-lock recovery, and indefinite journal retention remain documented limits. Import bounds are 10,000 resources / 20,000 filesystem entries / 256 MiB package / 64 MiB per resource / 64 path segments. Phase 29 remains IN PROGRESS. See [Phase 29D handoff](phase29d-handoff.md) and [Phase 29D plan](phase29d-plan.md). |
-| 30 | Conflict Resolution | PLANNED | Official Phase 30 per the owner-approved 2026-11-06 decision. See the retained conflict-resolution specification in Section 4; review it before treating its historical acceptance criteria as current. Plugin Architecture is tracked separately in the P0–P8 workstream. |
-| 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
-| 32 | Product Experience & UX Simplification | PLANNED | Precedes desktop integration. |
+| 30 | Conflict Resolution | IN PROGRESS — implementation and integrated acceptance verified; formal owner acceptance remains pending | Durable conflict records, guarded apply, resolution decisions, and the inspection/resolution UI are implemented. The integrated tree passed 1,499 tests across 148 files, core/UI TypeScript, production build, and conflict UI plus combined navigation browser checks. Broader abrupt-process/power-loss, external-writer, and cross-platform/network-filesystem durability remain unverified. Plugin Architecture remains a separate P0–P8 workstream. |
+| 31 | Automation & Workflow Engine | 31A APPROVED; 31B.1 PARTIALLY IMPLEMENTED — macOS F1/F2 ACCEPTED WITH LIMITATIONS | Approved scope, execution limits, retention, lock strategy, and implementation gates are in the [Phase 31 specification](phase31-automation-workflow.md). Phase 12 remains the only connected automation engine. Standalone executor ownership and F1/F2 are implemented locally; F3 Native Cleanup Diagnostics & Failure Handling is implemented pending review. Linux/Windows remain unverified. F4, H2 and 31B.2+ are not started. |
+| 32 | Product Experience & UX Simplification | READY FOR SIGN-OFF — 32A and 32B-1 through 32B-7 reviewed; Phase 32C integration and post-integration acceptance passed | Command discovery, search/filter parity, settings and automation navigation, focus and mobile recovery, and combined Phase 30/Visual compatibility passed the integrated 1,499-test, TypeScript, build, and browser gates. Product-owner completion sign-off remains pending. |
 | 33 | Tauri Desktop Experience | PLANNED | Integrate the existing React/Vite app; do not duplicate its architecture. |
-| 34 | Synchronization | DEFERRED / EXPERIMENTAL | Relay groundwork is unwired; requires a separate architecture review. |
+| 34 | Synchronization | DEFERRED / EXPERIMENTAL | Phase 30 exposes explicit pairing and user-initiated pulls for conflict review through a local API bridge. Background/cloud sync, multi-device identity and device management, accounts, multi-user collaboration, permissions, and a provider-neutral sync contract remain unimplemented; a separate architecture review is required. |
 | 35 | Security & Performance | PLANNED | Keep security and performance distinct from sync. |
 | 36 | Release Readiness | PLANNED | Final quality and compatibility review. |
 
-**Phase 30 numbering clarification:** The current official Phase 30 is Conflict Resolution. The earlier current-forward row naming Plugin Architecture is superseded by the owner-approved 2026-11-06 decision. Plugin Architecture is an independent P0–P8 workstream and does not replace an official phase. The Conflict Resolution material in Section 4 is retained historical planning text; its scope and acceptance criteria require review before implementation.
+**Phase 30 numbering clarification:** The current official Phase 30 is Conflict Resolution. The earlier current-forward row naming Plugin Architecture is superseded by the owner-approved 2026-11-06 decision. Plugin Architecture is an independent P0–P8 workstream and does not replace an official phase. The earlier Conflict Resolution proposal in Section 4 remains historical context; current implementation, limitations, and verification are recorded in the Phase 30 section below.
 
 Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**. It is not the current Phase 28 calendar work and should be resolved before enabling automatic note or folder moves from organization suggestions.
 
@@ -1505,7 +1506,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
 | 29 | Sync Architecture (legacy; superseded) | SUPERSEDED PROPOSAL | Retained only as historical planning context; the active Phase 29 is Advanced Import & Export. |
 | 30 | Conflict Resolution | PLANNED | 3, 8 |
-| 31 | Mobile Experience | PLANNED | 26, 29, 30, 32 |
+| Historical Phase 31 | Mobile Experience | HISTORICAL / SUPERSEDED PROPOSAL | 26, 29, 30, 32 |
 | 32 | Security and Privacy | PLANNED | 8, 21, 29 |
 | 33 | Performance and Scalability | PLANNED | 9 review, 15, 23, 27 |
 | 34 | Release Preparation | PLANNED | All prior |
@@ -1709,7 +1710,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 - Extension discovery, enable/disable, and failure isolation.
 - Compatibility policy for extension APIs.
 
-**Dependencies:** Phase 15 (query API), Phase 17 (safe schema mutation), Phase 32 (security model).
+**Dependencies:** Phase 15 (query API), Phase 17 (safe schema mutation), the superseded Security and Privacy proposal (historically numbered Phase 32; retained below).
 
 **Potential architecture impact**
 
@@ -1905,7 +1906,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - No hidden network calls, telemetry, or vault upload by default.
 - Clear separation between generated text and stored user content.
 
-**Dependencies:** The historical Plugin Architecture proposal (now the separate P0–P8 workstream), Phase 27 (search/retrieval), Phase 32 (security/privacy).
+**Dependencies:** The historical Plugin Architecture proposal (now the separate P0–P8 workstream), Phase 27 (search/retrieval), the superseded Security and Privacy proposal (formerly numbered Phase 32).
 
 **Potential architecture impact**
 
@@ -1939,7 +1940,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - Backup/restore and key management for relay data.
 - Production packaging and credential storage.
 
-**Dependencies:** Phase 3 (experimental foundation), Phase 8 (storage reliability), Phase 30 (conflict resolution), Phase 32 (security).
+**Dependencies:** Phase 3 (experimental foundation), Phase 8 (storage reliability), Phase 30 (conflict resolution), the superseded Security and Privacy proposal (formerly numbered Phase 32).
 
 **Potential architecture impact**
 
@@ -1955,7 +1956,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - Sync state and credentials are excluded from note files and portable export.
 - End-to-end tests cover restart, offline edits, and conflict paths.
 
-**Status:** **BLOCKED** — requires Phase 30 conflict policy and Phase 32 security decisions before production sync work
+**Status:** **BLOCKED** — requires Phase 30 conflict policy and separate security/privacy decisions before production sync work; the older Phase 32 security proposal is retained below as history
 
 ---
 
@@ -1986,11 +1987,188 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - Repeated sync attempts do not duplicate conflict copies.
 - Tests cover crash and lost-response scenarios.
 
-**Status:** **PLANNED**
+**Status:** **IN_PROGRESS** in the experimental sync client.
+
+The client compares the local path and content hash with the last synced state. When devices move a note to different paths, or a remote deletion arrives after a local move, the client preserves the local note as a conflict copy named from its local path. The relay's version is applied through the existing sync flow. Conflict copies appear as ordinary notes when inspecting the vault. The workspace now provides exact content comparison, three explicit resolution actions, and durable history through the local API bridge. Broader crash guarantees and formal acceptance remain open.
 
 ---
 
-### Phase 31 — Mobile Experience
+#### Phase 30A — Durable Conflict Record Foundation
+
+The local sync database adds `conflict_records_v1` alongside the existing apply ledger. Its key is the vault, epoch, document kind and ID, and incoming version and content hash. Reservation stores the copy ID and path, original local path and exact file hash, and the serialized copy and its separate hash. SQLite commits the reservation and ledger pointer together before the filesystem write. Existing tables and files stay readable. Legacy ledger pointers without a verified snapshot require manual inspection if a retry would otherwise reuse them.
+
+On replay of the incoming change, the client can publish a missing pending copy from the staged payload or recognize a copy already written before the publication marker. It verifies identity, path and hash before accepting the copy. A missing published copy or a modified copy stops that replay and leaves existing documents available for inspection. Recovery runs when the corresponding change is replayed. It does not scan every historical copy at startup.
+
+Phase 30A establishes copy creation and replay. It retains staged copy payloads without a cleanup policy. The existing remote apply operations still have separate filesystem and SQLite commit boundaries, and the vault writer lock only coordinates Nodus writers. Resolution commands, workspace UI, and relay protocol changes are outside this slice.
+
+---
+
+#### Phase 30B — Guarded remote apply
+
+The experimental sync client passes the observed raw SHA-256 to note and database replacements and deletions. Note writes also bind the observed source path, since a move may leave the hash unchanged. When both the path and contents change, the vault verifies the source and publishes the replacement at the destination under one vault writer lock. New destinations use exclusive publication. The filesystem still publishes the destination and removes the source as separate operations.
+
+The local SQLite schema adds `blocked_apply_v1`. If a guarded mutation detects a stale or missing source, duplicate ID, or partial write, the client records the incoming change and reason with the ledger conflict status. Replaying that change reports that recovery is required. The pull cursor stays at the last completed change. A missing local document with a recorded base also blocks an incoming live revision. Successful apply completion updates the ledger and document base in one SQLite transaction.
+
+Focused sync, relay, and storage verification passed (5 files, 90 tests), including injected concurrent edits and same-byte moves before remote update, move, and delete. Core and UI TypeScript checks, the production build, and the workspace customization browser smoke passed. The writer lock serializes cooperating Nodus processes on local filesystems. Recovery across a process crash between destination publication and source removal, concurrent sync client sessions, and external writers remain open. Phase 30C should reconcile blocked applies and interrupted relocations with the durable copy records before exposing inspection or resolution actions.
+
+---
+
+#### Phase 30C — Apply intent and restart recovery (partial)
+
+Before mutating a document during pull or bootstrap, the client commits an intent containing the incoming change, known base revision, exact observed source path and raw hash, and expected destination path and serialized hash. The additive `apply_intent_v1` table shares the ledger key. It uses the Phase 30A copy reservation when one exists. Completed applies without a conflict copy release their intent payload. Blocked and completed conflict records retain their evidence.
+
+Replay can continue from the recorded source or acknowledge an exact destination already present. A third revision or an ambiguous duplicate ID blocks replay, preserves the files, and leaves the cursor in place. Missing or modified published copies also record a durable block. A relocation interrupted after destination publication may require manual inspection of both paths. Recovery makes no automatic choice between them.
+
+Verification passed for the sync client, relay, vault storage, root lock, and database view suites (5 files, 93 tests), and for core and UI TypeScript. The restart tests simulate interruption after publication, a later local edit, and a relocation with both paths present. Abrupt process and power loss and concurrent sync client sessions remain unverified.
+
+The next recovery work is to expose a vault-scoped read model joining intents, copy reservations, and blocked applies. Legacy records must surface unknown evidence explicitly. Persist resolution intents and outcomes before wiring the workspace actions. Resolution should retain both sides and use conditional writes or exclusive creation, with restart tests before acceptance.
+
+---
+
+#### Phase 30C — Vault conflict registry
+
+The experimental sync client exposes `listConflicts` and `getConflictDetails` for its last recorded vault lineage. The SQLite projection joins copy reservations, blocked applies, apply intents, and legacy ledger pointers by the full vault, epoch, and revision key. The registry ID encodes that key and stays stable when new evidence is attached. The reserved copy ID remains the document ID. A partial ledger index is the only schema addition. Older rows require no backfill.
+
+Listings use keyset pagination capped at 100 entries and filter by open or needs recovery. Legacy pointers and conflicting records report diagnostics, and unavailable revision details remain null. The projection returns recorded metadata and expected hashes without reading vault files or returning staged content. A publication marker describes earlier verification. It does not establish the current on-disk revision. Ledger completion alone does not represent user resolution.
+
+Verification passed for the registry, sync client, relay, vault storage, root lock, and database view suites (6 files, 96 tests), plus core and UI TypeScript and a temporary production build.
+
+The decision journal is the next stage. Bind a unique operation ID to the conflict key, action, expected revisions, and reserved target. Commit prepared state before filesystem changes. Reconcile applying decisions against exact source and target evidence and retain the resulting revision with completed history. A stale source should produce rejected-stale. An occupied or ambiguous target should produce needs-recovery without modifying it. Decision execution and sync must share serialization for the vault lineage. Before implementing keep-local, define how it consumes a blocked incoming change and records the acknowledged remote base without reviving retired IDs or replaying the same change. The inspection UI follows this service boundary.
+
+---
+
+#### Phase 30 — Resolution decision journal (partial work package)
+
+The additive `resolution_decisions_v1` table records immutable versioned intent for keep-local, keep-remote, and explicit merged copies. It stores the scoped decision and conflict IDs, document identity, expected base, exact local/remote/copy snapshots, selected target, lifecycle revision, timestamps, result, and diagnostic. Sync schema creation now runs in one SQLite transaction. Existing ledger, outbox, copy reservations, and apply intents retain their data.
+
+Preparation checks the scoped registry reference and recorded remote and base expectations, validates snapshot hashes and document identities, and stores prepared state before any future execution. Preparation accepts recorded expectations and does not inspect current files or query the relay. A repeated decision ID returns the same record only when its normalized intent matches. SQLite permits one active or completed decision per scoped conflict. Stale rejected history remains available, and a new decision may follow rejection.
+
+The journal supports prepared, applying, completed, needs-recovery, and rejected-stale. Compare-and-set lifecycle revisions reject competing claims. Completed results must match the recorded target and are immutable. Recovery and stale rejection require diagnostics. History is paginated at up to 100 entries and omits staged payloads. SyncClient exposes preparation, lookup, and history for its current recorded lineage. Low-level journal transitions are internal persistence operations intended for a future executor holding the vault lock.
+
+This journal establishes persistence. The keep-remote and live keep-local execution packages below add fresh verification, shared serialization, and consumed-revision bookkeeping. Merged-copy execution and the workspace inspection UI remain pending. Journal completion alone does not reconcile a blocked apply or advance a cursor. Keep-local for a tombstone is rejected during preparation until an explicit restore operation with a new identity is defined.
+
+The existing protocol has no per-change acknowledgement endpoint. Pull progress is a device-local cursor. A live update can use POST /push with an expected baseVersion, stable operationId, and the next deviceSeq. The relay returns the stored result for a duplicate operationId, rejects a stale base version, and permanently rejects retired IDs.
+
+The proposed execution sequence requires a shared vault lock across source verification, publication, and SQLite completion, with an exact decision-consumed check inside incoming apply. A keep-local decision should record the acknowledged remote base and exact consumed revision while transactionally reserving a conditional outbox update. The normal ordered pull loop should advance its cursor only when it reaches that exact consumed change. Existing pending outbox changes for the document must first be reconciled without skipping device sequence numbers. Publication of a local choice remains subject to relay conditional acceptance. A later remote edit should create a new conflict, preserving the chosen local bytes.
+
+A deleted remote identity requires an explicit restore under a new UUID and collision-safe path. For keep-remote, preserve the observed local side before guarded replacement or deletion and record the consumed revision at completion. For a merged copy, verify the original and preserved sources, exclusively publish the explicit staged payload under its reserved UUID/path, then reconcile the incoming original separately. The current journal has no automatic merge engine.
+
+Verification passed on Node 24.22.2. The focused decision, registry, sync, relay, and storage run passed 7 files and 105 tests. The final full serial suite passed 140 files and 1,399 tests. Core and UI TypeScript checks, an external production build, workspace customization browser smoke, and both diff checks passed. An earlier full run overlapped the history DTO edit and failed four journal assertions. The final full run used unchanged source and passed all tests. Execution and abrupt process termination for decisions remain unverified. Phase 30 remains IN_PROGRESS.
+
+---
+
+#### Phase 30 — Keep-remote execution
+
+The experimental client exposes `executeKeepRemoteDecision(scope, decisionId)`. Decision preparation is now asynchronous and participates in the existing vault writer lock. Pull, bootstrap, outbox processing, and enqueue operations share that lock with execution. Storage exposes a scoped write capability that reuses the existing guarded create, replace, relocate, and delete implementations. The capability serializes writes within the session and rejects use after the session ends. Ordinary vault callers retain their public locking methods.
+
+Execution verifies the stored intent, current vault lineage, recorded incoming change, exact selected relay bytes/version, current source hash/path, and preserved copy. It commits applying state before publishing a missing preservation copy or modifying the original. If the local side has no copy yet, the existing Phase 30A reservation mechanism preserves it first. The executor supports note update, relocation, and deletion, and database definition update and deletion. Remote deletion requires an actual recorded versioned change and confirmation that the relay permanently retired the ID. Synthesized bootstrap tombstones lack that version evidence and require manual review.
+
+The additive `resolution_consumed_v1` table associates one exact incoming revision with a completed decision. Completion stores the verified result and relay revision, consumes that exact change, marks the ledger committed, and updates or removes the remote base in one SQLite transaction. Blocked-apply evidence and preserved copies are retained. The registry exposes resolved-remote and the decision reference only when consumption evidence exists. Legacy journal-only completions without that evidence retain their recorded history and do not clear blocked applies.
+
+Normal incoming apply checks active decisions and consumption under the same vault lock. A consumed change returns without another filesystem mutation. Execution does not change the pull cursor. The ordered pull loop advances only after processing that change and continues to apply unrelated changes normally. Pending outgoing edits for the same document reject a new execution before publication.
+
+Replay can finish from the unchanged source or from an exact result already published. A completed decision returns its recorded result. Stale prepared sources or remote revisions become rejected-stale. Ambiguous applying states, occupied destinations, and changed or missing copies become needs-recovery. Both paths of an interrupted relocation remain intact for inspection. If the source was removed and the exact target and preservation copy are present, completion can resume. SQLite completion failure after publication leaves applying state, and retry verifies the file before completing.
+
+Verification passed on Node 24.22.2. Focused sync, journal, registry, relay, vault, lock, lock recovery, and database-view checks passed 9 files and 144 tests. The full serial suite passed 141 files and 1,422 tests. Core/UI TypeScript, a production build under a fresh temporary output directory, workspace customization browser smoke, and both diff checks passed. The build retains the App chunk advisory.
+
+Fault tests cover failures before applying is recorded, before and after publication, during SQLite completion, after a completed result is lost, and during preservation-copy publication. They also cover stale source/remote bytes, changed or missing copies, duplicate execution, concurrent pull/execution, cooperating writers, and relocation ambiguity. These tests inject method-boundary failures and reopen clients. They do not establish abrupt-process, power-loss, Windows/Linux, or network-filesystem durability. External writers remain outside the cooperating vault lock. Network requests currently hold the vault lock, so relay latency can delay local writes.
+
+Live keep-local execution is recorded below. Merged-copy execution and the workspace inspection UI remain subsequent work. Phase 30 remains IN_PROGRESS pending its full acceptance criteria and owner acceptance.
+
+---
+
+#### Phase 30 — Live keep-local execution and conditional outbox reconciliation
+
+The experimental client exposes executeKeepLocalDecision(scope, decisionId) and getKeepLocalReconciliation(scope, decisionId). Execution uses the shared vault writer lock and validates the immutable intent, vault/epoch and authenticated device, exact reviewed local hash/path, selected live remote revision, and preservation-copy evidence. It retains the reviewed file bytes. Note edits, path moves, CRLF content, and database definitions are covered. Local deletion and remote tombstone restoration remain unsupported. Retired IDs are never recreated.
+
+The additive resolution_outbox_v1 table links the scoped decision to one ordinary outbox operation, its authenticated device, reserved/sending stage, and relay receipt. The original outbox stores the immutable payload and device sequence. Reservation and sequence allocation commit in one SQLite transaction after applying state is durable. Legacy outbox entries remain untagged and retain their existing behavior. Previously queued same-document edits require a fresh review. Earlier operations for other documents can be pushed before retrying the decision.
+
+The payload uses the existing update operation with the full retained content and local path, baseVersion equal to the selected remote version, and proposed version equal to baseVersion plus one. This also handles moves because the existing relay update supports a changed path. The relay enforces conditional revision and path collision rules. The rejected remote snapshot remains in the immutable decision. Relay protocol and endpoints are unchanged.
+
+A reserved operation is marked sending before POST /push. Network failure leaves its identity, sequence, and payload durable. Replay consults GET /operations for that exact sequence under the same authenticated device. A stored matching result provides outcome evidence. If no result exists and this remains the next authoritative device sequence, replay can submit the same operation ID and bytes. A consumed sequence with unavailable or mismatched operation history becomes needs-recovery. Current file equality alone never establishes acceptance.
+
+Completion requires an applied relay result for the exact operation and unchanged reviewed local/copy evidence. In one SQLite transaction, completion persists the receipt and applied outbox status, decision result and timestamp, consumed incoming revision, committed apply ledger entries, and accepted remote base. The ledger acknowledges the accepted echo so later pull does not rewrite retained raw bytes or a newer local edit. Execution leaves the global cursor unchanged. The ordered pull loop consumes the exact incoming revision when reached and applies unrelated changes in order.
+
+Definitive conditional conflicts and rejected retired IDs retain the local file and copy, record the outcome, and leave the decision in needs-recovery. That incoming revision remains unconsumed and requires review. Repeated execution does not create another operation or republish a known rejection. A known applied receipt with changed local or copy evidence records relay acceptance while decision completion stays blocked. Reconciliation metadata distinguishes unknown, accepted, and rejected delivery. Pending uncertain operations retain their sequence reservation.
+
+Tests inject interruption before applying, inside reservation, after reservation before sending, before delivery, after relay acceptance, inside completion, and after a completed return is lost. Client reopen tests verify stable operation identity, duplicate prevention, stored-result recovery, exact bytes, echo handling, cursor ordering, concurrency, and migration of legacy queued data. Abrupt process termination, power loss, Windows/Linux, and network filesystem durability remain unverified. External writers remain outside the cooperating lock. Conditional rejection or unavailable outcome history requires manual review. Automatic rebase and tombstone restoration remain outside this work package.
+
+Verification passed on Node 24.22.2. The 10 focused suites passed 174 tests. The full serial suite passed 142 files and 1,452 tests. Core/UI TypeScript, a temporary production build, workspace smoke, and both diff checks passed. Vite retains the existing large App chunk advisory.
+
+Commands executed for final verification:
+
+    node_modules/.bin/vitest run --no-cache --maxWorkers=1 test/sync-keep-local.test.ts test/sync-keep-remote.test.ts test/sync-client.test.ts test/sync-resolution-decisions.test.ts test/sync-conflict-registry.test.ts test/relay/sync-service.test.ts test/storage-vault.test.ts test/storage-root-lock.test.ts test/storage-root-lock-recovery.test.ts test/storage-database-views.test.ts
+    node_modules/.bin/vitest run --no-cache --maxWorkers=1
+    node_modules/.bin/tsc --noEmit
+    node_modules/.bin/tsc -p tsconfig.ui.json --noEmit
+    node_modules/.bin/vite build --config ui/vite.config.ts --outDir /private/tmp/nodus-keep-local-build.H8Fhbo
+    node scripts/workspace-customization-smoke.mjs
+    git diff --check
+    git diff --cached --check
+
+The explicit merged-copy execution is recorded below. The user-facing inspection/resolution experience remains pending. Phase 30 remains IN_PROGRESS.
+
+#### Phase 30 — Explicit merged-copy execution
+
+`executeMergedCopyDecision(scope, decisionId)` publishes the exact reviewed note or database payload as a third document. It validates vault lineage, the immutable decision, the incoming relay revision, the current local source, and the reserved conflict copy. The operation does not consume the blocked revision, change the global cursor, publish to the relay, or select a winner for the original document. A completed merged-copy decision therefore remains visible in history while the original conflict stays open or needs recovery; the registry reports its merged-copy count and diagnostic. A later keep-local or keep-remote decision can still be prepared for that unresolved conflict.
+
+The additive `resolution_merged_v1` table reserves the scoped decision, source revision, new identity, folded path, and reviewed hash before filesystem publication. A durable `applying` transition precedes that reservation. Publication uses existing note/database creation guards and an exclusive hard link. Before publication, a fsynced temporary sibling is recorded as a retained hard-link anchor. Recovery requires the anchor and destination to have the recorded device/inode identity and reviewed hash; an identical destination without matching ownership evidence is not accepted. SQLite completion records the exact new identity/path/hash and null relay version transactionally. The original, remote, and conflict-copy bytes are read-only throughout this operation.
+
+The decision index migration preserves journal rows and replaces the earlier one-completed-decision rule so completing a third-document merge does not resolve or block a later winner choice. Relay routes and payloads are unchanged. Same-decision retries return the stored result; failed or ambiguous filesystem/SQLite boundaries remain applying or become needs-recovery and can resume only from exact evidence.
+
+Verification passed on Node 24.22.2. The focused merged-copy, decision-journal, registry, keep-remote, keep-local, and storage exclusive-write run passed 6 files and 88 tests. The final full serial suite passed 143 files and 1,467 tests. Core/UI TypeScript checks, a fresh external production build, workspace customization browser smoke, and both Git diff checks passed. Vite reports the existing large App chunk advisory.
+
+The retained hidden staging anchor is kept as recovery evidence and can retain content after a user removes the visible merged document. Hard-link publication requires filesystem support for same-directory links. Completion is local-only (`relayVersion: null`); this operation does not enqueue or publish the third document. The relay has no UUID reservation endpoint, so a fresh identity is checked as absent before local publication but cannot be globally reserved against a simultaneous remote creator. These tests inject method and SQLite failures; they do not establish abrupt-process termination, power-loss, external-writer, or cross-platform/network-filesystem durability. A pre-change client may recreate the prior stricter decision index, so mixed-version decision writes are unsupported. Automatic merge generation remains unsupported. The user-facing conflict inspection and resolution UI is recorded below. Phase 30 stays IN_PROGRESS.
+
+Commands for this work package:
+
+    node_modules/.bin/vitest run --no-cache --maxWorkers=1 test/sync-merged-copy.test.ts test/sync-resolution-decisions.test.ts test/sync-conflict-registry.test.ts test/sync-keep-remote.test.ts test/sync-keep-local.test.ts test/storage-attachments.test.ts
+    node_modules/.bin/vitest run --no-cache --maxWorkers=1
+    node_modules/.bin/tsc --noEmit
+    node_modules/.bin/tsc -p tsconfig.ui.json --noEmit
+    node_modules/.bin/vite build --config ui/vite.config.ts --outDir /private/tmp/nodus-merged-ui-final.eQFhSD
+    node scripts/workspace-customization-smoke.mjs
+    git diff --check
+    git diff --cached --check
+
+---
+
+#### Phase 30 — Conflict inspection and resolution UI
+
+The workspace adds a discoverable Conflicts navigation entry backed by the existing local `SyncClient`, conflict registry, inspection, decision journal, and execution services. A loopback API bridge keeps the paired bearer credential in process memory, clears it on disconnect or vault switch, never returns it to the UI, and exposes only explicit pairing and incoming-pull actions. No relay protocol, sync schema, or cloud behavior was added for the UI.
+
+Conflict details are read-only exact-content snapshots. The comparison identifies local and incoming revisions, timestamps, paths, hashes, and the verified preserved copy when available. Remote normalization and merged-copy preview run through read-only, writer-locked `SyncClient` APIs; the UI does not import server-only parsers or generate a merge automatically. Review hashes are checked again before journal preparation, and execution results come from the durable decision journal. Keep-local, keep-incoming, and save-merged-copy require confirmation. A merged copy is presented as a third local document and does not resolve the original conflict. History distinguishes decision status and can open a recorded merged result.
+
+Verification passed on Node 24.22.2. The full serial suite passed 147 files and 1,492 tests. The focused inspection and memory-only bridge run passed 2 files and 3 tests, including exact preview hashes and no writes during preview. Core/UI TypeScript checks and a temporary production build passed. The conflict UI browser smoke passed list loading, exact comparison, keyboard navigation, confirmation and duplicate-submit handling for all three choices, merged-copy semantics, and a narrow viewport. The workspace customization browser smoke and both Git diff checks passed.
+
+The UI only displays evidence present in the local conflict registry and journal; missing or changed evidence remains a diagnostic and blocks unsafe choices. Pairing and network actions are explicit, credentials are not persisted, and merged content is supplied and reviewed by the user. Automatic merge generation, broader abrupt-process and power-loss durability, external-writer coordination, and formal Phase 30 acceptance remain out of scope or unverified. Phase 30 remains IN_PROGRESS.
+
+Commands for this work package:
+
+    node_modules/.bin/vitest run --maxWorkers=1 --reporter=dot --silent
+    node_modules/.bin/vitest run test/sync-conflict-inspection.test.ts test/ui-conflict-bridge.test.ts --maxWorkers=1 --reporter=dot --silent
+    corepack pnpm typecheck
+    corepack pnpm exec vite build --config ui/vite.config.ts --outDir /tmp/nodus-phase30-conflicts-build-20261111
+    node scripts/conflict-ui-smoke.mjs
+    node scripts/workspace-customization-smoke.mjs
+    git diff --check
+    git diff --cached --check
+
+---
+
+### Phase 31 — Automation & Workflow Engine
+
+**Objective:** Evolve the Phase 12 local database-automation foundation into a durable, inspectable workflow execution system without changing its current behavior until a separately approved implementation passes compatibility gates.
+
+**Approved scope:** Database-scoped, event-driven workflows executed in the local API request path; no scheduler or background worker initially. Actions remain declarative and local, with no cross-database targets, arbitrary scripts, or network calls. Interrupted work must be classified as `needs_review`; there is no automatic retry or replay. User-directed retry and relation-property actions are deferred.
+
+**Status:** **31A APPROVED; 31B.1 PARTIALLY IMPLEMENTED.** Phase 12 remains the only implemented automation behavior. Phase 31 is not complete. The owner approved the 20 matching-automation, 20-per-automation-action, 100-total-action, 1 MiB journal-record, and 10-second cooperative execution limits; 200 retained terminal details; indefinite compact receipts; and the proposed POSIX `flock` / Windows `LockFileEx` adapter on tested local filesystems. The standalone 31B.1 adapter and accepted F1/F2 do not change Phase 12 execution. F3 diagnostics are implemented pending review; no cross-platform support is claimed. F4/H2/31B.2+ remain unstarted. The best-effort source-event gap and power-loss durability limitation are explicit. See the Phase 31 specification for 31B.1–31B.5 acceptance gates.
+
+See [Phase 31 specification](phase31-automation-workflow.md) for the current capability inventory, run-state contract, acceptance criteria, and proposed implementation slices.
+
+---
+
+### Historical Phase 31 — Mobile Experience (superseded proposal)
 
 **Objective:** Provide a usable mobile or responsive experience without compromising local-first storage.
 
@@ -2017,11 +2195,13 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 - Touch targets and accessibility meet documented standards.
 - Conflict and sync states are understandable on small screens.
 
-**Status:** **PLANNED**
+**Status:** **HISTORICAL / SUPERSEDED PROPOSAL.** The current official Phase 31 is Automation & Workflow Engine, defined in the current-forward sequence above. This mobile proposal is retained as historical context and is not an active milestone.
 
 ---
 
-### Phase 32 — Security and Privacy
+### Historical Phase 32 — Security and Privacy (superseded proposal)
+
+> Historical proposal only. The current official Phase 32 is Product Experience & UX Simplification, shown in the current-forward status table. Conflict Resolution remains Phase 30. The security and privacy material below is retained as planning context and is not the approved scope of current Phase 32.
 
 **Objective:** Define and enforce the trust boundary for files, localhost APIs, extensions, sync, and AI.
 
@@ -2183,7 +2363,7 @@ pagination, fuzzy matching, and semantic search remain out of scope.
 
 | Local graph view | `ui/src/GraphView.tsx`, `src/links/graph.ts` | Implemented (basic, 200 nodes) |
 | Discovery view | `ui/src/DiscoveryView.tsx` | Implemented |
-| Command palette | `ui/src/CommandPalette.tsx`, `ui/src/commands.ts` | Implemented — categories, keyword search, shortcut labels, deduplication, errors |
+| Command palette | `ui/src/CommandPalette.tsx`, `ui/src/commands.ts` | Implemented — categories, keyword search, shortcut labels, deduplication, errors; Phase 32 adds context-gated commands, metadata filters, and search diagnostics |
 | Shortcut registry and reference | `ui/src/shortcuts.ts`, `ui/src/ShortcutReferenceDialog.tsx` | Implemented |
 | Recent-note quick switcher | `ui/src/recentNavigation.ts`, `ui/src/RecentNotesDialog.tsx` | Implemented, local per-vault history |
 | Saved navigation state (expanded folders, sidebar width) | `ui/src/PageTree.tsx`, localStorage | Implemented |
@@ -2640,8 +2820,8 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-31 | Testing | No CI pipeline | Regressions found late | Phase 33 |
 | L-32 | Testing | No automated accessibility audit | Accessibility regressions possible | Add axe/AT checks |
 | L-33 | Docs | Multiple docs stale (attachments, relations, gallery, formula functions, watcher) | Agents may misread current state | Update docs when implementation changes |
-| L-34 | Working tree | Uncommitted typography/landing/editor changes and untracked local files remain | Separate work may overlap future edits | Preserve and confirm scope before editing |
-| L-35 | Fonts | Working-tree Google Fonts update loads from the network | Offline font fallback; privacy/network consideration until committed | Self-host if offline fidelity is required |
+| L-34 | Working trees | Original `main` and other feature worktrees retain unrelated staged, unstaged, untracked, and local-only state | Integration scope may be confused with preserved work | Keep the isolated integration branch separate; classify remaining work before future integration |
+| L-35 | Fonts | Landing typography loads Inter and Sora from Google Fonts | Third-party request exposes network metadata; offline system fallback has different metrics | Decide whether to self-host fonts for privacy and offline fidelity |
 | L-36 | Performance | No CI budgets; measurements historical | Optimization claims unproven | Phase 32 |
 | L-37 | Testing | Parallel full-suite runs timed out storage/API tests at 5 s on the current machine (Node 24.18.1); the same tests pass in a serial full-suite run | Verification can look red for environmental reasons | Keep the 5-second assertions; use a serial full-suite run as authoritative on this host |
 | L-38 | Automations | Execution history is append-only and has no retention limit | Long-lived vaults can accumulate a large history file and slower claim checks | Design bounded retention without weakening duplicate-event protection |
@@ -2814,6 +2994,22 @@ Append a new entry after every significant task. Do not rewrite history; correct
 
 ---
 
+### 2026-11-11 — Phase 32 — UX audit and navigation simplification
+
+- **Status:** 32A audit complete; 32B-1 and 32B-2 implemented in the working tree. Phase 32 remains in progress.
+- **Scope:** Focus-mode and sidebar recovery, command discovery, search filter parity, and settings and automation navigation.
+- **Verification:** Historical results are recorded in the original working-tree session; the isolated extraction requires its own verification.
+
+### 2026-11-13 — Phase 32C — Controlled integration review
+
+- **Status:** Phase 32 is ready for product-owner completion sign-off. Phase 30 remains IN PROGRESS pending formal owner acceptance and broader durability evidence.
+- **Summary:** Integrated Phase 32 UX, Phase 30 conflict resolution, and Visual/Brand on a new branch rooted at the original local `main` commit. Shared `App.tsx`, `Sidebar.tsx`, and `CommandPalette.tsx` were composed from reviewed workstream changes; the Conflicts command and route remain Phase 30. The Visual/Brand browser smoke uses the rendered landing copy and retains workspace/navigation checks. A verified Connections sheet follow-up supplies the editor control shown in the landing screenshots and groups the existing backlinks, relation-backlinks, and related-note panels without changing their data contracts.
+- **Commits:** `8b7401a` (Phase 32), `64bb301` (Phase 30), `5159668` (Visual/Brand), and `632e348` (Connections sheet dependency).
+- **Files changed:** Phase 32 command/navigation UI and tests; Phase 30 sync/storage/API/UI and tests; Visual/Brand assets, landing styles, design notes, and the corrected browser smoke; the Connections sheet and browser smoke; this roadmap.
+- **Verification:** Full suite passed with Vitest threads: 148 files / 1,499 tests. A one-worker fork-pool run passed 1,490 tests before Vitest could not start the `formula-relations.test.ts` worker; that file then passed separately (9 tests). Core and UI TypeScript checks and production build passed. Focused Phase 32 tests passed 126 tests across 4 files; Phase 30 API/storage/conflict tests passed 245 tests across 15 files; post-Connections focused tests passed 116 tests across 6 files. General browser smoke passed on retry after a non-reproducing Getting Started locator timeout; landing visual (6 widths × 2 themes), search, workspace customization, database views, Phase 32 responsive navigation (320/375/768/1280px), Phase 30 conflict UI, combined Conflicts/navigation (4 widths × 2 themes), and Connections sheet (4 widths × 2 themes) smokes passed. `git diff --check` passed. Vite reports the existing 959.65 kB App chunk advisory.
+- **Limitations:** Phase 19 move-safe link repair remains blocked and was not integrated. The landing page loads Inter and Sora from a static Google Fonts URL; the request contains no vault content but may disclose client network metadata. Offline rendering falls back to system fonts with different metrics. Self-hosting/privacy remains a separate decision. Screen-reader testing was not performed.
+- **Git:** Commits are on the isolated integration branch based on original `main`; no push was made. Original main and all source worktrees remain separate.
+
 ## 11. Roadmap Maintenance Rules
 
 1. **One roadmap.** Update `docs/ROADMAP.md`; do not create additional competing roadmap files. Historical plans and reports may remain as evidence but must link back here.
@@ -2834,3 +3030,12 @@ Append a new entry after every significant task. Do not rewrite history; correct
 ## Phase 24 — Knowledge Retrieval delivery
 
 Implemented local term-frequency projection reuse within the existing Markdown snapshot, BM25 ordering within search tiers, and content/tag/heading explanations in the existing related-note panel with capped graph evidence. See [architecture and limitations](knowledge-retrieval.md). Phase 24A–24C and 24E are implemented; 24F adds diagnostic 1k/5k/10k benchmarks and regression/smoke coverage. Phase 24D semantic hybrid retrieval is deferred: no local model or embedding dependency has been justified. This delivery does not integrate Phase 19. Phase 23 was merged as PR #12 before this implementation. Older numbered proposals above retain their historical labels.
+
+## Core-first completion audit — 2026-11-16
+
+See [the phase matrix and integration findings](core-completion-audit-20261116.md) and
+[Windows development handoff](windows-development.md). Phase19 remains blocked;
+29D/30/32 owner acceptance remains pending. Phase9 review and Phase35/36 scope
+remain open. Tauri/Electron stays gated on verified core completion; Phase34 and
+plugin execution remain deferred. No unresolved milestone is marked complete by
+this audit.

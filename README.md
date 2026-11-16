@@ -59,7 +59,7 @@ The table records current status; deferred items need a separate design and appr
 | Markdown tasks | Implemented with limits | Derived GFM checkboxes, nested task context, due/priority metadata, filtering/grouping, and revision-safe completion; no separate task store; see [task management](docs/task-management.md). |
 | Database automations | Implemented with limits | Local triggers and constrained workflow actions; see [automations](docs/database-automations.md). |
 | Note and database templates | Implemented with limits | Versioned definitions, preview, explicit apply, and health diagnostics; see [templates](docs/templates.md). |
-| Cross-device sync | **Experimental** | A relay and sync client exist (`src/relay/`, `src/sync/`) but are not wired to any script, bin, or the UI. No multi-device setup is supported. |
+| Cross-device sync | **Experimental** | The local Conflicts UI exposes explicit pairing and user-initiated incoming pulls through the existing relay/sync client. General multi-device setup, background/cloud sync, accounts and collaboration remain unsupported. |
 
 Also not implemented: database/property/option removal, accounts, AI, telemetry, and third-party data transfer.
 
@@ -140,3 +140,6 @@ Vault content and storage are local and offline. The public UI requests font ass
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+Windows development setup and unverified native-platform gates are recorded in
+[the Windows handoff](docs/windows-development.md). See the [core completion audit](docs/core-completion-audit-20261116.md) for outstanding acceptance and integration work.
