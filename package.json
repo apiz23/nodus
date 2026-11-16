@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite --config ui/vite.config.ts",
     "build": "vite build --config ui/vite.config.ts",
+    "build:executor-lock": "node-gyp rebuild --directory native/executor-lock",
     "preview": "vite preview --config ui/vite.config.ts",
     "bench:search": "vitest run --config vitest.search-benchmark.config.ts",
     "bench:databases": "vitest run --config vitest.database-benchmark.config.ts",
@@ -19,6 +20,7 @@
     "bench:database-ui": "node scripts/database-performance-smoke.mjs",
     "analyze:bundle": "node scripts/analyze-bundle.mjs",
     "test": "vitest run",
+    "test:executor-lock": "node-gyp rebuild --directory native/executor-lock && vitest run test/storage-executor-lock.test.ts --maxWorkers=1",
     "test:browser": "node scripts/browser-smoke.mjs",
     "test:vault-onboarding": "node scripts/vault-onboarding-smoke.mjs",
     "test:database-views": "node scripts/database-views-smoke.mjs",
@@ -59,6 +61,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "node-gyp": "13.0.0",
     "playwright": "1.49.0",
     "shadcn": "^4.22.1",
     "tailwindcss": "^4.3.3",
