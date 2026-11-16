@@ -10,6 +10,7 @@ export const GRAPH_MIN_SCALE = 0.12;
 export const GRAPH_MAX_SCALE = 3;
 
 export function clampGraphScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
   return Math.max(GRAPH_MIN_SCALE, Math.min(GRAPH_MAX_SCALE, scale));
 }
 
@@ -41,10 +42,23 @@ export function zoomGraphViewportAt(viewport: GraphViewport, point: { x: number;
 export function panGraphViewport(viewport: GraphViewport, dxScreen: number, dyScreen: number, bounds: { width: number; height: number }): GraphViewport {
   const displayScale = Math.min(bounds.width / GRAPH_VIEW_WIDTH, bounds.height / GRAPH_VIEW_HEIGHT);
   const safeScale = displayScale > 0 ? displayScale : 1;
+  // The viewport group applies translate() before scale(), so screen movement
+  // is displayScale * Δtranslate. Dividing by scale as well made panning lag at
+  // high zoom and overshoot at low zoom.
   return {
-    x: viewport.x + dxScreen / safeScale / viewport.scale,
-    y: viewport.y + dyScreen / safeScale / viewport.scale,
+    x: viewport.x + dxScreen / safeScale,
+    y: viewport.y + dyScreen / safeScale,
     scale: viewport.scale,
+  };
+}
+
+/** Center a world-space point in the viewBox without changing zoom. */
+export function centerGraphViewportOn(point: { x: number; y: number }, scale = 1): GraphViewport {
+  const safeScale = clampGraphScale(scale);
+  return {
+    x: GRAPH_VIEW_WIDTH / 2 - point.x * safeScale,
+    y: GRAPH_VIEW_HEIGHT / 2 - point.y * safeScale,
+    scale: safeScale,
   };
 }
 
@@ -68,6 +82,41 @@ export function fitGraphViewport(
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   return { x: GRAPH_VIEW_WIDTH / 2 - centerX * scale, y: GRAPH_VIEW_HEIGHT / 2 - centerY * scale, scale };
+}
+
+/**
+ * Fit content while keeping a preferred point at the viewBox centre. Useful for
+ * hub-style graphs where the central note should stay visually centred.
+ */
+export function fitGraphViewportAroundPoint(
+  positions: ReadonlyArray<{ x: number; y: number }>,
+  centerPoint: { x: number; y: number } | null,
+  padding = 90,
+  minScale = GRAPH_MIN_SCALE,
+  maxScale = 1.65,
+): GraphViewport {
+  if (centerPoint === null) return fitGraphViewport(positions, padding, minScale, maxScale);
+  const distances = positions.map((position) => Math.hypot(position.x - centerPoint.x, position.y - centerPoint.y));
+  const maxDistance = distances.length === 0 ? 0 : Math.max(...distances);
+  if (!Number.isFinite(maxDistance) || maxDistance <= 0.001) {
+    const viewport = centeredGraphViewport(maxScale);
+    return { ...viewport, scale: clampGraphScale(maxScale) };
+  }
+  const availableX = (GRAPH_VIEW_WIDTH / 2) - padding;
+  const availableY = (GRAPH_VIEW_HEIGHT / 2) - padding;
+  const scale = clampScale(
+    Math.min(maxScale, Math.max(minScale, Math.min(availableX / maxDistance, availableY / maxDistance))),
+  );
+  return {
+    x: GRAPH_VIEW_WIDTH / 2 - centerPoint.x * scale,
+    y: GRAPH_VIEW_HEIGHT / 2 - centerPoint.y * scale,
+    scale,
+  };
+}
+
+function clampScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
+  return Math.max(GRAPH_MIN_SCALE, Math.min(GRAPH_MAX_SCALE, scale));
 }
 
 export function graphViewportTransform(viewport: GraphViewport): string {

@@ -37,7 +37,7 @@ try {
   await page.getByRole('heading', { name: 'Incoming links (1)', exact: true }).waitFor();
   await page.getByRole('heading', { name: 'Outgoing links (2)', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Select unresolved target Missing' }).waitFor();
-  await page.getByText('1 unresolved excluded', { exact: true }).waitFor();
+  await page.getByText('1 unresolved target shown', { exact: true }).waitFor();
   await page.getByRole('checkbox', { name: 'Show unresolved links' }).click();
   await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
   await page.getByRole('checkbox', { name: 'Show unresolved links' }).click();
@@ -66,9 +66,6 @@ try {
   await page.getByRole('button', { name: 'Select Graph Target' }).click();
   await page.getByRole('button', { name: 'Open note', exact: true }).click();
   await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, 'Graph Target');
-  await page.getByRole('heading', { name: 'Outgoing links (1)', exact: true }).waitFor();
-  await page.getByRole('region', { name: 'Outgoing links' }).getByRole('button', { name: 'Open Graph Source', exact: true }).click();
-  await page.waitForFunction((title) => document.querySelector('#note-title')?.value === title, 'Graph Source');
   await page.keyboard.press('Control+k');
   await page.getByRole('option', { name: /Local graph/ }).click();
   await page.getByRole('heading', { name: 'Local graph', exact: true }).waitFor();

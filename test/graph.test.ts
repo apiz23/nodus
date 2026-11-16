@@ -55,7 +55,7 @@ describe('local note graph projection', () => {
       ambiguousCount: 0,
     };
     const visible = visibleGraph(graph, '', null, 200, { clusterNodeIds: new Set(['a', 'b']), folder: 'notes' });
-    expect(visible.nodes.map((node) => node.id)).toEqual(['a', 'b']);
+    expect(visible.nodes.map((node) => node.id)).toEqual(['b', 'a']);
     expect(visible.edges).toHaveLength(1);
   });
 

@@ -34,7 +34,8 @@
     "test:graph-advanced": "node scripts/graph-advanced-smoke.mjs",
     "test:graph-canvas": "node scripts/graph-canvas-smoke.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
-    "bench:retrieval": "vitest run --config vitest.retrieval-benchmark.config.ts"
+    "bench:retrieval": "vitest run --config vitest.retrieval-benchmark.config.ts",
+    "test:graph-interaction": "node scripts/graph-interaction-smoke.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
