@@ -33,6 +33,7 @@ This page is the documentation index. The root [README](../README.md) is the sin
 - [Relations and rollups](database-relations.md)
 - [Database formulas](database-formulas.md)
 - [Database automations](database-automations.md)
+- [Phase 31 automation workflow scope and journal proposal](phase31-automation-workflow.md)
 - [Templates](templates.md)
 - [Workspace customization](workspace-customization.md)
 
@@ -53,3 +54,8 @@ This page is the documentation index. The root [README](../README.md) is the sin
 
 - [Archived plans, acceptance evidence, and Phase 1–2 reports](archive/README.md)
 - [Phase 3 implementation stages](phase3/implementation-stages.md), subordinate to the master roadmap
+
+## Current development handoff
+
+- [Core completion audit and dependency order](core-completion-audit-20261116.md)
+- [Windows development and native qualification](windows-development.md)

@@ -2,8 +2,8 @@
 
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
-**Last updated:** 2026-11-05
-**Latest verified integrated baseline:** `origin/main` at `fed2b32f5d5235d7b29523bb9565bf66f38c85dd` (Phase 29B/29C PR #19 squash-merged; checked 2026-11-05).
+**Last updated:** 2026-11-16
+**Audited local baseline:** `main` at `c819c0a4ffd1fc6638c7beac59f6e67e08e5d426`; live `origin/main` at `c5bf78b41fa4bcd05ca93f99155d8e586e1a33ff`, checked 2026-11-16. Local and remote ancestry remain divergent pending verified reconciliation.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -74,6 +74,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Phase 16 — Markdown Editor Enhancements](#phase-16--markdown-editor-enhancements)
    - [Phase 17G — Knowledge Graph and Relationship Exploration](#phase-17g--knowledge-graph-and-relationship-exploration)
    - [Phase 18L — Link Integrity and Repair](#phase-18l--link-integrity-and-repair)
+   - [Phase 31 — Automation & Workflow Engine](#phase-31--automation--workflow-engine)
 4. [Legacy Proposed Milestones (superseded sequence)](#4-legacy-proposed-milestones-superseded-sequence)
    - [Future Milestone Summary](#future-milestone-summary)
      - [Phase 15 — Advanced Database Queries](#phase-15--advanced-database-queries)
@@ -91,7 +92,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
      - [Phase 28 — AI Integration](#phase-28--ai-integration)
      - [Legacy Phase 29 — Sync Architecture (superseded proposal)](#legacy-phase-29--sync-architecture-superseded-proposal)
      - [Phase 30 — Conflict Resolution](#phase-30--conflict-resolution)
-     - [Phase 31 — Mobile Experience](#phase-31--mobile-experience)
+     - [Historical Phase 31 — Mobile Experience (superseded proposal)](#historical-phase-31--mobile-experience-superseded-proposal)
      - [Historical Phase 32 — Security and Privacy (superseded proposal)](#historical-phase-32--security-and-privacy-superseded-proposal)
      - [Phase 33 — Performance and Scalability](#phase-33--performance-and-scalability)
      - [Phase 34 — Release Preparation](#phase-34--release-preparation)
@@ -191,7 +192,7 @@ The prior proposal list in Section 4 is retained for historical context and is s
 | 28 | Calendar & Timeline | COMPLETE / ACCEPTED | Formally accepted 2026-11-04; bounded month-card Timeline remains the accepted Phase 28 scope. |
 | 29 | Advanced Import & Export | IN PROGRESS | Phase 29A audit and 29B portable export are complete; 29C import validation/preview was accepted by the owner on 2026-11-05. Phase 29D.1–29D.6 implementation and final reliability verification are recorded in the isolated worktree handoff; formal Phase 29D acceptance remains pending owner review. Publication is recoverable, not package-atomic; external filesystem races, a pre-journal initialization window, stale process-lock recovery, and indefinite journal retention remain documented limits. Import bounds are 10,000 resources / 20,000 filesystem entries / 256 MiB package / 64 MiB per resource / 64 path segments. Phase 29 remains IN PROGRESS. See [Phase 29D handoff](phase29d-handoff.md) and [Phase 29D plan](phase29d-plan.md). |
 | 30 | Conflict Resolution | IN PROGRESS — implementation and integrated acceptance verified; formal owner acceptance remains pending | Durable conflict records, guarded apply, resolution decisions, and the inspection/resolution UI are implemented. The integrated tree passed 1,499 tests across 148 files, core/UI TypeScript, production build, and conflict UI plus combined navigation browser checks. Broader abrupt-process/power-loss, external-writer, and cross-platform/network-filesystem durability remain unverified. Plugin Architecture remains a separate P0–P8 workstream. |
-| 31 | Automation & Workflow Engine | PLANNED | Builds on database automations. |
+| 31 | Automation & Workflow Engine | 31A APPROVED; 31B.1 PARTIALLY IMPLEMENTED — macOS F1/F2 ACCEPTED WITH LIMITATIONS | Approved scope, execution limits, retention, lock strategy, and implementation gates are in the [Phase 31 specification](phase31-automation-workflow.md). Phase 12 remains the only connected automation engine. Standalone executor ownership and F1/F2 are implemented locally; F3 Native Cleanup Diagnostics & Failure Handling is implemented pending review. Linux/Windows remain unverified. F4, H2 and 31B.2+ are not started. |
 | 32 | Product Experience & UX Simplification | READY FOR SIGN-OFF — 32A and 32B-1 through 32B-7 reviewed; Phase 32C integration and post-integration acceptance passed | Command discovery, search/filter parity, settings and automation navigation, focus and mobile recovery, and combined Phase 30/Visual compatibility passed the integrated 1,499-test, TypeScript, build, and browser gates. Product-owner completion sign-off remains pending. |
 | 33 | Tauri Desktop Experience | PLANNED | Integrate the existing React/Vite app; do not duplicate its architecture. |
 | 34 | Synchronization | DEFERRED / EXPERIMENTAL | Phase 30 exposes explicit pairing and user-initiated pulls for conflict review through a local API bridge. Background/cloud sync, multi-device identity and device management, accounts, multi-user collaboration, permissions, and a provider-neutral sync contract remain unimplemented; a separate architecture review is required. |
@@ -1505,7 +1506,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 | 28 | AI Integration | PLANNED | 22, 27, 32 |
 | 29 | Sync Architecture (legacy; superseded) | SUPERSEDED PROPOSAL | Retained only as historical planning context; the active Phase 29 is Advanced Import & Export. |
 | 30 | Conflict Resolution | PLANNED | 3, 8 |
-| 31 | Mobile Experience | PLANNED | 26, 29, 30, 32 |
+| Historical Phase 31 | Mobile Experience | HISTORICAL / SUPERSEDED PROPOSAL | 26, 29, 30, 32 |
 | 32 | Security and Privacy | PLANNED | 8, 21, 29 |
 | 33 | Performance and Scalability | PLANNED | 9 review, 15, 23, 27 |
 | 34 | Release Preparation | PLANNED | All prior |
@@ -2155,7 +2156,19 @@ Commands for this work package:
 
 ---
 
-### Phase 31 — Mobile Experience
+### Phase 31 — Automation & Workflow Engine
+
+**Objective:** Evolve the Phase 12 local database-automation foundation into a durable, inspectable workflow execution system without changing its current behavior until a separately approved implementation passes compatibility gates.
+
+**Approved scope:** Database-scoped, event-driven workflows executed in the local API request path; no scheduler or background worker initially. Actions remain declarative and local, with no cross-database targets, arbitrary scripts, or network calls. Interrupted work must be classified as `needs_review`; there is no automatic retry or replay. User-directed retry and relation-property actions are deferred.
+
+**Status:** **31A APPROVED; 31B.1 PARTIALLY IMPLEMENTED.** Phase 12 remains the only implemented automation behavior. Phase 31 is not complete. The owner approved the 20 matching-automation, 20-per-automation-action, 100-total-action, 1 MiB journal-record, and 10-second cooperative execution limits; 200 retained terminal details; indefinite compact receipts; and the proposed POSIX `flock` / Windows `LockFileEx` adapter on tested local filesystems. The standalone 31B.1 adapter and accepted F1/F2 do not change Phase 12 execution. F3 diagnostics are implemented pending review; no cross-platform support is claimed. F4/H2/31B.2+ remain unstarted. The best-effort source-event gap and power-loss durability limitation are explicit. See the Phase 31 specification for 31B.1–31B.5 acceptance gates.
+
+See [Phase 31 specification](phase31-automation-workflow.md) for the current capability inventory, run-state contract, acceptance criteria, and proposed implementation slices.
+
+---
+
+### Historical Phase 31 — Mobile Experience (superseded proposal)
 
 **Objective:** Provide a usable mobile or responsive experience without compromising local-first storage.
 
@@ -2182,7 +2195,7 @@ Commands for this work package:
 - Touch targets and accessibility meet documented standards.
 - Conflict and sync states are understandable on small screens.
 
-**Status:** **PLANNED**
+**Status:** **HISTORICAL / SUPERSEDED PROPOSAL.** The current official Phase 31 is Automation & Workflow Engine, defined in the current-forward sequence above. This mobile proposal is retained as historical context and is not an active milestone.
 
 ---
 
@@ -3017,3 +3030,12 @@ Append a new entry after every significant task. Do not rewrite history; correct
 ## Phase 24 — Knowledge Retrieval delivery
 
 Implemented local term-frequency projection reuse within the existing Markdown snapshot, BM25 ordering within search tiers, and content/tag/heading explanations in the existing related-note panel with capped graph evidence. See [architecture and limitations](knowledge-retrieval.md). Phase 24A–24C and 24E are implemented; 24F adds diagnostic 1k/5k/10k benchmarks and regression/smoke coverage. Phase 24D semantic hybrid retrieval is deferred: no local model or embedding dependency has been justified. This delivery does not integrate Phase 19. Phase 23 was merged as PR #12 before this implementation. Older numbered proposals above retain their historical labels.
+
+## Core-first completion audit — 2026-11-16
+
+See [the phase matrix and integration findings](core-completion-audit-20261116.md) and
+[Windows development handoff](windows-development.md). Phase19 remains blocked;
+29D/30/32 owner acceptance remains pending. Phase9 review and Phase35/36 scope
+remain open. Tauri/Electron stays gated on verified core completion; Phase34 and
+plugin execution remain deferred. No unresolved milestone is marked complete by
+this audit.
