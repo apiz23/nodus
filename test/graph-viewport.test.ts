@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GRAPH_MAX_SCALE,
   GRAPH_MIN_SCALE,
+  centerGraphViewportOn,
   centeredGraphViewport,
   clientToGraphViewBox,
   fitGraphViewport,
@@ -31,11 +32,12 @@ describe('graph viewport math', () => {
 
   it('pans in viewBox units and fits all positions', () => {
     const panned = panGraphViewport({ x: 500, y: 320, scale: 2 }, 100, 50, { width: 1000, height: 640 });
-    expect(panned.x).toBeCloseTo(550);
-    expect(panned.y).toBeCloseTo(345);
+    expect(panned.x).toBeCloseTo(600);
+    expect(panned.y).toBeCloseTo(370);
     const fit = fitGraphViewport([{ x: -1000, y: -600 }, { x: 1000, y: 600 }]);
     expect(fit.scale).toBeLessThanOrEqual(1.65);
     expect(fit.scale).toBeGreaterThanOrEqual(0.25);
     expect(centeredGraphViewport().x).toBe(500);
+    expect(centerGraphViewportOn({ x: 120, y: -40 }, 2)).toEqual({ x: 500 - 240, y: 320 + 80, scale: 2 });
   });
 });
