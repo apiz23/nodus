@@ -1,4 +1,5 @@
-import { access, chmod, mkdtemp, mkdir, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readdir, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,7 +8,13 @@ import { inventoryPluginPackage } from '../../src/plugins/package-inventory.js';
 import { writePluginPackage } from './helpers.js';
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  const cleanupStarted = performance.now();
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  if (process.env.NODUS_PROFILE_PLUGIN_INVENTORY === '1') {
+    process.stdout.write(`package inventory profile: cleanup=${(performance.now() - cleanupStarted).toFixed(1)}ms\n`);
+  }
+});
 async function makeRoot(): Promise<string> { const path = await mkdtemp(join(tmpdir(), 'nodus-plugin-test-')); roots.push(path); return path; }
 const options = { currentNodusVersion: '0.1.0' };
 
@@ -79,8 +86,27 @@ describe('plugin package discovery and inventory', () => {
 
     const inventoryRoot = await makeRoot();
     const inventoryPackage = await writePluginPackage(inventoryRoot);
-    for (let index = 0; index < 2_001; index += 1) await writeFile(join(inventoryPackage, `file-${String(index).padStart(4, '0')}.txt`), 'x');
+    const fixtureStarted = performance.now();
+    const fixtureNames = Array.from({ length: 2_001 }, (_, index) => `file-${String(index).padStart(4, '0')}.txt`);
+    const concurrency = 512;
+    for (let offset = 0; offset < fixtureNames.length; offset += concurrency) {
+      await Promise.all(fixtureNames.slice(offset, offset + concurrency).map((name) => writeFile(join(inventoryPackage, name), 'x')));
+    }
+    const creationElapsed = performance.now() - fixtureStarted;
+    const validationStarted = performance.now();
+    const entries = await readdir(inventoryPackage, { withFileTypes: true });
+    const fixtureFiles = entries.filter((entry) => entry.name.startsWith('file-') && entry.name.endsWith('.txt'));
+    expect(fixtureFiles).toHaveLength(2_001);
+    expect(fixtureFiles.every((entry) => entry.isFile())).toBe(true);
+    const fixtureSizes = await Promise.all(fixtureFiles.map(async (entry) => (await stat(join(inventoryPackage, entry.name))).size));
+    expect(fixtureSizes.every((size) => size === 1)).toBe(true);
+    const validationElapsed = performance.now() - validationStarted;
+    const inventoryStarted = performance.now();
     const excessive = await inventoryPluginPackage(inventoryPackage);
+    const inventoryElapsed = performance.now() - inventoryStarted;
+    if (process.env.NODUS_PROFILE_PLUGIN_INVENTORY === '1') {
+      process.stdout.write(`package inventory profile: creation=${creationElapsed.toFixed(1)}ms validation=${validationElapsed.toFixed(1)}ms inventory=${inventoryElapsed.toFixed(1)}ms\n`);
+    }
     expect(excessive.diagnostics.some((item) => item.code === 'PACKAGE_FILE_LIMIT_EXCEEDED')).toBe(true);
   });
 
@@ -150,7 +176,7 @@ describe('plugin package discovery and inventory', () => {
   });
 
   it('reports package-directory permission failures without leaking absolute paths', async () => {
-    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) return;
     const root = await makeRoot();
     const packagePath = await writePluginPackage(root);
     const blocked = join(packagePath, 'blocked');
@@ -161,6 +187,27 @@ describe('plugin package discovery and inventory', () => {
       expect(result.diagnostics.some((item) => item.code === 'PACKAGE_READ_FAILED' && item.path === 'blocked')).toBe(true);
       expect(JSON.stringify(result.diagnostics)).not.toContain(packagePath);
     } finally { await chmod(blocked, 0o700); }
+  });
+
+  it('reports Windows ACL-denied package directories without leaking absolute paths', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await makeRoot();
+    const packagePath = await writePluginPackage(root);
+    const blocked = join(packagePath, 'blocked');
+    await mkdir(blocked);
+    const whoami = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' });
+    const sid = whoami.match(/\bS-\d(?:-\d+)+\b/)?.[0];
+    if (!sid) throw new Error('Could not determine the current Windows account SID for ACL test');
+
+    execFileSync('icacls', [blocked, '/deny', `*${sid}:(RX)`], { stdio: 'ignore' });
+    try {
+      await expect(readdir(blocked)).rejects.toMatchObject({ code: expect.stringMatching(/^(EACCES|EPERM)$/) });
+      const result = await inventoryPluginPackage(packagePath);
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'PACKAGE_READ_FAILED', path: 'blocked' }));
+      expect(JSON.stringify(result.diagnostics)).not.toContain(packagePath);
+    } finally {
+      execFileSync('icacls', [blocked, '/remove:d', `*${sid}`], { stdio: 'ignore' });
+    }
   });
 
   it('enforces the total byte limit without unsafe integer accumulation', async () => {

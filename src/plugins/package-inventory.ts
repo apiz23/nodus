@@ -49,7 +49,12 @@ export async function inventoryPluginPackage(packagePath: string, options: { exp
       directoryInfo = await lstat(directory, { bigint: true });
       canonicalDirectory = await realpath(directory);
       const afterResolve = await lstat(directory, { bigint: true });
-      const contained = relativeDirectory === '' ? canonicalDirectory === packageRoot : await containedRealPath(packageRoot, canonicalDirectory);
+      const containment = relativeDirectory === '' ? canonicalDirectory === packageRoot : await containedRealPath(packageRoot, canonicalDirectory);
+      if (containment === 'denied') {
+        diagnostics.push(diag('PACKAGE_READ_FAILED', 'Plugin package directory could not be inspected.', relativeDirectory || undefined));
+        return;
+      }
+      const contained = containment === true;
       if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory() || afterResolve.isSymbolicLink() || !afterResolve.isDirectory() || directoryInfo.dev !== afterResolve.dev || directoryInfo.ino !== afterResolve.ino || !contained) {
         diagnostics.push(diag('PACKAGE_PATH_INVALID', 'Package directory changed or escaped its package root.', relativeDirectory || undefined));
         return;
@@ -99,7 +104,9 @@ export async function inventoryPluginPackage(packagePath: string, options: { exp
           diagnostics.push(diag('PACKAGE_DEPTH_LIMIT_EXCEEDED', `Package nesting exceeds ${PLUGIN_PACKAGE_LIMITS.nestingDepth} directories.`, relativePath));
           continue;
         }
-        if (!await containedRealPath(packageRoot, absolute)) { diagnostics.push(diag('PACKAGE_PATH_INVALID', 'Package directory resolves outside its package root.', relativePath)); continue; }
+        const containment = await containedRealPath(packageRoot, absolute);
+        if (containment === 'denied') { diagnostics.push(diag('PACKAGE_READ_FAILED', 'Package directory could not be inspected.', relativePath)); continue; }
+        if (!containment) { diagnostics.push(diag('PACKAGE_PATH_INVALID', 'Package directory resolves outside its package root.', relativePath)); continue; }
         await visit(absolute, relativePath, depth + 1);
         continue;
       }
@@ -112,7 +119,9 @@ export async function inventoryPluginPackage(packagePath: string, options: { exp
         diagnostics.push(diag('PACKAGE_SIZE_LIMIT_EXCEEDED', `Package exceeds ${PLUGIN_PACKAGE_LIMITS.totalBytes} total bytes.`, relativePath));
         continue;
       }
-      if (!await containedRealPath(packageRoot, absolute)) { diagnostics.push(diag('PACKAGE_PATH_INVALID', 'Package file resolves outside its package root.', relativePath)); continue; }
+      const containment = await containedRealPath(packageRoot, absolute);
+      if (containment === 'denied') { diagnostics.push(diag('PACKAGE_READ_FAILED', 'Package entry could not be inspected.', relativePath)); continue; }
+      if (!containment) { diagnostics.push(diag('PACKAGE_PATH_INVALID', 'Package file resolves outside its package root.', relativePath)); continue; }
       const read = await readRegularFile(absolute, info, relativePath);
       if (!read.ok) { diagnostics.push(diag(read.code, read.message, relativePath)); continue; }
       if (read.bytes.byteLength !== size) { diagnostics.push(diag('PACKAGE_CHANGED_DURING_READ', 'Package file size changed while it was being read.', relativePath)); continue; }
@@ -183,12 +192,15 @@ async function readRegularFile(
   }
 }
 
-async function containedRealPath(root: string, target: string): Promise<boolean> {
+async function containedRealPath(root: string, target: string): Promise<boolean | 'denied'> {
   try {
     const resolved = await realpath(target);
     const rel = relative(root, resolved);
     return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-  } catch { return false; }
+  } catch (error) {
+    if (process.platform === 'win32' && (errorCode(error) === 'EACCES' || errorCode(error) === 'EPERM')) return 'denied';
+    return false;
+  }
 }
 
 function safeRelativePath(value: string): boolean {

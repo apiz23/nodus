@@ -2,7 +2,11 @@ node_modules/
 dist/
 native/executor-lock/build/
 coverage/
-/vault/
+/vault/*
+!/vault/attachments/
+/vault/attachments/*
+!/vault/attachments/8cf9a347-508a-4b14-8545-7648840cd77c-demo-project-brief.pdf
+!/vault/attachments/78dd9a51-2154-4d42-a023-2743e187c46b-demo-meeting-notes.docx
 .DS_Store
 .superpowers/
 *.log

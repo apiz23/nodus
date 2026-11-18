@@ -1,11 +1,12 @@
 import { createServer, type Server } from 'node:http';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+const DOCX = await readFile(new URL('./fixtures/word-preview.docx', import.meta.url));
 
 describe('local attachment API', () => {
   let server: Server | undefined;
@@ -31,8 +32,17 @@ describe('local attachment API', () => {
     expect(upload.status).toBe(201);
     const { attachment } = await upload.json() as { attachment: { path: string; contentType: string } };
     expect(attachment.path).toMatch(/^attachments\//);
+    const wordUpload = await fetch(`${base}/api/attachments?name=${encodeURIComponent('guide.docx')}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: DOCX });
+    expect(wordUpload.status).toBe(201);
+    const { attachment: word } = await wordUpload.json() as { attachment: { path: string; contentType: string } };
+    expect(word.contentType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const wordPreview = await fetch(`${base}/api/attachments/docx-preview?path=${encodeURIComponent(word.path)}`);
+    expect(wordPreview.status).toBe(200);
+    expect(wordPreview.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect((await wordPreview.text()).trim()).toBe('Nodus Word preview');
+    expect((await fetch(`${base}/api/attachments/docx-preview?path=${encodeURIComponent(attachment.path)}`)).status).toBe(415);
     const list = await (await fetch(`${base}/api/attachments`)).json() as { attachments: unknown[] };
-    expect(list.attachments).toHaveLength(1);
+    expect(list.attachments).toHaveLength(2);
     const opened = await fetch(`${base}/api/attachments/open?path=${encodeURIComponent(attachment.path)}`);
     expect(opened.status).toBe(200);
     expect(opened.headers.get('content-type')).toBe('image/png');
@@ -66,6 +76,8 @@ describe('local attachment API', () => {
     expect(traversal.status).toBe(400);
     const spoofed = await fetch(`${base}/api/attachments?name=payload.png`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.from('<script>') });
     expect(spoofed.status).toBe(422);
+    const spoofedWord = await fetch(`${base}/api/attachments?name=payload.docx`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.from('<document/>') });
+    expect(spoofedWord.status).toBe(422);
     expect((await (await fetch(`${base}/api/attachments`)).json() as { attachments: unknown[] }).attachments).toHaveLength(0);
     const large = await fetch(`${base}/api/attachments?name=large.png`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(10 * 1024 * 1024 + 1) });
     expect(large.status).toBe(413);

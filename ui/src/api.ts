@@ -244,6 +244,12 @@ export const api = {
     return `/api/attachments/open?path=${encodeURIComponent(path)}`;
   },
 
+  async docxPreview(path: string): Promise<string> {
+    const response = await fetch(`/api/attachments/docx-preview?path=${encodeURIComponent(path)}`);
+    if (!response.ok) throw new Error('This Word document could not be previewed.');
+    return response.text();
+  },
+
   createFolder(path: string): Promise<{ path: string }> {
     return request('/api/folders', { method: 'POST', body: jsonBody({ path }) });
   },

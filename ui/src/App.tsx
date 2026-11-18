@@ -1,3 +1,4 @@
+import { DocumentPreview } from './editor/DocumentPreview';
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -97,6 +98,7 @@ function messageOf(error: unknown): string {
 }
 
 export default function App() {
+  const [workspaceDocument, setWorkspaceDocument] = useState<{ path: string; name: string } | null>(null);
   const [view, setView] = useState<View>('notes');
   const [taskNavigation, setTaskNavigation] = useState<{ noteId: string; line: number; sequence: number } | null>(null);
   const [status, setStatus] = useState<UiVaultStatus | null>(null);
@@ -1787,6 +1789,7 @@ export default function App() {
           }}
         >
         <Sidebar
+          onOpenDocument={(document) => { setView('notes'); setWorkspaceDocument(document); }}
           view={view}
           onView={(next) => {
             setView(next);
@@ -1824,7 +1827,7 @@ export default function App() {
           loading={notesLoading}
           searching={searching}
           searchError={query.trim() === '' && noteFilters.length === 0 ? notesError : searchError}
-          onOpen={(id) => void openNoteById(id)}
+          onOpen={(id) => { setWorkspaceDocument(null); void openNoteById(id); }}
           onClearSearch={() => { setQuery(''); setNoteFilters([]); setFilterLogic('and'); }}
           onRetry={() => { if (query.trim() || noteFilters.length) retrySearch(); else void refreshNotes(); }}
           onRenameNote={(id) => void requestRenameForNote(id)}
@@ -1929,7 +1932,15 @@ export default function App() {
           />
         ) : null}
 
-        {view === 'notes' ? (
+        {view === 'notes' && workspaceDocument ? (
+          <section aria-label="Document preview" className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+            <div className="flex items-center gap-3">
+              <Button variant="outline" size="sm" onClick={() => setWorkspaceDocument(null)}>Back to note</Button>
+              <h2 className="truncate font-medium">{workspaceDocument.name}</h2>
+            </div>
+            <DocumentPreview key={workspaceDocument.path} {...workspaceDocument} />
+          </section>
+        ) : view === 'notes' ? (
           <Editor
             note={activeNote}
             notes={notes}

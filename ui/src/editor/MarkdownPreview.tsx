@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { DocumentPreview } from './DocumentPreview';
 import { markdownLanguage } from '@codemirror/lang-markdown';
 import { Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -57,8 +58,9 @@ function localVaultPath(notePath: string, rawSource: string): string | null {
 
 function localAttachmentUrl(notePath: string, rawSource: string): string | null {
   const path = localVaultPath(notePath, rawSource);
-  return path && /^attachments\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[a-z0-9_-]{1,64}\.(?:png|jpe?g|gif|webp|avif|pdf|txt)$/.test(path)
-    ? `/api/attachments/open?path=${encodeURIComponent(path)}` : null;
+  if (!path || !/^attachments\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[a-z0-9_-]{1,64}\.(?:png|jpe?g|gif|webp|avif|pdf|docx|txt)$/.test(path)) return null;
+  const endpoint = path.toLowerCase().endsWith('.docx') ? '/api/attachments/docx-preview' : '/api/attachments/open';
+  return `${endpoint}?path=${encodeURIComponent(path)}`;
 }
 
 function imageSource(notePath: string, source: string): string | null {
@@ -129,6 +131,7 @@ interface MarkdownPreviewProps {
 
 /** Read-only, escaped Markdown view. The original Markdown remains the only saved representation. */
 export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHeadingChange }: MarkdownPreviewProps) {
+  const [document, setDocument] = useState<{ path: string; name: string; notePath: string } | null>(null);
   const articleRef = useRef<HTMLElement>(null);
   const rendered = useMemo(() => {
     const links = parseWikiLinks(value);
@@ -200,6 +203,14 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHe
         const labelFrom = marks[0]?.to ?? node.from;
         const labelTo = marks[1]?.from ?? labelFrom;
         const label = inlineBetween(node, labelFrom, labelTo);
+        const documentPath = attachmentHref && destination ? localVaultPath(notePath, destination.replace(/^<|>$/g, '')) : null;
+        if (documentPath && /\.(pdf|docx)$/.test(documentPath)) {
+          const name = documentPath.split('/').at(-1)!.slice(37);
+          return <a href={attachmentHref!} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2" onClick={(event) => {
+            event.preventDefault();
+            setDocument({ path: documentPath, name, notePath });
+          }}>{label}</a>;
+        }
         return href ? <a href={attachmentHref ?? href} className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary" {...(/^https?:/i.test(href) || attachmentHref ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{label}</a> : <span className="underline decoration-dashed" title="Invalid link destination">{label}</span>;
       }
       if (name === 'Image') {
@@ -310,7 +321,15 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHe
     }, { root: viewport, rootMargin: '-15% 0px -75% 0px', threshold: 0 });
     article.querySelectorAll<HTMLElement>('[data-outline-heading]').forEach((heading) => observer.observe(heading));
     return () => observer.disconnect();
-  }, [onActiveHeadingChange, rendered.tree]);
+  }, [onActiveHeadingChange, rendered.tree, document]);
+
+  if (document?.notePath === notePath) return <section aria-label="Document preview" className="flex h-[70dvh] min-w-0 flex-col gap-3">
+    <div className="flex items-center gap-3">
+      <Button variant="outline" size="sm" onClick={() => setDocument(null)}>Back to note</Button>
+      <h2 className="truncate font-medium">{document.name}</h2>
+    </div>
+    <DocumentPreview key={document.path} path={document.path} name={document.name} />
+  </section>;
 
   return <article ref={articleRef} aria-label="Markdown preview" className="min-w-0 break-words text-[16px] text-foreground [&_a]:break-all [&_img]:h-auto [&_img]:max-h-[70vh] [&_img]:max-w-full [&_img]:rounded-md">{rendered.tree}</article>;
 }

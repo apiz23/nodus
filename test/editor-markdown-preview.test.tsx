@@ -84,6 +84,13 @@ describe('Markdown preview', () => {
     expect(html).not.toContain('/api/attachments/open?path=attachments%2Fnot-managed.pdf');
   });
 
+  it('opens managed Word attachments through the local text preview route', () => {
+    const path = 'attachments/11111111-1111-4111-8111-111111111111-guide.docx';
+    const html = render(`[Word document](../${path})`);
+    expect(html).toContain(`/api/attachments/docx-preview?path=${encodeURIComponent(path)}`);
+    expect(html).not.toContain('attachments%2Fnot-managed.docx');
+  });
+
   it('treats malformed Markdown and raw HTML as text without executable markup', () => {
     const html = render('<script>alert(1)</script>\n\n[broken](javascript:)\n\n```unterminated\ncode');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
