@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import {
   Activity,
   Sparkles,
@@ -42,8 +42,48 @@ import { PageTree } from './PageTree';
 import { detectPlatform, shortcutById, shortcutLabel } from './shortcuts';
 import type { View } from './types';
 import type { SidebarSectionId } from './workspacePreferences';
+import { api } from './api';
+import type { UiAttachment } from '../../src/ui-server/dto';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+
+function WorkspaceDocuments({ onOpenDocument }: { onOpenDocument: (document: UiAttachment) => void }) {
+  const [open, setOpen] = useState(false);
+  const [documents, setDocuments] = useState<UiAttachment[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void api.attachments().then(({ attachments }) => {
+      if (active) setDocuments(attachments.filter(({ name }) => /\.(pdf|docx)$/i.test(name)));
+    }).catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [open]);
+
+  return <Collapsible open={open} onOpenChange={(next) => {
+    if (next) { setDocuments(null); setFailed(false); }
+    setOpen(next);
+  }}>
+    <CollapsibleTrigger asChild>
+      <Button type="button" variant="ghost" size="sm" className="w-full justify-start">
+        <ChevronDown data-icon="inline-start" className={cn(!open && '-rotate-90')} />
+        Documents
+      </Button>
+    </CollapsibleTrigger>
+    <CollapsibleContent className="pl-3">
+      {failed ? <p role="alert" className="px-2 text-sm text-muted-foreground">Could not load documents. Reopen Documents to retry.</p> :
+        documents === null ? <p role="status" className="px-2 text-sm text-muted-foreground">Loading documents…</p> :
+        documents.length === 0 ? <p className="px-2 text-sm text-muted-foreground">No PDF or Word files in this vault.</p> :
+        documents.map((document) => <Button key={document.id} type="button" variant="ghost" size="sm" className="w-full justify-start" onClick={() => onOpenDocument(document)}>
+            <FileText data-icon="inline-start" />
+            <span className="truncate">{document.name}</span>
+        </Button>)}
+    </CollapsibleContent>
+  </Collapsible>;
+}
 
 interface SidebarProps {
+  onOpenDocument?: (document: UiAttachment) => void;
   view: View;
   onView: (view: View) => void;
   query: string;
@@ -148,6 +188,7 @@ export function Sidebar({
   onOpenAnotherVault,
   onOpenGuide,
   switchingVault,
+  onOpenDocument,
   navigationLocked,
   filters = [],
   filterLogic = 'and',
@@ -455,6 +496,8 @@ export function Sidebar({
             onRetry={onRetry}
           />
         )}
+
+        {!compact && status && onOpenDocument && <WorkspaceDocuments key={status.vault.path} onOpenDocument={onOpenDocument} />}
 
         <div className={cn('mt-auto w-full border-t border-sidebar-border px-1 pt-2.5', compact && 'md:flex md:flex-col md:items-center md:px-0')}>
           <Button

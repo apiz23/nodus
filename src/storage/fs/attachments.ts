@@ -25,6 +25,7 @@ const TYPES: Record<string, { contentType: string; matches(bytes: Uint8Array): b
   '.webp': { contentType: 'image/webp', matches: (bytes) => ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WEBP' },
   '.avif': { contentType: 'image/avif', matches: (bytes) => ascii(bytes, 4, 4) === 'ftyp' && /^(?:avif|avis)$/.test(ascii(bytes, 8, 4)) },
   '.pdf': { contentType: 'application/pdf', matches: (bytes) => ascii(bytes, 0, 5) === '%PDF-' },
+  '.docx': { contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', matches: (bytes) => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07) && (bytes[3] === 0x04 || bytes[3] === 0x06 || bytes[3] === 0x08) },
   '.txt': { contentType: 'text/plain; charset=utf-8', matches: (bytes) => {
     if (bytes.includes(0)) return false;
     try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); return true; } catch { return false; }
@@ -32,7 +33,7 @@ const TYPES: Record<string, { contentType: string; matches(bytes: Uint8Array): b
 };
 
 export function attachmentPathId(path: string): string | undefined {
-  const match = /^attachments\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-[a-z0-9_-]{1,64}\.(?:png|jpe?g|gif|webp|avif|pdf|txt)$/.exec(path);
+  const match = /^attachments\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-[a-z0-9_-]{1,64}\.(?:png|jpe?g|gif|webp|avif|pdf|docx|txt)$/.exec(path);
   return match?.[1];
 }
 
@@ -41,7 +42,7 @@ export function createAttachmentPath(originalName: string): { id: string; path: 
     throw new StorageError('INVALID_INPUT', 'Choose a file with a valid filename.');
   }
   const extension = extname(originalName).toLowerCase();
-  if (!(extension in TYPES)) throw new StorageError('INVALID_INPUT', 'Supported files are PNG, JPEG, GIF, WebP, AVIF, PDF, and UTF-8 text.');
+  if (!(extension in TYPES)) throw new StorageError('INVALID_INPUT', 'Supported files are PNG, JPEG, GIF, WebP, AVIF, PDF, Word (.docx), and UTF-8 text.');
   const stem = originalName.slice(0, originalName.length - extname(originalName).length)
     .normalize('NFKD').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'file';
   const id = randomUUID();

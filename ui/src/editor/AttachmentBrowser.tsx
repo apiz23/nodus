@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, FileText, Image, Link2, Trash2, Upload } from 'lucide-react';
+import { Check, Copy, Eye, FileText, Image, Link2, Trash2, Upload } from 'lucide-react';
 import type { UiAttachment } from '../../../src/ui-server/dto.js';
 import { api, ApiError } from '../api.js';
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -24,6 +24,10 @@ export function AttachmentBrowser({ open, onOpenChange, notePath, noteBody, onIn
   const [message, setMessage] = useState('');
   const [deleting, setDeleting] = useState<UiAttachment | null>(null);
   const [deleteError, setDeleteError] = useState('');
+  const [previewing, setPreviewing] = useState<UiAttachment | null>(null);
+  const [previewText, setPreviewText] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -70,15 +74,27 @@ export function AttachmentBrowser({ open, onOpenChange, notePath, noteBody, onIn
     catch { setError('Clipboard access is unavailable.'); }
   }
 
+  async function preview(attachment: UiAttachment): Promise<void> {
+    onOpenChange(false);
+    setPreviewing(attachment);
+    setPreviewText('');
+    setPreviewError('');
+    if (attachment.contentType !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return;
+    setPreviewLoading(true);
+    try { setPreviewText(await api.docxPreview(attachment.path)); }
+    catch (reason) { setPreviewError(reason instanceof Error ? reason.message : 'This Word document could not be previewed.'); }
+    finally { setPreviewLoading(false); }
+  }
+
   return <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85dvh] w-[min(42rem,calc(100vw-2rem))] max-w-none flex-col gap-3">
         <DialogHeader>
           <DialogTitle>Attachments</DialogTitle>
-          <DialogDescription>Files are stored in this vault and referenced by portable relative Markdown paths. Images, PDF, and UTF-8 text up to 10 MiB are supported.</DialogDescription>
+          <DialogDescription>Files are stored in this vault and referenced by portable relative Markdown paths. Images, PDF, Word documents, and UTF-8 text up to 10 MiB are supported.</DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap gap-2">
-          <input ref={fileRef} className="sr-only" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/avif,application/pdf,text/plain" onChange={(event) => { if (event.target.files) void upload(event.target.files); event.currentTarget.value = ''; }} aria-label="Choose attachments" />
+          <input ref={fileRef} className="sr-only" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/avif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,text/plain" onChange={(event) => { if (event.target.files) void upload(event.target.files); event.currentTarget.value = ''; }} aria-label="Choose attachments" />
           <Button type="button" size="sm" disabled={busy} onClick={() => fileRef.current?.click()}><Upload data-icon="inline-start" />Upload files</Button>
           <Button type="button" size="sm" variant="outline" disabled={attachments.length === 0} onClick={() => onInsert(attachments.map((attachment) => attachmentMarkdown(notePath, attachment)))}><Link2 data-icon="inline-start" />Insert all</Button>
         </div>
@@ -97,7 +113,8 @@ export function AttachmentBrowser({ open, onOpenChange, notePath, noteBody, onIn
                   {(attachment.references.length > 0 || draftReference) && <Badge variant="secondary" className="mt-1">Used in {attachment.references.length} saved note{attachment.references.length === 1 ? '' : 's'}{draftReference ? ' and this draft' : ''}</Badge>}
                 </div>
                 <div className="flex gap-1">
-                  <Button type="button" size="icon-sm" variant="ghost" aria-label={`Open ${attachment.name}`} onClick={() => window.open(api.attachmentUrl(attachment.path), '_blank', 'noopener,noreferrer')}><Image aria-hidden="true" /></Button>
+                  {attachment.contentType.startsWith('image/') && <Button type="button" size="icon-sm" variant="ghost" aria-label={`Open ${attachment.name}`} onClick={() => window.open(api.attachmentUrl(attachment.path), '_blank', 'noopener,noreferrer')}><Image aria-hidden="true" /></Button>}
+                  {(attachment.contentType === 'application/pdf' || attachment.contentType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') && <Button type="button" size="icon-sm" variant="ghost" aria-label={`Preview ${attachment.name}`} onClick={() => void preview(attachment)}><Eye aria-hidden="true" /></Button>}
                   <Button type="button" size="icon-sm" variant="ghost" aria-label={`Copy path for ${attachment.name}`} onClick={() => void copyPath(attachment)}><Copy aria-hidden="true" /></Button>
                   <Button type="button" size="icon-sm" variant="ghost" aria-label={`Insert ${attachment.name}`} onClick={() => onInsert([attachmentMarkdown(notePath, attachment)])}><Check aria-hidden="true" /></Button>
                   <Button type="button" size="icon-sm" variant="ghost" aria-label={`Delete ${attachment.name}`} onClick={() => { setDeleting(attachment); setDeleteError(''); }}><Trash2 aria-hidden="true" /></Button>
@@ -107,6 +124,16 @@ export function AttachmentBrowser({ open, onOpenChange, notePath, noteBody, onIn
             </ul>}
         </ScrollArea>
         <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={previewing !== null} onOpenChange={(value) => { if (!value) setPreviewing(null); }}>
+      <DialogContent className="flex h-[min(80dvh,60rem)] w-[min(64rem,calc(100vw-2rem))] max-w-none flex-col gap-3">
+        <DialogHeader>
+          <DialogTitle>{previewing?.name ?? 'Document preview'}</DialogTitle>
+          <DialogDescription>{previewing?.contentType === 'application/pdf' ? 'PDF preview' : 'Text extracted from this Word document.'}</DialogDescription>
+        </DialogHeader>
+        {previewing?.contentType === 'application/pdf' ? <iframe className="min-h-0 flex-1 rounded-md border bg-background" src={api.attachmentUrl(previewing.path)} title={`Preview of ${previewing.name}`} /> : previewLoading ? <p role="status" className="p-6 text-center text-sm text-muted-foreground">Preparing document preview…</p> : previewError ? <p role="alert" className="p-4 text-sm text-destructive">{previewError}</p> : <ScrollArea className="min-h-0 flex-1 rounded-md border p-4"><pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6">{previewText || 'This document contains no readable text.'}</pre></ScrollArea>}
+        <DialogFooter><Button type="button" variant="outline" onClick={() => setPreviewing(null)}>Close preview</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     <AlertDialog open={deleting !== null} onOpenChange={(value) => { if (!value) setDeleting(null); }}>

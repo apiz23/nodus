@@ -13,6 +13,7 @@ import { DATABASE_VIEW_FORMAT, DATABASE_VIEW_VERSION, diagnoseDatabaseView, pars
 import { inferFormulaPropertyTypes } from '../database/formula-engine.js';
 import { matchesAutomation, parseAutomation, sortAutomations, validateAutomationReferences, type AutomationExecution, type DatabaseAutomation, type DatabaseAutomationEvent } from '../database/automations.js';
 import { createNote, type Note } from '../domain/note.js';
+import mammoth from 'mammoth';
 import { isUuidV4 } from '../domain/ids.js';
 import { normalizeTagList, type TagOperation } from '../domain/tags.js';
 import { projectPropertyValues, type NotePropertyDefinition, type PropertyCatalog, type PropertyCatalogMutation, type PropertyOption } from '../properties/catalog.js';
@@ -574,6 +575,29 @@ export function createLocalApiMiddleware(
       });
       res.end(bytes);
       return;
+    }
+
+    if (method === 'GET' && path === '/api/attachments/docx-preview') {
+      const attachmentPath = url.searchParams.get('path');
+      if (attachmentPath === null || attachmentPath.length > 260) throw new ApiError(400, 'INVALID_INPUT', 'Invalid attachment path.');
+      const { attachment, bytes } = await (await getVault()).readAttachment(attachmentPath);
+      if (attachment.contentType !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        throw new ApiError(415, 'INVALID_INPUT', 'Only Word (.docx) attachments can be previewed as documents.');
+      }
+      try {
+        const result = await mammoth.extractRawText({ buffer: bytes });
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Length': Buffer.byteLength(result.value),
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+        });
+        res.end(result.value);
+        return;
+      } catch {
+        throw new ApiError(422, 'INVALID_CONTENT', 'This Word document could not be previewed.');
+      }
     }
 
     if (method === 'POST' && path === '/api/attachments') {

@@ -7,7 +7,7 @@ nodus:
   version: 1
   id: 131e300d-fd02-43f9-8203-bd0204935733
   createdAt: 2026-09-18T09:00:00Z
-  updatedAt: 2026-10-28T09:00:00Z
+  updatedAt: 2026-11-18T07:04:47Z
 ---
 # Start Here
 
@@ -40,6 +40,13 @@ The first column in every database is the note title; the other columns are type
 ## Edge cases included
 
 The demo deliberately includes a long task title, Unicode names, empty optional text, missing optional dates, false checkboxes, a zero estimate and rating, a note without frontmatter, and a nine-option Channel select. No malformed fixtures are installed in this vault.
+
+## Try document previews
+
+- [Project brief (PDF)](../../attachments/8cf9a347-508a-4b14-8545-7648840cd77c-demo-project-brief.pdf)
+- [Meeting notes (Word)](../../attachments/78dd9a51-2154-4d42-a023-2743e187c46b-demo-meeting-notes.docx)
+
+Switch this note’s editor from **Edit** to **Preview**, then click either link. You can also open **Attachments** in the editor toolbar and select **Preview** next to the file.
 
 ## Fictional data notice
 
