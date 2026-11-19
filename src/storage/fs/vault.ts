@@ -1,3 +1,4 @@
+import { CopyOperationJournal, type CopyOperationPlan } from './copy-operation-journal.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir, rm } from 'node:fs/promises';
@@ -52,7 +53,7 @@ import { isUuidV4 } from '../../domain/ids.js';
 import type { Note } from '../../domain/note.js';
 import { buildNoteCopyModel } from '../../domain/note-copy.js';
 import { addTag, normalizeTagList, removeTag, TagValidationError, type TagOperation } from '../../domain/tags.js';
-import { validateNote } from '../../domain/note.js';
+import { NOTE_FORMAT_VERSION, validateNote } from '../../domain/note.js';
 import { validateNotePath } from '../../domain/paths.js';
 import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
@@ -276,6 +277,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       }
       if (this.#copyPreviews.size >= 16) throw new StorageError('CONFLICT', 'Too many live copy previews.');
 
+      await this.assertTransferAdmissionUnlocked();
       const copyId = randomUUID();
       const instant = new Date(wallNow).toISOString().replace(/\.\d{3}Z$/, 'Z');
       const evidence = await this.inspectCopyPreviewUnlocked(sourceId, destinationPath, copyId, instant, budget);
@@ -292,6 +294,76 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
         outgoing: structuredClone(evidence.outgoing),
       };
     });
+  }
+
+  async confirmNoteCopy(token: string) {
+    return withVaultRootLock(this.root, async () => {
+      this.assertCopyPreviewLive();
+      const binding = this.#copyPreviews.get(token);
+      if (!binding) throw new StorageError('CONFLICT', 'Copy preview is missing or consumed.');
+      this.#copyPreviews.delete(token);
+      await this.assertTransferAdmissionUnlocked();
+      if (performance.now() >= binding.expires) throw new StorageError('CONFLICT', 'Copy preview expired.');
+      const evidence = await this.inspectCopyPreviewUnlocked(binding.sourceId, binding.destination, binding.copyId, binding.instant);
+      if (evidence.digest !== binding.digest || performance.now() >= binding.expires) {
+        throw new StorageError('CONFLICT', 'Copy preview is stale.');
+      }
+      const prepared = await new CopyOperationJournal(this.root).prepare({
+        previewTokenSha256: sha256Hex(token), previewBindingSha256: binding.digest,
+        snapshotSha256: evidence.digest, confirmedAt: new Date().toISOString(),
+        source: { ...evidence.source, createdAt: evidence.model.provenance.sourceCreatedAt, updatedAt: evidence.model.provenance.sourceUpdatedAt },
+        destination: { path: binding.destination, collisionKey: foldPath(binding.destination) },
+        copy: {
+          id: binding.copyId, instant: binding.instant, serializedSha256: evidence.copyContentSha256,
+          serializedBytes: evidence.copyContentBytes, noteFormatVersion: NOTE_FORMAT_VERSION,
+        },
+        resolverProjectionSha256: evidence.resolverProjectionSha256,
+      });
+      return { ...prepared, validated: true as const, published: false as const };
+    });
+  }
+
+  async listCopyOperations() {
+    return withVaultRootLock(this.root, () => new CopyOperationJournal(this.root).list());
+  }
+
+  private async verifyPreparedCopyUnlocked(plan: CopyOperationPlan): Promise<boolean> {
+    const evidence = await this.inspectCopyPreviewUnlocked(plan.source.id, plan.destination.path, plan.copy.id, plan.copy.instant);
+    return evidence.digest === plan.snapshotSha256 && evidence.source.rawSha256 === plan.source.rawSha256
+      && evidence.copyContentSha256 === plan.copy.serializedSha256
+      && evidence.resolverProjectionSha256 === plan.resolverProjectionSha256;
+  }
+
+  async recoverCopyOperations(): Promise<import('../contracts.js').CopyOperationRecoveryReport> {
+    return withVaultRootLock(this.root, async () => {
+      await this.assertImportTransactionsSnapshotSafe();
+      const report = await new CopyOperationJournal(this.root).recover((plan) => this.verifyPreparedCopyUnlocked(plan));
+      return { ...report, operations: await new CopyOperationJournal(this.root).list() };
+    });
+  }
+
+  async cancelPreparedCopyOperation(operationId: string) {
+    return withVaultRootLock(this.root, async () => {
+      await this.assertImportTransactionsSnapshotSafe();
+      return new CopyOperationJournal(this.root).cancel(operationId, async (plan) => {
+        // The Prepared chain has no publication step. Revalidate the reviewed
+        // inventory to rule out a destination that appeared outside that chain.
+        try { return await this.verifyPreparedCopyUnlocked(plan); } catch { return false; }
+      });
+    });
+  }
+
+  async assertNoUnresolvedCopyOperations(): Promise<void> {
+    return withVaultRootLock(this.root, () => new CopyOperationJournal(this.root).assertNoUnresolved());
+  }
+
+  async assertNoUnresolvedOperations(): Promise<void> {
+    return withVaultRootLock(this.root, () => this.assertTransferAdmissionUnlocked());
+  }
+
+  private async assertTransferAdmissionUnlocked(allowedImportOperationId?: string): Promise<void> {
+    await this.assertImportTransactionsSnapshotSafe(allowedImportOperationId);
+    await new CopyOperationJournal(this.root).assertNoUnresolved();
   }
 
   private createCopyPreviewBudget(deadline: number): CopyPreviewBudget {
@@ -314,7 +386,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     destination: string,
     copyId: string,
     instant: string,
-    budget: CopyPreviewBudget,
+    budget = this.createCopyPreviewBudget(performance.now() + 10_000),
   ) {
     const checkBudget = () => {
       this.assertCopyPreviewLive();
@@ -1718,10 +1790,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {
-    return withVaultRootLock(this.root, async () => ({
-      entries: await this.snapshotUnlocked(),
-      propertyCatalog: await this.readPropertyCatalogFileUnlocked(),
-    }));
+    return withVaultRootLock(this.root, async () => {
+      await new CopyOperationJournal(this.root).assertNoUnresolved();
+      return { entries: await this.snapshotUnlocked(), propertyCatalog: await this.readPropertyCatalogFileUnlocked() };
+    });
   }
 
   /** Captures every Nodus-managed portable resource while holding one root lock. */
@@ -1731,6 +1803,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   /** Caller must hold the root lock. */
   private async snapshotForPortableExportUnlocked(allowedImportOperationId?: string): Promise<PortableExportSnapshot> {
+    await new CopyOperationJournal(this.root).assertNoUnresolved();
     const entries = await this.snapshotUnlocked(allowedImportOperationId);
     const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
     const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
@@ -2035,7 +2108,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
     return withVaultRootLock(this.root, async () => {
       try {
-        await this.assertImportTransactionsSnapshotSafe();
+        await this.assertTransferAdmissionUnlocked();
         if (options.atomicNewFiles) await this.recoverTemplateApplyTransactionsUnlocked();
         return await this.applyImportLocked(plan, options);
       } finally {
@@ -2079,9 +2152,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       resources.push(resource);
       payloads.push({ resource, bytes });
     }
-    const transactionRoot = await this.ensureImportTransactionRoot();
-    const transactionDirectory = join(transactionRoot, operationId);
-    await mkdir(transactionDirectory, { mode: 0o700 });
+    const transactionDirectory = join(this.root, IMPORT_TRANSACTION_DIR, operationId);
     const stagedDirectory = join(transactionDirectory, 'staged');
     const backupDirectory = join(transactionDirectory, 'backup');
     let journal: ImportTransactionJournal = {
@@ -2089,11 +2160,16 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       sourceFingerprint: binding.sourceFingerprint, destinationFingerprint: binding.destinationFingerprint,
       startedAt, updatedAt: new Date().toISOString(), files: resources, decisions: decisions.map((decision) => ({ ...decision })), folders: [],
     };
-    try { await this.writeImportJournal(transactionDirectory, journal); }
-    catch (error) {
-      await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
-      throw error;
-    }
+    await withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked();
+      await this.ensureImportTransactionRoot();
+      await mkdir(transactionDirectory, { mode: 0o700 });
+      try { await this.writeImportJournal(transactionDirectory, journal); }
+      catch (error) {
+        await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
+        throw error;
+      }
+    });
     try {
       await mkdir(stagedDirectory, { mode: 0o700 });
       await mkdir(backupDirectory, { mode: 0o700 });
@@ -2231,6 +2307,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async recoverImportOperation(operationId: string): Promise<import('../contracts.js').ImportOperationStatus> {
     if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
     return withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked(operationId);
       const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
       let rootInfo;
       try { rootInfo = await lstat(transactionRoot); } catch (error) { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; }
@@ -2257,6 +2334,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async retryImportOperation(operationId: string): Promise<import('../contracts.js').ImportExecutionReport> {
     if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
     return withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked(operationId);
       const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
       const rootInfo = await lstat(transactionRoot).catch((error) => { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; });
       if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });

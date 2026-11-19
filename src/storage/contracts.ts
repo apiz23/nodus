@@ -5,12 +5,71 @@ import type { Note } from '../domain/note.js';
 import type { TagOperation } from '../domain/tags.js';
 import type { PropertyCatalog, PropertyCatalogMutation, NotePropertyValue } from '../properties/catalog.js';
 import type { NodusTemplate } from '../database/templates.js';
+import type { NoteCopyModel } from '../domain/note-copy.js';
+import type { LinkResolution } from '../links/wikilink.js';
 
 export interface NoteSummary {
   id: string;
   path: string;
   title: string;
   updatedAt: string;
+}
+
+/** Durable note-copy lifecycle supported by storage implementations. */
+export type CopyOperationState = 'Prepared' | 'Cancelled' | 'NeedsReview';
+export type CopyOperationStatusState = CopyOperationState | 'Corrupt';
+
+export interface CopyOperationStatus {
+  readonly operationId: string;
+  readonly state: CopyOperationStatusState;
+  readonly sourcePath?: string;
+  readonly destinationPath?: string;
+  readonly issue?: string;
+}
+
+export interface CopyOperationRecoveryReport {
+  readonly scanned: number;
+  readonly prepared: number;
+  readonly terminal: number;
+  readonly needsReview: number;
+  readonly unresolved: boolean;
+  readonly operations: readonly CopyOperationStatus[];
+  readonly issues: readonly string[];
+  readonly issuesTruncated: boolean;
+}
+
+export interface CopyPreviewOutgoingLink {
+  readonly target: string;
+  readonly resolution: LinkResolution | { readonly status: 'external' };
+}
+
+export interface CopyOperationPreview {
+  readonly token: string;
+  readonly expiresAt: string;
+  readonly intent: NoteCopyModel;
+  readonly outgoing: readonly CopyPreviewOutgoingLink[];
+}
+
+export interface PreparedCopyOperation {
+  readonly validated: true;
+  readonly published: false;
+  readonly operationId: string;
+  readonly state: 'Prepared';
+}
+
+export interface CopyOperationCancellation {
+  readonly operationId: string;
+  readonly state: 'Cancelled';
+  readonly alreadyCancelled: boolean;
+}
+
+/** Storage capability for the no-publication, prepared-copy lifecycle. */
+export interface CopyOperationStore {
+  previewNoteCopy(sourceId: string, destinationPath: string): Promise<CopyOperationPreview>;
+  confirmNoteCopy(token: string): Promise<PreparedCopyOperation>;
+  listCopyOperations(): Promise<readonly CopyOperationStatus[]>;
+  recoverCopyOperations(): Promise<CopyOperationRecoveryReport>;
+  cancelPreparedCopyOperation(operationId: string): Promise<CopyOperationCancellation>;
 }
 
 export interface DatabaseSummary {
@@ -456,16 +515,18 @@ export interface BackupOptions {
  */
 export interface VaultStorage extends NoteStore, DatabaseStore, AutomationStore, DatabaseViewStore, DatabaseViewOrderStore, FolderStore, AttachmentStore, PropertyStore, TagStore, TemplateStore {
   readonly root: string;
+  /** Mandatory admission gate for snapshot/transfer operations. */
+  assertNoUnresolvedOperations(): Promise<void>;
   /** All valid managed entries. Markdown/schema documents carry text; attachments carry raw bytes. */
   snapshot(): Promise<VaultEntry[]>;
-  /** Snapshot entries and the optional catalog read under one vault lock. */
+  /** Snapshot entries and the optional catalog read after transfer admission under one vault lock. */
   snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }>;
-  /** All portable resources captured under one root lock; implementations without this guarantee must not be used for portable export. */
+  /** All portable resources captured after transfer admission under one root lock; implementations without this guarantee must not be used for portable export. */
   snapshotForPortableExport?(): Promise<PortableExportSnapshot>;
   /** Reads and validates the optional catalog; null means no catalog file exists. */
   readPropertyCatalogFile(): Promise<PropertyCatalogFile | null>;
   /** Non-throwing diagnostic scan. I/O errors are still thrown. */
   checkHealth(): Promise<StorageHealth>;
-  /** Applies a plan produced by `planImport`, validating every conflict first. */
+  /** Applies a plan produced by `planImport`, checking transfer admission and conflicts in the same critical section as mutation. */
   applyImport(plan: ImportPlan, options?: ImportOptions): Promise<ImportReport>;
 }

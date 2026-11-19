@@ -633,14 +633,13 @@ export async function previewRestore(
   vault: VaultStorage,
 ): Promise<RestorePreview> {
   const validation = await validateBackup(backupDir);
-  const existing = await vault.snapshot();
-  const targetCatalog = await vault.readPropertyCatalogWithHash();
+  const { entries: existing, propertyCatalog: targetCatalog } = await vault.snapshotWithPropertyCatalog();
   const existingOrders = await vault.listDatabaseViewOrderFiles();
   const existingAutomationFiles = await vault.listDatabaseAutomationFiles();
   const existingTemplateFiles = await vault.listTemplateFiles();
   const catalogConflict = validation.propertyCatalog === undefined
     ? false
-    : targetCatalog.hash === null
+    : targetCatalog === null
       ? await propertiesDirectoryHasEntries(vault.root)
       : targetCatalog.hash !== validation.propertyCatalog.hash;
 
