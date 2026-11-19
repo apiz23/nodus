@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,7 +19,7 @@ import {
   type CopyOperationState,
   type CopyJournalBudget,
 } from '../src/storage/fs/copy-operation-journal.js';
-import { withVaultRootLock } from '../src/storage/fs/root-lock.js';
+import { VAULT_PROCESS_LOCK_FILE, withVaultRootLock } from '../src/storage/fs/root-lock.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 
 const roots: string[] = [];
@@ -331,6 +333,32 @@ describe('copy operation journal state machine', () => {
     expect((await readEvents(root, operationId)).map((event) => event.state)).toEqual(['Prepared']);
     await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
   });
+
+  it('recovers a Prepared operation after the cancellation process exits before rename', async () => {
+    const { root } = await tempRoot();
+    const { operationId } = await prepare(root);
+    const child = `
+      import { createServer } from 'vite';
+      const [root, operationId] = process.argv.slice(1);
+      const vite = await createServer({ configFile: false, server: { middlewareMode: true, ws: false } });
+      const { CopyOperationJournal } = await vite.ssrLoadModule('/src/storage/fs/copy-operation-journal.ts');
+      const { withVaultRootLock } = await vite.ssrLoadModule('/src/storage/fs/root-lock.ts');
+      await withVaultRootLock(root, () => new CopyOperationJournal(root, {
+        faultInjector(point) {
+          if (point === 'before-cancellation-rename') process.exit(77);
+        },
+      }).cancel(operationId, async () => true));
+      process.exit(78);
+    `;
+    await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, root, operationId], {
+      timeout: 15_000,
+    })).rejects.toMatchObject({ code: 77 });
+
+    // The child is confirmed stopped and this temporary vault has no other writers.
+    await rm(join(root, VAULT_PROCESS_LOCK_FILE));
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Prepared' }]);
+    await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
+  }, 20_000);
 
   it('rejects invalid identity/path evidence before creating journal state', async () => {
     const { root } = await tempRoot();

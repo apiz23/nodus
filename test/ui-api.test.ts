@@ -2550,6 +2550,37 @@ describe('backup and restore API routes', () => {
     },
   );
 
+  it('blocks restore for a prepared copy and allows it after cancellation', async () => {
+    await withTempDir(async (dir) => {
+      const backupSource = await seedBackupVault(join(dir, 'backup-source'));
+      const backupDir = join(dir, 'backup');
+      await createBackup(backupSource, backupDir);
+      backupSource.dispose();
+
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createNote(createNote({ id: N2, title: 'Marker', path: 'notes/marker.md', body: 'Keep', now: NOW }));
+      const copy = await vault.previewNoteCopy(N2, 'notes/copy.md');
+      const prepared = await vault.confirmNoteCopy(copy.token);
+      const started = await startApi(vaultPath);
+      try {
+        const before = await vaultTreeInventory(vaultPath);
+        const restore = () => json<ErrorBody>(started.base, '/api/restore', { method: 'POST', body: { dir: backupDir } });
+        const blocked = await restore();
+        expect(blocked.status).toBe(500);
+        expect(blocked.body.error.code).toBe('PARTIAL_WRITE');
+        expect(blocked.body.error.message).toMatch(/unresolved or corrupt note-copy operation/i);
+        expect(await vaultTreeInventory(vaultPath)).toEqual(before);
+        await vault.cancelPreparedCopyOperation(prepared.operationId);
+        expect((await restore()).status).toBe(200);
+        expect(await pathExists(join(vaultPath, 'notes/copy.md'))).toBe(false);
+      } finally {
+        await stopApi(started);
+        vault.dispose();
+      }
+    });
+  });
+
   it('rejects invalid restore requests without writing anywhere', async () => {
     await withTempDir(async (dir) => {
       const source = await seedBackupVault(join(dir, 'source'));
