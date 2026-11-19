@@ -20,6 +20,7 @@ import {
   type CopyJournalBudget,
 } from '../src/storage/fs/copy-operation-journal.js';
 import { VAULT_PROCESS_LOCK_FILE, withVaultRootLock } from '../src/storage/fs/root-lock.js';
+import { IMPORT_TRANSACTION_DIR } from '../src/storage/fs/layout.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 
 const roots: string[] = [];
@@ -81,6 +82,52 @@ async function prepare(root: string, input = planInput()) {
 
 function operationDirectory(root: string, operationId: string) {
   return join(root, COPY_OPERATION_JOURNAL_DIR, 'operations', operationId);
+}
+
+async function writeRecoveryRequiredImportJournal(root: string) {
+  const operationId = randomUUID();
+  const directory = join(root, IMPORT_TRANSACTION_DIR, operationId);
+  await mkdir(join(directory, 'staged'), { recursive: true, mode: 0o700 });
+  await mkdir(join(directory, 'backup'), { recursive: true, mode: 0o700 });
+  const journal = {
+    format: 'nodus-import-transaction',
+    version: 1,
+    operationId,
+    state: 'recovery-required',
+    sourceFingerprint: 'a'.repeat(64),
+    destinationFingerprint: 'b'.repeat(64),
+    startedAt: now,
+    updatedAt: now,
+    files: [],
+    decisions: [],
+    folders: [],
+    baselineResources: [],
+    baselineFolders: [],
+    baselineExcluded: [],
+    failure: { code: 'RECOVERY_REQUIRED', message: 'Test recovery-required state.' },
+  };
+  const bytes = Buffer.from(`${JSON.stringify({ ...journal, integritySha256: digest(JSON.stringify(journal))})}\n`);
+  const path = join(directory, 'journal.json');
+  await writeFile(path, bytes, { mode: 0o600 });
+  return { operationId, directory, path, bytes };
+}
+
+async function vaultInventory(root: string, relative = ''): Promise<string[]> {
+  const directory = relative === '' ? root : join(root, relative);
+  const entries = await readdir(directory, { withFileTypes: true });
+  const inventory: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const path = relative === '' ? entry.name : `${relative}/${entry.name}`;
+    if (entry.isDirectory()) {
+      inventory.push(`directory:${path}`);
+      inventory.push(...await vaultInventory(root, path));
+    } else if (entry.isFile()) {
+      inventory.push(`file:${path}:${digest(await readFile(join(root, path)))}`);
+    } else {
+      inventory.push(`${entry.isSymbolicLink() ? 'symlink' : 'other'}:${path}`);
+    }
+  }
+  return inventory;
 }
 
 async function readEvents(root: string, operationId: string): Promise<Record<string, any>[]> {
@@ -676,12 +723,104 @@ describe('Phase 19 unresolved-operation gates', () => {
     await mkdir(importDir, { recursive: true });
     const journalPath = join(importDir, 'journal.json');
     await writeFile(journalPath, 'truncated evidence');
+    const before = await vaultInventory(root);
     await expect(vault.cancelPreparedCopyOperation(operation!.operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
     await expect(vault.previewNoteCopy(source.id, 'other.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
     expect(await vault.listCopyOperations()).toEqual([operation]);
+    expect(await vaultInventory(root)).toEqual(before);
     expect(await readFile(journalPath, 'utf8')).toBe('truncated evidence');
     expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
     await expect(readFile(join(root, 'copy.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('blocks copy preview, preparation, and cancellation for a recovery-required import', async () => {
+    const { parent, root } = await tempRoot('nodus-copy-import-recovery-');
+    const vault = await FileSystemVault.open(root);
+    const source = createNote({ id: randomUUID(), title: 'Source', path: 'source.md', body: 'Body', now });
+    await vault.createNote(source);
+    const preview = await vault.previewNoteCopy(source.id, 'copy.md');
+    const importJournal = await writeRecoveryRequiredImportJournal(root);
+    const before = await vaultInventory(root);
+
+    await expect(vault.previewNoteCopy(source.id, 'other.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.confirmNoteCopy(preview.token)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await vaultInventory(root)).toEqual(before);
+    await expect(vault.listImportOperations()).resolves.toMatchObject([{ operationId: importJournal.operationId, state: 'recovery-required' }]);
+    await expect(vault.listCopyOperations()).resolves.toEqual([]);
+
+    const prepared = await vaultWithPreparedCopy();
+    const secondImport = await writeRecoveryRequiredImportJournal(prepared.root);
+    const preparedBefore = await vaultInventory(prepared.root);
+    const [operation] = await prepared.vault.listCopyOperations();
+    await expect(prepared.vault.cancelPreparedCopyOperation(operation!.operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await vaultInventory(prepared.root)).toEqual(preparedBefore);
+    await expect(prepared.vault.listImportOperations()).resolves.toMatchObject([{ operationId: secondImport.operationId, state: 'recovery-required' }]);
+    await expect(prepared.vault.listCopyOperations()).resolves.toMatchObject([{ operationId: operation!.operationId, state: 'Prepared' }]);
+  });
+
+  it.each(['corrupt', 'recovery-required'] as const)('blocks import and restore for a %s copy journal without changing the vault', async (state) => {
+    const { parent, root } = await tempRoot('nodus-copy-import-block-');
+    const vault = await FileSystemVault.open(root);
+    const source = createNote({ id: randomUUID(), title: 'Source', path: 'source.md', body: 'Body', now });
+    await vault.createNote(source);
+    const sourceBytes = await readFile(join(root, source.path));
+    const importSource = await FileSystemVault.open(join(parent, 'import-source'));
+    const incoming = createNote({ id: randomUUID(), title: 'Incoming', path: 'incoming.md', body: 'Incoming', now });
+    await importSource.createNote(incoming);
+    const importDir = join(parent, 'portable-import');
+    await exportVault(importSource, importDir);
+    const importPreview = await createImportPreviewSnapshot(importDir, vault);
+    const importPlan = await planImport(importDir);
+    const decisions: ImportConflictDecision[] = importPreview.binding.resourceBindings!.map((resource) => ({
+      kind: resource.kind, id: resource.id, path: resource.path, choice: 'add',
+    }));
+    const copyPreview = await vault.previewNoteCopy(source.id, 'copy.md');
+    await vault.confirmNoteCopy(copyPreview.token);
+    const [operation] = await vault.listCopyOperations();
+    const eventPath = join(operationDirectory(root, operation!.operationId), 'event-000000.json');
+    let expectedSourceBytes = sourceBytes;
+    if (state === 'corrupt') await writeFile(eventPath, 'corrupt copy journal evidence');
+    else {
+      expectedSourceBytes = Buffer.concat([sourceBytes, Buffer.from('\nexternal change\n')]);
+      await writeFile(join(root, source.path), expectedSourceBytes);
+      await expect(vault.recoverCopyOperations()).resolves.toMatchObject({ needsReview: 1, unresolved: true });
+    }
+
+    const backupDir = join(parent, 'valid-backup');
+    await createBackup(importSource, backupDir);
+    const before = await vaultInventory(root);
+
+    await expect(vault.applyReviewedImport(importPlan, importPreview.binding, decisions))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(restoreBackup(backupDir, root)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    expect(await vaultInventory(root)).toEqual(before);
+    expect(await readFile(join(root, source.path))).toEqual(expectedSourceBytes);
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: operation!.operationId, state: state === 'corrupt' ? 'Corrupt' : 'NeedsReview' }]);
+  });
+
+  it('fails closed when both journals are unresolved and preserves them for manual intervention', async () => {
+    const { parent, root, vault, source, sourceBytes } = await vaultWithPreparedCopy();
+    const [copyOperation] = await vault.listCopyOperations();
+    const importJournal = await writeRecoveryRequiredImportJournal(root);
+    const backupSource = await FileSystemVault.open(join(parent, 'backup-source'));
+    await backupSource.createNote(createNote({ id: randomUUID(), title: 'Restore note', path: 'restore.md', body: 'Restore', now }));
+    const backupDir = join(parent, 'valid-backup');
+    await createBackup(backupSource, backupDir);
+    const incoming = createNote({ id: randomUUID(), title: 'Incoming', path: 'incoming.md', body: 'Incoming', now });
+    const before = await vaultInventory(root);
+
+    await expect(vault.applyImport({ entries: [], notes: [incoming], databases: [], databaseViews: [] })).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(restoreBackup(backupDir, root)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.recoverCopyOperations()).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.cancelPreparedCopyOperation(copyOperation!.operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.recoverImportOperation(importJournal.operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.previewNoteCopy(source.id, 'other.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    expect(await vaultInventory(root)).toEqual(before);
+    expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
+    await expect(vault.listImportOperations()).resolves.toMatchObject([{ operationId: importJournal.operationId, state: 'recovery-required' }]);
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: copyOperation!.operationId, state: 'Prepared' }]);
   });
 
   it('blocks snapshots, backup, portable export, restore preview/application, and normal import while Prepared', async () => {
@@ -704,6 +843,20 @@ describe('Phase 19 unresolved-operation gates', () => {
     await expect(restoreBackup(validBackup, root)).rejects.toThrow('unresolved or corrupt note-copy operation');
     await expect(readFile(join(root, 'copy.md'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
+  });
+
+  it('gates the complete backup snapshot on import recovery and releases the lock after rejection', async () => {
+    const { parent, root } = await tempRoot('nodus-backup-import-gate-');
+    const vault = await FileSystemVault.open(root);
+    const importJournal = await writeRecoveryRequiredImportJournal(root);
+    const backupDir = join(parent, 'backup');
+
+    await expect(createBackup(vault, backupDir)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.listImportOperations()).resolves.toMatchObject([{ operationId: importJournal.operationId, state: 'recovery-required' }]);
+    await expect(readdir(backupDir)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await rm(importJournal.directory, { recursive: true });
+    await expect(createBackup(vault, backupDir)).resolves.toMatchObject({ notes: 0, databases: 0 });
   });
 
   it('rechecks unresolved state under the final reviewed-import root lock', async () => {
@@ -739,6 +892,41 @@ describe('Phase 19 unresolved-operation gates', () => {
     expect(await readFile(join(root, copiedSource.path))).toEqual(originalBytes);
     await expect(readFile(join(root, incoming.path))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(join(root, 'copy.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('serializes competing copy confirmation and import admission under the root lock', async () => {
+    const { root } = await tempRoot('nodus-copy-import-queue-');
+    const vault = await FileSystemVault.open(root);
+    const source = createNote({ id: randomUUID(), title: 'Copy source', path: 'copy-source.md', body: 'Keep', now });
+    const incoming = createNote({ id: randomUUID(), title: 'Incoming', path: 'incoming.md', body: 'Import', now });
+    await vault.createNote(source);
+    const sourceBytes = await readFile(join(root, source.path));
+    const preview = await vault.previewNoteCopy(source.id, 'copy.md');
+
+    let notifyLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { notifyLocked = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const holder = withVaultRootLock(vault.root, async () => {
+      notifyLocked();
+      await blocked;
+    });
+    await locked;
+
+    const copyAttempt = vault.confirmNoteCopy(preview.token);
+    const importAttempt = vault.applyImport({ entries: [], notes: [incoming], databases: [], databaseViews: [] });
+    release();
+    const [copyResult, importResult] = await Promise.allSettled([copyAttempt, importAttempt]);
+    await holder;
+
+    if (copyResult.status === 'rejected') throw copyResult.reason;
+    expect(copyResult).toMatchObject({ status: 'fulfilled', value: { state: 'Prepared', published: false } });
+    expect(importResult).toMatchObject({ status: 'rejected', reason: { code: 'PARTIAL_WRITE' } });
+    expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
+    await expect(readFile(join(root, incoming.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(root, 'copy.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ state: 'Prepared' }]);
+    await expect(vault.listImportOperations()).resolves.toEqual([]);
   });
 
   it('does not import hidden journal artifacts as active work', async () => {

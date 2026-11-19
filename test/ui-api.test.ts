@@ -9,6 +9,7 @@ import type { DatabaseDefinition } from '../src/database/schema.js';
 import { createNote, type Note } from '../src/domain/note.js';
 import { parseNote, serializeNote } from '../src/format/note-format.js';
 import { createBackup } from '../src/storage/backup/backup.js';
+import { COPY_OPERATION_JOURNAL_DIR } from '../src/storage/fs/copy-operation-journal.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware, type LocalApiOptions } from '../src/ui-server/api.js';
 import type { UiDatabase, UiNote, UiVaultPickResult, UiVaultStatus } from '../src/ui-server/dto.js';
@@ -2574,6 +2575,48 @@ describe('backup and restore API routes', () => {
         await vault.cancelPreparedCopyOperation(prepared.operationId);
         expect((await restore()).status).toBe(200);
         expect(await pathExists(join(vaultPath, 'notes/copy.md'))).toBe(false);
+      } finally {
+        await stopApi(started);
+        vault.dispose();
+      }
+    });
+  });
+
+  it.each(['corrupt', 'recovery-required'] as const)('rejects the restore endpoint without writes for a %s copy journal', async (state) => {
+    await withTempDir(async (dir) => {
+      const backupSource = await seedBackupVault(join(dir, 'backup-source'));
+      const backupDir = join(dir, 'backup');
+      await createBackup(backupSource, backupDir);
+      backupSource.dispose();
+
+      const vaultPath = join(dir, 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      const marker = createNote({ id: N2, title: 'Marker', path: 'notes/marker.md', body: 'Keep', now: NOW });
+      await vault.createNote(marker);
+      const copy = await vault.previewNoteCopy(marker.id, 'notes/copy.md');
+      const prepared = await vault.confirmNoteCopy(copy.token);
+      if (state === 'corrupt') {
+        await writeFile(join(vaultPath, COPY_OPERATION_JOURNAL_DIR, 'operations', prepared.operationId, 'event-000000.json'), '{corrupt');
+      } else {
+        await writeFile(join(vaultPath, marker.path), `${serializeNote(marker)}\nexternal change\n`, 'utf8');
+        await expect(vault.recoverCopyOperations()).resolves.toMatchObject({ needsReview: 1, unresolved: true });
+      }
+
+      const started = await startApi(vaultPath);
+      try {
+        const before = await vaultTreeInventory(vaultPath);
+        const restore = await json<ErrorBody>(started.base, '/api/restore', {
+          method: 'POST',
+          body: { dir: backupDir },
+        });
+        expect(restore.status).toBe(500);
+        expect(restore.body.error.code).toBe('PARTIAL_WRITE');
+        expect(restore.body.error.message).toMatch(/unresolved or corrupt note-copy operation/i);
+        expect(await vaultTreeInventory(vaultPath)).toEqual(before);
+        expect(await pathExists(join(vaultPath, 'notes/a.md'))).toBe(false);
+        expect(await pathExists(join(vaultPath, `databases/${DB1}.json`))).toBe(false);
+        await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: prepared.operationId, state: state === 'corrupt' ? 'Corrupt' : 'NeedsReview' }]);
+        await expect(vault.listImportOperations()).resolves.toEqual([]);
       } finally {
         await stopApi(started);
         vault.dispose();
