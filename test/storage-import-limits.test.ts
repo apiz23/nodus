@@ -1,7 +1,8 @@
 import { mkdir, truncate, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { planImport } from '../src/storage/portable/import.js';
+import * as scan from '../src/storage/fs/scan.js';
 import { walkVault } from '../src/storage/fs/scan.js';
 import {
   IMPORT_MAX_PACKAGE_BYTES,
@@ -74,8 +75,52 @@ describe('portable import resource limits', () => {
       await writeFile(join(source, 'one.bin'), 'ignored');
       await writeFile(join(source, 'two.bin'), 'ignored');
       expect(IMPORT_MAX_FILESYSTEM_ENTRIES).toBeGreaterThan(1);
-      const inventory = await walkVault(source, { maxEntries: 1 });
-      expect(inventory.issues[0]?.message).toMatch(/inventory exceeds/i);
+      await expect(walkVault(source, { maxEntries: 1 })).rejects.toMatchObject({
+        code: 'INVALID_CONTENT',
+        message: expect.stringMatching(/1-entry limit/),
+      });
+    });
+  });
+
+  it('does not return partial inventory when the traversal budget is exhausted', async () => {
+    await withTempDir(async (dir) => {
+      const source = join(dir, 'source');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'one.bin'), 'ignored');
+      await writeFile(join(source, 'two.bin'), 'ignored');
+      let inventory: Awaited<ReturnType<typeof walkVault>> | undefined;
+      let failure: unknown;
+      try {
+        inventory = await walkVault(source, { maxEntries: 1 });
+      } catch (error) {
+        failure = error;
+      }
+      expect(inventory).toBeUndefined();
+      expect(failure).toMatchObject({
+        code: 'INVALID_CONTENT',
+        message: expect.stringMatching(/1-entry limit/),
+      });
+    });
+  });
+
+  it('surfaces traversal-budget exhaustion from the portable import planner', async () => {
+    await withTempDir(async (dir) => {
+      const source = join(dir, 'source');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'one.bin'), 'ignored');
+      await writeFile(join(source, 'two.bin'), 'ignored');
+      const realWalkVault = scan.walkVault;
+      const spy = vi.spyOn(scan, 'walkVault').mockImplementation((root, options = {}) =>
+        realWalkVault(root, { ...options, maxEntries: 1 }));
+      try {
+        await expect(planImport(source)).rejects.toMatchObject({
+          code: 'INVALID_CONTENT',
+          message: expect.stringMatching(/1-entry limit/),
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect((await planImport(source)).entries).toEqual([]);
     });
   });
 });

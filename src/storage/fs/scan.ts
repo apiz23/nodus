@@ -1,7 +1,8 @@
-import { readdir } from 'node:fs/promises';
+import { opendir, readdir } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import type { StorageIssue } from '../contracts.js';
-import { storageFailure } from '../errors.js';
+import { StorageError, storageFailure } from '../errors.js';
 import { DATABASES_DIR, DATABASE_VIEWS_DIR, TEMP_PREFIX } from './layout.js';
 import { attachmentPathId, ATTACHMENTS_DIR } from './attachments.js';
 
@@ -14,6 +15,7 @@ export interface WalkEntry {
 
 export interface WalkResult {
   entries: WalkEntry[];
+  /** Non-fatal walker findings. Traversal-budget exhaustion throws instead. */
   issues: StorageIssue[];
   /** Visible filesystem directories, including empty folders. */
   folders: string[];
@@ -24,13 +26,19 @@ export interface WalkResult {
  *
  * Hidden files and directories are skipped, except leftover `.nodus-tmp-*`
  * files, which are reported so `checkHealth` can surface interrupted writes.
+ *
+ * Traversal bounds are fail-closed. Exceeding `maxEntries` or the shared
+ * `budget` throws a structured `INVALID_CONTENT` storage error before another
+ * entry is stored; an overflow entry is charged to detect the violation, and
+ * no partial inventory is returned. `issues` holds only
+ * non-fatal walker findings.
  */
-export async function walkVault(root: string, options: { maxDepth?: number; maxEntries?: number } = {}): Promise<WalkResult> {
+export async function walkVault(root: string, options: { maxDepth?: number; maxEntries?: number; budget?: TraversalBudget } = {}): Promise<WalkResult> {
   const entries: WalkEntry[] = [];
   const issues: StorageIssue[] = [];
   const folders: string[] = [];
 
-  await walkDirectory(root, '', entries, issues, folders, options.maxDepth, { count: 0, max: options.maxEntries });
+  await walkDirectory(root, '', entries, issues, folders, options.maxDepth, options.budget ?? { count: 0, max: options.maxEntries });
 
   entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   folders.sort();
@@ -44,11 +52,12 @@ async function walkDirectory(
   issues: StorageIssue[],
   folders: string[],
   maxDepth: number | undefined,
-  budget: { count: number; max: number | undefined },
+  budget: TraversalBudget,
+  supplied?: Dirent[],
 ): Promise<void> {
   let dirents;
   try {
-    dirents = await readdir(absolute, { withFileTypes: true });
+    dirents = supplied ?? await boundedEntries(absolute, budget);
   } catch (error) {
     throw storageFailure(error, 'Read directory', relative === '' ? '.' : relative);
   }
@@ -56,11 +65,6 @@ async function walkDirectory(
   dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 
   for (const dirent of dirents) {
-    budget.count += 1;
-    if (budget.max !== undefined && budget.count > budget.max) {
-      issues.push({ code: 'INVALID_CONTENT', path: relative || '.', message: `Directory inventory exceeds the ${budget.max}-entry import limit` });
-      return;
-    }
     const childRelative = relative === '' ? dirent.name : `${relative}/${dirent.name}`;
     const childAbsolute = join(absolute, dirent.name);
 
@@ -85,15 +89,22 @@ async function walkDirectory(
         continue;
       }
       if (relative === '' && dirent.name.toLowerCase() === DATABASES_DIR) {
-        await collectDatabases(childAbsolute, childRelative, entries, issues);
+        await collectDatabases(childAbsolute, childRelative, entries, issues, budget);
         continue;
       }
       if (relative === '' && dirent.name.toLowerCase() === DATABASE_VIEWS_DIR) {
-        await collectDatabaseViews(childAbsolute, childRelative, entries, issues);
+        await collectDatabaseViews(childAbsolute, childRelative, entries, issues, budget);
         continue;
       }
-      if (relative === '' && dirent.name === ATTACHMENTS_DIR && await isManagedAttachmentDirectory(childAbsolute)) {
-        await collectAttachments(childAbsolute, childRelative, entries, issues);
+      if (relative === '' && dirent.name === ATTACHMENTS_DIR) {
+        const children = await boundedEntries(childAbsolute, budget);
+        if (children.every((child) => child.name.startsWith('.') || (!child.isSymbolicLink() && child.isFile() && attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) !== undefined))) {
+          await collectAttachments(childAbsolute, childRelative, entries, issues, budget, children);
+          continue;
+        }
+        // An ordinary user folder is traversed once using its already charged entries.
+        folders.push(childRelative);
+        await walkDirectory(childAbsolute, childRelative, entries, issues, folders, maxDepth, budget, children);
         continue;
       }
       folders.push(childRelative);
@@ -115,9 +126,9 @@ export async function isManagedAttachmentDirectory(absolute: string): Promise<bo
   return children.every((child) => child.name.startsWith('.') || (!child.isSymbolicLink() && child.isFile() && attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) !== undefined));
 }
 
-async function collectAttachments(absolute: string, relative: string, entries: WalkEntry[], issues: StorageIssue[]): Promise<void> {
+async function collectAttachments(absolute: string, relative: string, entries: WalkEntry[], issues: StorageIssue[], budget: TraversalBudget, supplied?: Dirent[]): Promise<void> {
   let files;
-  try { files = await readdir(absolute, { withFileTypes: true }); }
+  try { files = supplied ?? await boundedEntries(absolute, budget); }
   catch (error) { throw storageFailure(error, 'Read directory', relative); }
   files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   for (const file of files) {
@@ -133,9 +144,9 @@ async function collectAttachments(absolute: string, relative: string, entries: W
   }
 }
 
-async function collectDatabaseViews(absolute: string, relative: string, entries: WalkEntry[], issues: StorageIssue[]): Promise<void> {
+async function collectDatabaseViews(absolute: string, relative: string, entries: WalkEntry[], issues: StorageIssue[], budget: TraversalBudget, supplied?: Dirent[]): Promise<void> {
   let databases;
-  try { databases = await readdir(absolute, { withFileTypes: true }); }
+  try { databases = await boundedEntries(absolute, budget); }
   catch (error) { throw storageFailure(error, 'Read directory', relative); }
   databases.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   for (const database of databases) {
@@ -148,7 +159,7 @@ async function collectDatabaseViews(absolute: string, relative: string, entries:
       continue;
     }
     let views;
-    try { views = await readdir(dbAbsolute, { withFileTypes: true }); }
+    try { views = await boundedEntries(dbAbsolute, budget); }
     catch (error) { throw storageFailure(error, 'Read directory', dbPath); }
     views.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     for (const view of views) {
@@ -170,10 +181,12 @@ async function collectDatabases(
   relative: string,
   entries: WalkEntry[],
   issues: StorageIssue[],
+  budget: TraversalBudget,
+  supplied?: Dirent[],
 ): Promise<void> {
   let dirents;
   try {
-    dirents = await readdir(absolute, { withFileTypes: true });
+    dirents = supplied ?? await boundedEntries(absolute, budget);
   } catch (error) {
     throw storageFailure(error, 'Read directory', relative);
   }
@@ -207,4 +220,41 @@ async function collectDatabases(
       message: 'The databases/ directory may only contain Nodus .json definitions',
     });
   }
+}
+
+/** Charges every discovered entry, including hidden and specialized resources,
+ * before storing it. Failure aborts the whole walk; no partial inventory escapes.
+ */
+export interface TraversalBudget {
+  count: number;
+  max: number | undefined;
+  check?: () => void;
+}
+
+export async function boundedEntries(absolute: string, budget: TraversalBudget): Promise<Dirent[]> {
+  budget.check?.();
+  const entries: Dirent[] = [];
+  const directory = await opendir(absolute);
+  let primary: unknown;
+  let failed = false;
+  try {
+    for (;;) {
+      budget.check?.();
+      const entry = await directory.read();
+      if (entry === null) break;
+      budget.count += 1;
+      budget.check?.();
+      if (budget.max !== undefined && budget.count > budget.max) {
+        throw new StorageError('INVALID_CONTENT', `Directory inventory exceeds the inclusive ${budget.max}-entry limit`);
+      }
+      entries.push(entry);
+    }
+  } catch (error) { failed = true; primary = error; }
+  try { await directory.close(); }
+  catch (cleanup) {
+    if (failed) throw new AggregateError([primary, cleanup], 'Directory inspection and cleanup failed');
+    throw cleanup;
+  }
+  if (failed) throw primary;
+  return entries;
 }

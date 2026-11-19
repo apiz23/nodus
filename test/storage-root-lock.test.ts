@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { VAULT_PROCESS_LOCK_FILE, withVaultRootLock } from '../src/storage/fs/root-lock.js';
@@ -81,6 +81,82 @@ if (CHILD_MODE) {
 }
 
 describe.skipIf(CHILD_MODE)('cross-process vault root lock', () => {
+  it('serializes competing writers in one process', async () => {
+    await withTempDir(async (directory) => {
+      const order: string[] = [];
+      let entered!: () => void;
+      let continueFirst!: () => void;
+      const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { continueFirst = resolve; });
+
+      const first = withVaultRootLock(directory, async () => {
+        order.push('first:start');
+        entered();
+        await gate;
+        order.push('first:end');
+      });
+      await firstEntered;
+
+      const second = withVaultRootLock(directory, async () => { order.push('second'); });
+      expect(order).toEqual(['first:start']);
+      continueFirst();
+      await Promise.all([first, second]);
+      expect(order).toEqual(['first:start', 'first:end', 'second']);
+    });
+  });
+
+  it('rejects same-root nested acquisition instead of waiting on itself', async () => {
+    await withTempDir(async (directory) => {
+      const nestedOperation = vi.fn(async () => 'must not run');
+      await withVaultRootLock(directory, async () => {
+        await expect(withVaultRootLock(directory, nestedOperation)).rejects.toMatchObject({
+          code: 'CONFLICT',
+          message: expect.stringContaining('Nested vault write-lock acquisition'),
+        });
+      });
+      expect(nestedOperation).not.toHaveBeenCalled();
+      await expect(withVaultRootLock(directory, async () => 'lock released')).resolves.toBe('lock released');
+    });
+  });
+
+  it('keeps withSyncWrite on the shared lock and expires its capability after callback completion', async () => {
+    await withTempDir(async (directory) => {
+      const root = `${directory}/vault`;
+      const vault = await FileSystemVault.open(root);
+      const first = createNote({ id: TEST_NOTE_ID, path: 'notes/session.md', title: 'Session', body: 'Session write\n', now: NOW });
+      const second = createNote({ id: '7f2d3b0a-4c8e-4d91-9f0b-2e3a4c5d6e7f', path: 'notes/queued.md', title: 'Queued', body: 'Queued write\n', now: NOW });
+      const third = createNote({ id: '8a3e4c1b-5d9f-4ea2-8a1c-3f4b5d6e7f80', path: 'notes/expired.md', title: 'Expired', body: 'Must not write\n', now: NOW });
+      const nested = createNote({ id: '9b4f5d2c-6e0a-4fb3-9b2d-4a5c6d7e8f90', path: 'notes/nested.md', title: 'Nested', body: 'Must not nest\n', now: NOW });
+      let entered!: () => void;
+      let continueSession!: () => void;
+      const sessionEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { continueSession = resolve; });
+      let escaped: import('../src/storage/fs/vault.js').SyncWriteSession | undefined;
+
+      const session = vault.withSyncWrite(async (writes) => {
+        escaped = writes;
+        await writes.createNote(first);
+        await expect(vault.createNote(nested)).rejects.toMatchObject({
+          code: 'CONFLICT',
+          message: expect.stringContaining('Nested vault write-lock acquisition'),
+        });
+        entered();
+        await gate;
+      });
+      await sessionEntered;
+
+      const queued = vault.createNote(second);
+      expect(await pathExists(`${root}/${second.path}`)).toBe(false);
+      continueSession();
+      await Promise.all([session, queued]);
+
+      expect((await vault.readNote(TEST_NOTE_ID)).body).toBe('Session write\n');
+      expect((await vault.readNote(second.id)).body).toBe('Queued write\n');
+      await expect(escaped!.createNote(third)).rejects.toThrow('Sync write session has ended');
+      expect(await pathExists(`${root}/${third.path}`)).toBe(false);
+    });
+  });
+
   it('serializes competing conditional saves across Node processes', async () => {
     await withTempDir(async (directory) => {
       const root = `${directory}/vault`;
