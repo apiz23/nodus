@@ -16,6 +16,8 @@ The owner approved this reconstructed scope against `63bec0bd884691e3d1692854120
 
 A Prepared copy chain does not carry a publication receipt or grant ownership of any destination. Cancellation verifies the chain and current evidence, records a terminal event, and leaves workspace files alone. Corrupt evidence, an ambiguous external edit, or simultaneous unresolved journals that cannot be safely resolved require manual inspection. Preserve journal bytes and follow the storage lock recovery procedure if a process leaves a stale lock.
 
+An abnormal exit after writing the cancellation event's temporary sibling but before exclusive publication can leave a hidden `.nodus-tmp-<uuid>` file in the operation directory. The journal reader ignores this recognized temporary name, so the Prepared operation remains inspectable and cancellation can be retried. The artifact is retained: its name alone does not establish ownership, and deleting it could race with another writer. Inspect it manually and do not remove it based only on age or appearance. The interruption regression verifies that the artifact remains inert and does not prevent cancellation retry.
+
 The root lock coordinates cooperating Nodus processes. Digests detect accidental corruption. Network filesystems, malicious local modifications, hard memory or CPU guarantees, power-loss durability, and a finite retention policy remain outside this phase. M6 and the move-safe wiki-link work are separate.
 
 ## Local verification
