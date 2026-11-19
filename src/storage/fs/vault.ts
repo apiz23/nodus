@@ -1819,6 +1819,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
     return withVaultRootLock(this.root, async () => {
       try {
+        await this.assertImportTransactionsSnapshotSafe();
         if (options.atomicNewFiles) await this.recoverTemplateApplyTransactionsUnlocked();
         return await this.applyImportLocked(plan, options);
       } finally {

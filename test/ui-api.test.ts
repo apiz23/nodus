@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -2162,6 +2162,70 @@ describe('backup and restore API routes', () => {
     }
   }
 
+  async function createCompletedImport(started: StartedApi, root: string): Promise<string> {
+    const source = join(root, 'legacy-import');
+    await mkdir(join(source, 'notes'), { recursive: true });
+    await writeFile(
+      join(source, 'notes', 'imported.md'),
+      serializeNote(createNote({ id: N3, title: 'Imported note', path: 'notes/imported.md', body: 'Imported\n', now: NOW })),
+      'utf8',
+    );
+
+    const preview = await json<{ previewId: string; resources: Array<{ kind: string; id: string; path: string }> }>(
+      started.base,
+      '/api/import/preview',
+      { method: 'POST', body: { dir: source } },
+    );
+    expect(preview.status).toBe(200);
+    const decisions = preview.body.resources.map((resource) => ({ ...resource, choice: 'add' }));
+    const execution = await json<{ operationId: string; state: string }>(
+      started.base,
+      '/api/import/execute',
+      { method: 'POST', body: { previewId: preview.body.previewId, confirm: true, decisions } },
+    );
+    expect(execution.status).toBe(200);
+    expect(execution.body.state).toBe('completed');
+    return execution.body.operationId;
+  }
+
+  async function setImportJournalState(
+    journalPath: string,
+    state: 'publishing' | 'recovery-required' | 'corrupt',
+  ): Promise<void> {
+    if (state === 'corrupt') {
+      await writeFile(journalPath, '{malformed', 'utf8');
+      return;
+    }
+    const journal: Record<string, unknown> = JSON.parse(await readFile(journalPath, 'utf8'));
+    delete journal.integritySha256;
+    journal.state = state;
+    journal.updatedAt = NOW;
+    if (state === 'recovery-required') {
+      journal.failure = { code: 'RECOVERY_REQUIRED', message: 'Test recovery-required state.' };
+    }
+    const integritySha256 = createHash('sha256').update(JSON.stringify(journal), 'utf8').digest('hex');
+    await writeFile(journalPath, JSON.stringify({ ...journal, integritySha256 }, null, 2) + '\n', 'utf8');
+  }
+
+  async function vaultTreeInventory(root: string, relative = ''): Promise<string[]> {
+    const directory = relative === '' ? root : join(root, relative);
+    const entries = await readdir(directory, { withFileTypes: true });
+    const inventory: string[] = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = relative === '' ? entry.name : relative + '/' + entry.name;
+      if (entry.isDirectory()) {
+        inventory.push('directory:' + path);
+        inventory.push(...await vaultTreeInventory(root, path));
+      } else if (entry.isFile()) {
+        const digest = createHash('sha256').update(await readFile(join(root, path))).digest('hex');
+        inventory.push('file:' + path + ':' + digest);
+      } else {
+        inventory.push((entry.isSymbolicLink() ? 'symlink:' : 'other:') + path);
+      }
+    }
+    return inventory;
+  }
+
   it('creates a backup and validates it over HTTP', async () => {
     await withTempDir(async (dir) => {
       const vaultPath = join(dir, 'vault');
@@ -2429,6 +2493,62 @@ describe('backup and restore API routes', () => {
       }
     });
   });
+
+  const unresolvedImportJournalCases: Array<{
+    label: string;
+    journalState: 'publishing' | 'recovery-required' | 'corrupt';
+    reportedState: 'publishing' | 'recovery-required' | 'corrupt';
+  }> = [
+    { label: 'pending publishing', journalState: 'publishing', reportedState: 'publishing' },
+    { label: 'recovery-required', journalState: 'recovery-required', reportedState: 'recovery-required' },
+    { label: 'corrupt', journalState: 'corrupt', reportedState: 'corrupt' },
+  ];
+
+  it.each(unresolvedImportJournalCases)(
+    'rejects restore without writes for a $label import journal',
+    async ({ journalState, reportedState }) => {
+      await withTempDir(async (dir) => {
+        const backupSource = await seedBackupVault(join(dir, 'backup-source'));
+        const backupDir = join(dir, 'restore-backup');
+        try {
+          await createBackup(backupSource, backupDir);
+        } finally {
+          backupSource.dispose();
+        }
+
+        const vaultPath = join(dir, 'vault');
+        const active = await FileSystemVault.open(vaultPath);
+        await active.createNote(
+          createNote({ id: N2, title: 'Preserved marker', path: 'notes/marker.md', body: 'Keep unchanged\n', now: NOW }),
+        );
+        const started = await startApi(vaultPath);
+        try {
+          const operationId = await createCompletedImport(started, dir);
+          const journalPath = join(vaultPath, '.nodus-import-transactions', operationId, 'journal.json');
+          await setImportJournalState(journalPath, journalState);
+          const before = await vaultTreeInventory(vaultPath);
+
+          const restore = await json<ErrorBody>(started.base, '/api/restore', {
+            method: 'POST',
+            body: { dir: backupDir },
+          });
+          expect(restore.status).toBe(500);
+          expect(restore.body.error.code).toBe('PARTIAL_WRITE');
+          expect(restore.body.error.message).toMatch(/incomplete or corrupt import transaction/i);
+
+          const operations = await json<{ operations: Array<{ state: string }> }>(started.base, '/api/import/operations');
+          expect(operations.status).toBe(200);
+          expect(operations.body.operations).toMatchObject([{ state: reportedState }]);
+          expect(await vaultTreeInventory(vaultPath)).toEqual(before);
+          expect(await pathExists(join(vaultPath, 'notes/a.md'))).toBe(false);
+          expect(await pathExists(join(vaultPath, 'databases/' + DB1 + '.json'))).toBe(false);
+        } finally {
+          await stopApi(started);
+          active.dispose();
+        }
+      });
+    },
+  );
 
   it('rejects invalid restore requests without writing anywhere', async () => {
     await withTempDir(async (dir) => {
