@@ -75,10 +75,11 @@ export async function createBackup(
     });
   }
 
-  const { entries, propertyCatalog } = await vault.snapshotWithPropertyCatalog();
-  const databaseViewOrders = await vault.listDatabaseViewOrderFiles();
-  const automationFiles = await vault.listDatabaseAutomationFiles();
-  const templateFiles = await vault.listTemplateFiles();
+  if (typeof vault.snapshotForPortableExport !== 'function') {
+    throw new StorageError('INVALID_INPUT', 'This storage adapter cannot guarantee a consistent backup snapshot.');
+  }
+  const snapshot = await vault.snapshotForPortableExport();
+  const { entries, propertyCatalog, databaseViewOrders, automationFiles, templateFiles } = snapshot;
   for (const order of databaseViewOrders) {
     if (order.path !== databaseViewOrderPath(order.databaseId)) {
       throw new StorageError('INVALID_CONTENT', `Saved-view ordering manifest "${order.path}" does not match database "${order.databaseId}"`, { path: order.path });
@@ -633,10 +634,14 @@ export async function previewRestore(
   vault: VaultStorage,
 ): Promise<RestorePreview> {
   const validation = await validateBackup(backupDir);
-  const { entries: existing, propertyCatalog: targetCatalog } = await vault.snapshotWithPropertyCatalog();
-  const existingOrders = await vault.listDatabaseViewOrderFiles();
-  const existingAutomationFiles = await vault.listDatabaseAutomationFiles();
-  const existingTemplateFiles = await vault.listTemplateFiles();
+  if (typeof vault.snapshotForPortableExport !== 'function') {
+    throw new StorageError('INVALID_INPUT', 'This storage adapter cannot provide a consistent restore preview.');
+  }
+  const targetSnapshot = await vault.snapshotForPortableExport();
+  const { entries: existing, propertyCatalog: targetCatalog } = targetSnapshot;
+  const existingOrders = targetSnapshot.databaseViewOrders;
+  const existingAutomationFiles = targetSnapshot.automationFiles;
+  const existingTemplateFiles = targetSnapshot.templateFiles;
   const catalogConflict = validation.propertyCatalog === undefined
     ? false
     : targetCatalog === null
