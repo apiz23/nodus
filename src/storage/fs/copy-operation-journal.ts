@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { isUuidV4 as isDomainUuidV4 } from '../../domain/ids.js';
 import { isTimestamp as isNoteTimestamp } from '../../domain/note.js';
 import { validateNotePath } from '../../domain/paths.js';
+import type { CopyOperationStatus, CopyOperationStatusState } from '../contracts.js';
 import { StorageError } from '../errors.js';
 
 export const COPY_OPERATION_JOURNAL_DIR = '.nodus-copy-journal';
@@ -154,7 +155,7 @@ export class CopyOperationJournal {
         unresolved = `${operation.operationId}: ${operation.issue ?? 'corrupt journal evidence'}`;
         return false;
       }
-      if (!isTerminal(operation.state)) {
+      if (!isResolvedCopyOperationState(operation.state)) {
         unresolved = `${operation.operationId}: ${operation.state}`;
         return false;
       }
@@ -217,6 +218,8 @@ export class CopyOperationJournal {
    * Reconciles journal state without publishing or deleting anything. Prepared
    * records are validated by the storage owner; any publication state becomes
    * NeedsReview because there is no qualified publisher or recovery verifier.
+   * Succeeded and Failed chains are preserved unchanged and remain unresolved:
+   * this implementation writes neither and cannot verify their effects.
    */
   async recover(validatePrepared: (plan: CopyOperationPlan) => Promise<boolean>): Promise<CopyOperationRecoveryReport> {
     const counters = { scanned: 0, prepared: 0, terminal: 0, needsReview: 0, unresolved: false, issues: [] as string[], issuesTruncated: false };
@@ -311,7 +314,27 @@ export class CopyOperationJournal {
         return true;
       }
 
-      counters.terminal += 1;
+      // Succeeded and Failed chains are structurally valid but unsupported:
+      // this implementation writes neither, and neither the terminal receipt
+      // nor the no-effect proof can be independently verified against the
+      // filesystem. Their evidence must be retained and must keep blocking
+      // admission, exactly as the public status already reports.
+      if (operation.state === 'Succeeded' || operation.state === 'Failed') {
+        counters.needsReview += 1;
+        counters.unresolved = true;
+        appendIssue(counters, `${operation.operationId}: unsupported ${operation.state} event has no verifiable filesystem effect; evidence was left unchanged`);
+        return true;
+      }
+
+      if (isResolvedCopyOperationState(operation.state)) {
+        counters.terminal += 1;
+        return true;
+      }
+
+      // Any future, otherwise unclassified state stays unresolved and blocks.
+      counters.needsReview += 1;
+      counters.unresolved = true;
+      appendIssue(counters, `${operation.operationId}: ${operation.state} has no established resolution contract; evidence was left unchanged`);
       return true;
     });
 
@@ -324,7 +347,7 @@ export class CopyOperationJournal {
     await this.visitOperations(async (operation) => {
       if (operation.state === 'Corrupt') throw corruptError(operation.operationId, operation.issue ?? 'invalid evidence');
       if (operation.operationId === operationId) selected = operation;
-      else if (!isTerminal(operation.state)) throw corruptError(operation.operationId, 'another operation is unresolved');
+      else if (!isResolvedCopyOperationState(operation.state)) throw corruptError(operation.operationId, 'another operation is unresolved');
       return true;
     });
     const operation = selected;
@@ -341,13 +364,12 @@ export class CopyOperationJournal {
   }
 
   async list() {
-    const statuses: import('../contracts.js').CopyOperationStatus[] = [];
+    const statuses: CopyOperationStatus[] = [];
     await this.visitOperations(async (operation) => {
       const { operationId, state, plan, issue } = operation;
       statuses.push({
         operationId,
-        state: state === 'Succeeded' || state === 'Failed' ? 'NeedsReview'
-          : state === 'Publishing' || state === 'Published' ? 'NeedsReview' : state,
+        state: toPublicCopyOperationState(state),
         ...(plan ? { sourcePath: plan.source.path, destinationPath: plan.destination.path } : {}),
         ...(issue ? { issue } : {}),
       });
@@ -1012,7 +1034,26 @@ function sha256Hex(value: string | Buffer): string { return createHash('sha256')
 function isSha256(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function isUuidV4(value: unknown): value is string { return typeof value === 'string' && isDomainUuidV4(value); }
 function isCopyOperationState(value: unknown): value is CopyOperationState { return value === 'Cancelled' || value === 'Prepared' || value === 'Publishing' || value === 'Published' || value === 'Succeeded' || value === 'Failed' || value === 'NeedsReview'; }
-function isTerminal(state: CopyOperationState): boolean { return state === 'Cancelled' || state === 'Succeeded' || state === 'Failed'; }
+
+/**
+ * The single semantic interpretation of journal evidence shared by status
+ * reporting, admission, cancellation and recovery.
+ *
+ * Only Cancelled is a supported resolved outcome: cancellation requires proof
+ * that no filesystem effect exists before the event is written and revalidates
+ * that proof on retry. Succeeded and Failed chains are structurally valid, but
+ * no reconstructed M1–M5 implementation writes them and no verifier can confirm
+ * their filesystem effects, so they remain unresolved and must block.
+ */
+function isResolvedCopyOperationState(state: CopyOperationState | 'Corrupt'): boolean {
+  return state === 'Cancelled';
+}
+
+/** Public status never reports an unverifiable outcome as resolved. */
+function toPublicCopyOperationState(state: CopyOperationState | 'Corrupt'): CopyOperationStatusState {
+  if (state === 'Publishing' || state === 'Published' || state === 'Succeeded' || state === 'Failed') return 'NeedsReview';
+  return state;
+}
 function isTimestamp(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 40 || !Number.isFinite(Date.parse(value))) return false;
   if (isNoteTimestamp(value)) return true;

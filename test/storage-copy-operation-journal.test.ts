@@ -178,6 +178,11 @@ async function addPublished(root: string, operationId: string) {
   });
 }
 
+async function addSucceeded(root: string, operationId: string) {
+  const published = await addPublished(root, operationId);
+  return appendSyntheticEvent(root, operationId, 'Succeeded', { kind: 'terminal-receipt', publishedEventSha256: published.sha256 });
+}
+
 async function clonePreparedRecord(root: string, operationId: string): Promise<string> {
   const newId = randomUUID();
   const events = await readEvents(root, operationId);
@@ -513,24 +518,85 @@ describe('copy operation journal state machine', () => {
     await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow();
   });
 
-  it('keeps proven terminal states retained and non-blocking', async () => {
-    const { root } = await tempRoot();
-    const failed = await prepare(root, planInput({ previewTokenSha256: 'a'.repeat(64) }));
-    const failedProofBody = {
+  it('reports an unsupported Succeeded chain as NeedsReview and keeps it blocking', async () => {
+    const { root } = await tempRoot('nodus-copy-succeeded-policy-');
+    const { operationId } = await prepare(root);
+    await addSucceeded(root, operationId);
+    const evidenceBefore = await readEvents(root, operationId);
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'NeedsReview' }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow('blocks this action');
+
+    const report = await underLock(root, () => journal(root).recover(async () => true));
+    expect(report).toMatchObject({ scanned: 1, terminal: 0, needsReview: 1, unresolved: true });
+    expect(report.issues.join(' ')).toMatch(/unsupported Succeeded/i);
+    expect(await readEvents(root, operationId)).toEqual(evidenceBefore);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('reports an unsupported Failed chain as NeedsReview and keeps it blocking', async () => {
+    const { root } = await tempRoot('nodus-copy-failed-policy-');
+    const { operationId } = await prepare(root);
+    const proofBody = {
       source: { path: 'source.md', rawSha256: '4'.repeat(64) },
       destination: { path: 'copy.md', absent: true }, stagingAbsent: true, observedAt: now,
     };
-    await appendSyntheticEvent(root, failed.operationId, 'Failed', {
-      kind: 'no-effect-proof', ...failedProofBody, proofSha256: digest(JSON.stringify(failedProofBody)),
+    await appendSyntheticEvent(root, operationId, 'Failed', {
+      kind: 'no-effect-proof', ...proofBody, proofSha256: digest(JSON.stringify(proofBody)),
     });
+    const evidenceBefore = await readEvents(root, operationId);
+    const inventoryBefore = await vaultInventory(root);
 
-    const succeeded = await prepare(root, planInput({ previewTokenSha256: 'b'.repeat(64) }));
-    const published = await addPublished(root, succeeded.operationId);
-    await appendSyntheticEvent(root, succeeded.operationId, 'Succeeded', { kind: 'terminal-receipt', publishedEventSha256: published.sha256 });
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'NeedsReview' }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow('blocks this action');
 
-    await expect(underLock(root, () => journal(root).assertNoUnresolved())).resolves.toBeUndefined();
     const report = await underLock(root, () => journal(root).recover(async () => true));
-    expect(report).toMatchObject({ terminal: 2, unresolved: false });
+    expect(report).toMatchObject({ scanned: 1, terminal: 0, needsReview: 1, unresolved: true });
+    expect(report.issues.join(' ')).toMatch(/unsupported Failed/i);
+    expect(await readEvents(root, operationId)).toEqual(evidenceBefore);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('keeps repeated recovery of unsupported terminal evidence unchanged and mutation-free', async () => {
+    const { root } = await tempRoot('nodus-copy-terminal-idempotent-');
+    const { operationId } = await prepare(root);
+    await addSucceeded(root, operationId);
+    const evidenceBefore = await readEvents(root, operationId);
+    const inventoryBefore = await vaultInventory(root);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(underLock(root, () => journal(root).recover(async () => true)))
+        .resolves.toMatchObject({ terminal: 0, needsReview: 1, unresolved: true });
+      expect(await readEvents(root, operationId)).toEqual(evidenceBefore);
+      expect(await vaultInventory(root)).toEqual(inventoryBefore);
+    }
+  });
+
+  it('keeps a proven Cancelled operation resolved and non-blocking', async () => {
+    const { root } = await tempRoot('nodus-copy-cancelled-supported-');
+    const { operationId } = await prepare(root);
+    await underLock(root, () => journal(root).cancel(operationId, async () => true));
+
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Cancelled' }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).resolves.toBeUndefined();
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ scanned: 1, terminal: 1, needsReview: 0, unresolved: false });
+  });
+
+  it('releases the root lock after an unsupported terminal state rejects admission', async () => {
+    const { root } = await tempRoot('nodus-copy-terminal-lock-');
+    const { operationId } = await prepare(root);
+    await addSucceeded(root, operationId);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    }
+    // The lock is released, so later callers can still inspect the preserved evidence.
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'NeedsReview' }]);
+    await expect(readFile(join(root, VAULT_PROCESS_LOCK_FILE), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects duplicate unresolved operations without replacing their records', async () => {
@@ -797,6 +863,51 @@ describe('Phase 19 unresolved-operation gates', () => {
     expect(await vaultInventory(root)).toEqual(before);
     expect(await readFile(join(root, source.path))).toEqual(expectedSourceBytes);
     await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: operation!.operationId, state: state === 'corrupt' ? 'Corrupt' : 'NeedsReview' }]);
+  });
+
+  it('blocks import and restore while a copy journal holds an unsupported Succeeded terminal state', async () => {
+    const { parent, root, vault, source, sourceBytes } = await vaultWithPreparedCopy();
+    const [operation] = await vault.listCopyOperations();
+    await addSucceeded(root, operation!.operationId);
+    const evidenceBefore = await readEvents(root, operation!.operationId);
+    const before = await vaultInventory(root);
+
+    const backupSource = await FileSystemVault.open(join(parent, 'terminal-backup-source'));
+    await backupSource.createNote(createNote({ id: randomUUID(), title: 'Incoming', path: 'incoming.md', body: 'Incoming', now }));
+    const backupDir = join(parent, 'terminal-valid-backup');
+    await createBackup(backupSource, backupDir);
+    const queued = createNote({ id: randomUUID(), title: 'Queued', path: 'queued.md', body: 'Queued', now });
+
+    await expect(vault.assertNoUnresolvedOperations()).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.applyImport({ entries: [], notes: [queued], databases: [], databaseViews: [] }))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(restoreBackup(backupDir, root)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.previewNoteCopy(source.id, 'other.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    expect(await vaultInventory(root)).toEqual(before);
+    expect(await readEvents(root, operation!.operationId)).toEqual(evidenceBefore);
+    expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
+    await expect(readFile(join(root, 'other.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: operation!.operationId, state: 'NeedsReview' }]);
+  });
+
+  it('blocks copy admission while an unresolved import journal exists beside unsupported copy evidence', async () => {
+    const { root } = await tempRoot('nodus-copy-import-inverse-');
+    const vault = await FileSystemVault.open(root);
+    const source = createNote({ id: randomUUID(), title: 'Source', path: 'source.md', body: 'Body', now });
+    await vault.createNote(source);
+    const prepared = await prepare(root);
+    await addSucceeded(root, prepared.operationId);
+    const importJournal = await writeRecoveryRequiredImportJournal(root);
+    const before = await vaultInventory(root);
+
+    await expect(vault.previewNoteCopy(source.id, 'copy.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.assertNoUnresolvedOperations()).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.cancelPreparedCopyOperation(prepared.operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    expect(await vaultInventory(root)).toEqual(before);
+    expect(await readFile(importJournal.path)).toEqual(importJournal.bytes);
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: prepared.operationId, state: 'NeedsReview' }]);
   });
 
   it('fails closed when both journals are unresolved and preserves them for manual intervention', async () => {
