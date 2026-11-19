@@ -321,6 +321,17 @@ describe('copy operation journal state machine', () => {
     await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow('blocks this action');
   });
 
+  it('can retry cancellation when interrupted before the terminal record is renamed', async () => {
+    const { root } = await tempRoot();
+    const { operationId } = await prepare(root);
+    const interrupted = journal(root, (point) => {
+      if (point === 'before-cancellation-rename') throw new Error('injected cancellation interruption');
+    });
+    await expect(underLock(root, () => interrupted.cancel(operationId, async () => true))).rejects.toThrow('interruption');
+    expect((await readEvents(root, operationId)).map((event) => event.state)).toEqual(['Prepared']);
+    await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
+  });
+
   it('rejects invalid identity/path evidence before creating journal state', async () => {
     const { root } = await tempRoot();
     await expect(prepare(root, planInput({ destination: { path: 'source.md', collisionKey: 'source.md' } }))).rejects.toThrow();
@@ -568,7 +579,15 @@ describe('Phase 19 unresolved-operation gates', () => {
   }
 
   it('cancels an unpublished preparation after reopen and can retry cancellation', async () => {
-    const { root, vault, source, sourceBytes } = await vaultWithPreparedCopy();
+    const { root } = await tempRoot();
+    const vault = await FileSystemVault.open(root);
+    const source = createNote({ id: randomUUID(), title: 'Source', path: 'source.md', body: 'Body', now });
+    await vault.createNote(source);
+    const sourceBytes = await readFile(join(root, source.path));
+    const preview = await vault.previewNoteCopy(source.id, 'copy.md');
+    const prepared = await vault.confirmNoteCopy(preview.token);
+    expect(prepared).toMatchObject({ published: false, state: 'Prepared' });
+    await expect(vault.confirmNoteCopy(preview.token)).rejects.toMatchObject({ code: 'CONFLICT' });
     const reopened = await FileSystemVault.open(root);
     const [operation] = await reopened.listCopyOperations();
     expect(operation?.state).toBe('Prepared');

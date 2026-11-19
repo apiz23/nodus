@@ -109,6 +109,7 @@ export type CopyJournalFaultPoint =
   | 'after-operations-directory-created'
   | 'after-vault-identity-created'
   | 'after-operation-directory-created'
+  | 'before-cancellation-rename'
   | 'after-record-created'
   | 'after-record-written'
   | 'before-record-file-sync'
@@ -375,7 +376,10 @@ export class CopyOperationJournal {
     });
     const directory = join(this.#root, COPY_OPERATION_JOURNAL_DIR, OPERATIONS_DIR, operation.operationId);
     if (state === 'Cancelled') {
-      await writeFileAtomic(join(directory, eventFilename(event.sequence)), encodeJson(event), { mode: 0o600 });
+      await writeFileAtomic(join(directory, eventFilename(event.sequence)), encodeJson(event), {
+        mode: 0o600,
+        beforeRename: (temporaryPath) => this.inject('before-cancellation-rename', temporaryPath),
+      });
       await this.syncDurableDirectory(directory);
     } else await this.writeEvent(directory, event);
   }
