@@ -25,3 +25,6 @@ The root lock coordinates cooperating Nodus processes. Digests detect accidental
 - Typecheck and production build passed. Vite warned about chunks over 500 kB.
 - The import restart smoke passed for interruption during staging, add, replacement and rollback, and for preservation of ambiguous external edits.
 - Integration commit `b125bc6` groups M3 and M4 so durable copy preparation and transfer admission enter the branch together. The following commit adds M5 verification and this record.
+- The workspace browser smoke passed using a temporary vault.
+- The first serial full run passed 154 of 155 files and 1,642 tests. Its 18 failures were in the executor lock suite before the native addon was built. The dedicated executor lock command then built both addons and passed all 32 tests.
+- Copy interruption coverage uses injected failure before the terminal rename and a reopened vault. The process-kill smoke exercised the import journal.
