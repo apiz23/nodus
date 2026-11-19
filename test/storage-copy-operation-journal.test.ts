@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { serializeNote } from '../src/format/note-format.js';
@@ -323,18 +323,51 @@ describe('copy operation journal state machine', () => {
     await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow('blocks this action');
   });
 
-  it('can retry cancellation when interrupted before the terminal record is renamed', async () => {
+  it('can retry cancellation when interrupted before terminal-event publication', async () => {
     const { root } = await tempRoot();
     const { operationId } = await prepare(root);
     const interrupted = journal(root, (point) => {
-      if (point === 'before-cancellation-rename') throw new Error('injected cancellation interruption');
+      if (point === 'before-cancellation-publish') throw new Error('injected cancellation interruption');
     });
     await expect(underLock(root, () => interrupted.cancel(operationId, async () => true))).rejects.toThrow('interruption');
     expect((await readEvents(root, operationId)).map((event) => event.state)).toEqual(['Prepared']);
     await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
   });
 
-  it('recovers a Prepared operation after the cancellation process exits before rename', async () => {
+  it('preserves a terminal-event path that was occupied before cancellation inspection', async () => {
+    const { root } = await tempRoot();
+    const { operationId } = await prepare(root);
+    const eventPath = join(operationDirectory(root, operationId), 'event-000001.json');
+    const foreignBytes = Buffer.from('foreign terminal evidence\n');
+    await writeFile(eventPath, foreignBytes, { flag: 'wx', mode: 0o600 });
+    const vault = await FileSystemVault.open(root);
+
+    await expect(vault.cancelPreparedCopyOperation(operationId)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await readFile(eventPath)).toEqual(foreignBytes);
+    // A fresh operation can reacquire the lock after cancellation rejects.
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId, state: 'Corrupt' }]);
+    await expect(vault.assertNoUnresolvedOperations()).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+  });
+
+  it('does not replace a terminal event created between inspection and cancellation publication', async () => {
+    const { root } = await tempRoot();
+    const { operationId } = await prepare(root);
+    const eventPath = join(operationDirectory(root, operationId), 'event-000001.json');
+    const foreignBytes = Buffer.from('raced foreign terminal evidence\n');
+    const racing = journal(root, async (point, temporaryPath) => {
+      if (point === 'before-cancellation-publish') {
+        await writeFile(join(dirname(temporaryPath), 'event-000001.json'), foreignBytes, { flag: 'wx', mode: 0o600 });
+      }
+    });
+
+    await expect(underLock(root, () => racing.cancel(operationId, async () => true)))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await readFile(eventPath)).toEqual(foreignBytes);
+    // The operation is corrupt/ambiguous, never falsely reported as Cancelled.
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Corrupt' }]);
+  });
+
+  it('recovers a Prepared operation after cancellation exits before publication', async () => {
     const { root } = await tempRoot();
     const { operationId } = await prepare(root);
     const child = `
@@ -345,7 +378,7 @@ describe('copy operation journal state machine', () => {
       const { withVaultRootLock } = await vite.ssrLoadModule('/src/storage/fs/root-lock.ts');
       await withVaultRootLock(root, () => new CopyOperationJournal(root, {
         faultInjector(point) {
-          if (point === 'before-cancellation-rename') process.exit(77);
+          if (point === 'before-cancellation-publish') process.exit(77);
         },
       }).cancel(operationId, async () => true));
       process.exit(78);
@@ -356,8 +389,14 @@ describe('copy operation journal state machine', () => {
 
     // The child is confirmed stopped and this temporary vault has no other writers.
     await rm(join(root, VAULT_PROCESS_LOCK_FILE));
+    const operationPath = operationDirectory(root, operationId);
+    const temporaryArtifacts = (await readdir(operationPath)).filter((name) => /^\.nodus-tmp-[0-9a-f-]{36}$/.test(name));
+    expect(temporaryArtifacts).toHaveLength(1);
     await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Prepared' }]);
     await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
+    // Recovery ignores but deliberately retains the unowned crash artifact.
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Cancelled' }]);
+    expect((await readdir(operationPath)).filter((name) => temporaryArtifacts.includes(name))).toEqual(temporaryArtifacts);
   }, 20_000);
 
   it('rejects invalid identity/path evidence before creating journal state', async () => {

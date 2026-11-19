@@ -1,4 +1,4 @@
-import { writeFileAtomic } from './atomic.js';
+import { writeFileAtomicExclusive } from './atomic.js';
 import { TEMP_PREFIX } from './layout.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -109,7 +109,7 @@ export type CopyJournalFaultPoint =
   | 'after-operations-directory-created'
   | 'after-vault-identity-created'
   | 'after-operation-directory-created'
-  | 'before-cancellation-rename'
+  | 'before-cancellation-publish'
   | 'after-record-created'
   | 'after-record-written'
   | 'before-record-file-sync'
@@ -376,11 +376,29 @@ export class CopyOperationJournal {
     });
     const directory = join(this.#root, COPY_OPERATION_JOURNAL_DIR, OPERATIONS_DIR, operation.operationId);
     if (state === 'Cancelled') {
-      await writeFileAtomic(join(directory, eventFilename(event.sequence)), encodeJson(event), {
-        mode: 0o600,
-        beforeRename: (temporaryPath) => this.inject('before-cancellation-rename', temporaryPath),
-      });
-      await this.syncDurableDirectory(directory);
+      const eventPath = join(directory, eventFilename(event.sequence));
+      const bytes = encodeJson(event);
+      try {
+        // Hard-link publication is atomic and refuses to replace an event that
+        // appeared after inspection. Keep this exclusive behavior local to the
+        // journal transition; ordinary atomic replacement remains unchanged.
+        await writeFileAtomicExclusive(eventPath, bytes, {
+          beforePublish: (temporaryPath) => this.inject('before-cancellation-publish', temporaryPath),
+        });
+        await this.syncDurableDirectory(directory);
+        const published = await readBoundedFile(eventPath, RECORD_BYTES_MAX);
+        const info = await lstat(eventPath);
+        if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0
+          || info.size !== bytes.byteLength || !Buffer.from(published).equals(Buffer.from(bytes))) {
+          throw corruptError(eventPath, 'cancellation event read-back differs from the exclusively published record');
+        }
+      } catch (error) {
+        throw new StorageError('PARTIAL_WRITE', `Cancellation event was not confirmed durable; preserve the journal for inspection: ${describe(error)}`, {
+          cause: error,
+          path: `${COPY_OPERATION_JOURNAL_DIR}/${OPERATIONS_DIR}/${operation.operationId}/${eventFilename(event.sequence)}`,
+          details: { paths: [`${COPY_OPERATION_JOURNAL_DIR}/${OPERATIONS_DIR}/${operation.operationId}`] },
+        });
+      }
     } else await this.writeEvent(directory, event);
   }
 
