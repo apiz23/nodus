@@ -553,7 +553,10 @@ export class CopyOperationJournal {
     if (!info || info.isSymbolicLink() || !info.isDirectory() || (info.mode & 0o077) !== 0) return { operationId, state: 'Corrupt', events: [], issue: 'operation path is missing or unsafe' };
     const names = await this.readDirectoryNames(operationPath, RECORDS_PER_OPERATION_MAX);
     if (names.length === 0) return { operationId, state: 'Corrupt', events: [], issue: 'operation directory contains no plan record' };
-    const ordered = names.filter((name) => !(name.startsWith(TEMP_PREFIX) && isUuidV4(name.slice(TEMP_PREFIX.length)))).sort();
+    // Temporary artifacts are never discarded by name alone. Keep them separate
+    // here and validate each against the writer contract once the chain is known.
+    const temporary = names.filter(isTemporaryArtifactName);
+    const ordered = names.filter((name) => !isTemporaryArtifactName(name)).sort();
     const events: JournalEvent[] = [];
     let plan: CopyOperationPlan | undefined;
     for (let sequence = 0; sequence < ordered.length; sequence += 1) {
@@ -587,7 +590,63 @@ export class CopyOperationJournal {
     }
     const last = events.at(-1);
     if (!last || !plan) return { operationId, state: 'Corrupt', events, issue: 'journal plan is incomplete' };
+    for (const name of temporary) {
+      try {
+        await this.assertSupportedTemporaryArtifact(operationPath, name, operationId, identity, events, plan);
+      } catch (error) {
+        return { operationId, state: 'Corrupt', events, issue: describe(error) };
+      }
+    }
     return { operationId, state: last.state, plan, events };
+  }
+
+  /**
+   * The only writer that creates a `.nodus-tmp-<uuid>` entry inside an
+   * operation directory is writeFileAtomicExclusive for cancellation
+   * publication. Its contract: an exclusive, private, single-link regular file
+   * holding the complete, synced bytes of the next Cancelled event (mode 0600,
+   * bound to the current chain tip). A crash before the hard-link publication
+   * leaves exactly that file, which is safe to retain and ignore. Any other
+   * matching entry is unexplained evidence and must fail closed untouched.
+   */
+  private async assertSupportedTemporaryArtifact(
+    operationPath: string,
+    name: string,
+    operationId: string,
+    identity: Pick<VaultIdentity, 'vaultInstanceId' | 'vaultLineageId'>,
+    events: readonly JournalEvent[],
+    plan: CopyOperationPlan,
+  ): Promise<void> {
+    const path = join(operationPath, name);
+    const info = await this.lstatOrMissing(path);
+    if (!info || info.isSymbolicLink() || !info.isFile() || info.nlink !== 1
+      || (info.mode & 0o077) !== 0 || info.size > RECORD_BYTES_MAX) {
+      throw corruptError(name, 'filename matches a journal temporary artifact but is not a private single-link regular file');
+    }
+    let parsed: JournalEvent;
+    try { parsed = await this.readEvent(path); }
+    catch (error) { throw corruptError(name, `temporary artifact is not a valid journal event (${describe(error)})`); }
+    const pending = parsed.sequence === events.length;
+    // A cancel retry or a recovery NeedsReview append can move the chain past a
+    // crash artifact. That leftover still describes the same Prepared chain tip
+    // and is safe to retain as unused evidence.
+    const superseded = events.length === 2 && parsed.sequence === 1
+      && (events[1]!.state === 'Cancelled' || events[1]!.state === 'NeedsReview');
+    if (!pending && !superseded) {
+      throw corruptError(name, 'temporary artifact is not the pending or superseded cancellation event for this chain');
+    }
+    const previous = pending ? events.at(-1)! : events[0]!;
+    if (parsed.operationId !== operationId || parsed.vaultInstanceId !== identity.vaultInstanceId
+      || parsed.vaultLineageId !== identity.vaultLineageId) {
+      throw corruptError(name, 'temporary artifact does not belong to this journal operation');
+    }
+    if (parsed.previousSha256 !== previous.sha256
+      || parsed.plan !== undefined || parsed.evidence === undefined
+      || parsed.state !== 'Cancelled' || !isLegalCopyOperationTransition(previous.state, parsed.state)) {
+      throw corruptError(name, 'temporary artifact is not a cancellation event for this chain tip');
+    }
+    validateTransitionEvidence(parsed.state, parsed.evidence);
+    validateTransitionAgainstPlan(previous, parsed.state, parsed.evidence, plan);
   }
 
   private async readEvent(path: string): Promise<JournalEvent> {
@@ -1030,6 +1089,7 @@ function decodeJson(bytes: Buffer, path: string): unknown {
 
 function encodeJson(value: unknown): Buffer { return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8'); }
 function eventFilename(sequence: number): string { return `event-${String(sequence).padStart(6, '0')}.json`; }
+function isTemporaryArtifactName(name: string): boolean { return name.startsWith(TEMP_PREFIX) && isUuidV4(name.slice(TEMP_PREFIX.length)); }
 function sha256Hex(value: string | Buffer): string { return createHash('sha256').update(value).digest('hex'); }
 function isSha256(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function isUuidV4(value: unknown): value is string { return typeof value === 'string' && isDomainUuidV4(value); }

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink, lstat, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,7 +20,7 @@ import {
   type CopyJournalBudget,
 } from '../src/storage/fs/copy-operation-journal.js';
 import { VAULT_PROCESS_LOCK_FILE, withVaultRootLock } from '../src/storage/fs/root-lock.js';
-import { IMPORT_TRANSACTION_DIR } from '../src/storage/fs/layout.js';
+import { IMPORT_TRANSACTION_DIR, TEMP_PREFIX } from '../src/storage/fs/layout.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 
 const roots: string[] = [];
@@ -181,6 +181,60 @@ async function addPublished(root: string, operationId: string) {
 async function addSucceeded(root: string, operationId: string) {
   const published = await addPublished(root, operationId);
   return appendSyntheticEvent(root, operationId, 'Succeeded', { kind: 'terminal-receipt', publishedEventSha256: published.sha256 });
+}
+
+async function writeCancellationTemporary(root: string, operationId: string, overrides: {
+  name?: string;
+  bytes?: Buffer;
+  state?: CopyOperationState;
+  sequenceOffset?: number;
+  previousSha256?: string;
+} = {}): Promise<string> {
+  const events = await readEvents(root, operationId);
+  const previous = events.at(-1)!;
+  const body = {
+    format: 'nodus-copy-operation-event',
+    version: 1,
+    operationId,
+    vaultInstanceId: previous.vaultInstanceId,
+    vaultLineageId: previous.vaultLineageId,
+    sequence: previous.sequence + (overrides.sequenceOffset ?? 1),
+    state: overrides.state ?? 'Cancelled',
+    recordedAt: now,
+    previousSha256: overrides.previousSha256 ?? previous.sha256,
+    evidence: { kind: 'no-publication' },
+  };
+  const bytes = overrides.bytes ?? Buffer.from(`${JSON.stringify({ ...body, sha256: digest(JSON.stringify(body)) })}\n`);
+  const name = overrides.name ?? `${TEMP_PREFIX}${randomUUID()}`;
+  const path = join(operationDirectory(root, operationId), name);
+  await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+  return path;
+}
+
+async function temporaryArtifacts(root: string, operationId: string): Promise<string[]> {
+  const names = await readdir(operationDirectory(root, operationId));
+  return names.filter((name) => name.startsWith(TEMP_PREFIX) && /^[0-9a-f-]{36}$/.test(name.slice(TEMP_PREFIX.length)));
+}
+
+async function interruptCancellationInChild(root: string, operationId: string): Promise<void> {
+  const child = `
+    import { createServer } from 'vite';
+    const [root, operationId] = process.argv.slice(1);
+    const vite = await createServer({ configFile: false, server: { middlewareMode: true, ws: false } });
+    const { CopyOperationJournal } = await vite.ssrLoadModule('/src/storage/fs/copy-operation-journal.ts');
+    const { withVaultRootLock } = await vite.ssrLoadModule('/src/storage/fs/root-lock.ts');
+    await withVaultRootLock(root, () => new CopyOperationJournal(root, {
+      faultInjector(point) {
+        if (point === 'before-cancellation-publish') process.exit(77);
+      },
+    }).cancel(operationId, async () => true));
+    process.exit(78);
+  `;
+  await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, root, operationId], {
+    timeout: 15_000,
+  })).rejects.toMatchObject({ code: 77 });
+  // The child is confirmed stopped and this temporary vault has no other writers.
+  await rm(join(root, VAULT_PROCESS_LOCK_FILE));
 }
 
 async function clonePreparedRecord(root: string, operationId: string): Promise<string> {
@@ -422,34 +476,150 @@ describe('copy operation journal state machine', () => {
   it('recovers a Prepared operation after cancellation exits before publication', async () => {
     const { root } = await tempRoot();
     const { operationId } = await prepare(root);
-    const child = `
-      import { createServer } from 'vite';
-      const [root, operationId] = process.argv.slice(1);
-      const vite = await createServer({ configFile: false, server: { middlewareMode: true, ws: false } });
-      const { CopyOperationJournal } = await vite.ssrLoadModule('/src/storage/fs/copy-operation-journal.ts');
-      const { withVaultRootLock } = await vite.ssrLoadModule('/src/storage/fs/root-lock.ts');
-      await withVaultRootLock(root, () => new CopyOperationJournal(root, {
-        faultInjector(point) {
-          if (point === 'before-cancellation-publish') process.exit(77);
-        },
-      }).cancel(operationId, async () => true));
-      process.exit(78);
-    `;
-    await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, root, operationId], {
-      timeout: 15_000,
-    })).rejects.toMatchObject({ code: 77 });
+    await interruptCancellationInChild(root, operationId);
 
-    // The child is confirmed stopped and this temporary vault has no other writers.
-    await rm(join(root, VAULT_PROCESS_LOCK_FILE));
     const operationPath = operationDirectory(root, operationId);
-    const temporaryArtifacts = (await readdir(operationPath)).filter((name) => /^\.nodus-tmp-[0-9a-f-]{36}$/.test(name));
-    expect(temporaryArtifacts).toHaveLength(1);
+    const artifacts = await temporaryArtifacts(root, operationId);
+    expect(artifacts).toHaveLength(1);
     await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Prepared' }]);
     await expect(underLock(root, () => journal(root).cancel(operationId, async () => true))).resolves.toMatchObject({ state: 'Cancelled' });
     // Recovery ignores but deliberately retains the unowned crash artifact.
     await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Cancelled' }]);
-    expect((await readdir(operationPath)).filter((name) => temporaryArtifacts.includes(name))).toEqual(temporaryArtifacts);
+    expect((await readdir(operationPath)).filter((name) => artifacts.includes(name))).toEqual(artifacts);
   }, 20_000);
+
+  it('recognizes a genuine interrupted cancellation temporary file and preserves it', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-genuine-');
+    const { operationId } = await prepare(root);
+    await interruptCancellationInChild(root, operationId);
+
+    const artifacts = await temporaryArtifacts(root, operationId);
+    expect(artifacts).toHaveLength(1);
+    const artifactPath = join(operationDirectory(root, operationId), artifacts[0]!);
+    const artifactBytes = await readFile(artifactPath);
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ operationId, state: 'Prepared' }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toThrow('blocks this action');
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ prepared: 1, needsReview: 0, terminal: 0, unresolved: true });
+    expect(await readFile(artifactPath)).toEqual(artifactBytes);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  }, 20_000);
+
+  it('keeps a hard-linked leftover from a crash after publication blocked and untouched', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-hardlink-');
+    const { operationId } = await prepare(root);
+    const artifactPath = await writeCancellationTemporary(root, operationId);
+    await link(artifactPath, join(operationDirectory(root, operationId), 'event-000001.json'));
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt' }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ terminal: 0, needsReview: 1, unresolved: true });
+    expect((await lstat(artifactPath)).nlink).toBe(2);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('treats a matching-name directory as suspicious journal evidence and preserves it', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-directory-');
+    const { operationId } = await prepare(root);
+    const artifactName = `${TEMP_PREFIX}${randomUUID()}`;
+    const artifactPath = join(operationDirectory(root, operationId), artifactName);
+    await mkdir(artifactPath, { mode: 0o700 });
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt', issue: expect.stringMatching(/temporary artifact/i) }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(underLock(root, () => journal(root).recover(async () => true)))
+        .resolves.toMatchObject({ terminal: 0, needsReview: 1, unresolved: true });
+    }
+    expect((await lstat(artifactPath)).isDirectory()).toBe(true);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ state: 'Corrupt' }]);
+    await expect(readFile(join(root, VAULT_PROCESS_LOCK_FILE), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('treats a matching-name symlink as suspicious journal evidence without following or altering it', async () => {
+    const { parent, root } = await tempRoot('nodus-copy-temp-symlink-');
+    const { operationId } = await prepare(root);
+    const target = join(parent, 'foreign-target');
+    const foreignBytes = Buffer.from('foreign symlink target\n');
+    await writeFile(target, foreignBytes, { mode: 0o600 });
+    const artifactPath = join(operationDirectory(root, operationId), `${TEMP_PREFIX}${randomUUID()}`);
+    await symlink(target, artifactPath, 'file');
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt', issue: expect.stringMatching(/temporary artifact/i) }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ needsReview: 1, unresolved: true });
+    expect((await lstat(artifactPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(target)).toEqual(foreignBytes);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('treats a matching-name malformed file as suspicious journal evidence and preserves its bytes', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-malformed-');
+    const { operationId } = await prepare(root);
+    const validBytes = await readFile(await writeCancellationTemporary(root, operationId));
+    const artifactPath = await writeCancellationTemporary(root, operationId, {
+      bytes: validBytes.subarray(0, Math.floor(validBytes.length / 2)),
+    });
+    const artifactBytes = await readFile(artifactPath);
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt', issue: expect.stringMatching(/temporary artifact/i) }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ needsReview: 1, unresolved: true });
+    expect(await readFile(artifactPath)).toEqual(artifactBytes);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('treats a matching-name unrelated journal record as suspicious evidence and preserves it', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-unrelated-');
+    const { operationId } = await prepare(root);
+    const planEventBytes = await readFile(join(operationDirectory(root, operationId), 'event-000000.json'));
+    const artifactPath = await writeCancellationTemporary(root, operationId, { bytes: planEventBytes });
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt', issue: expect.stringMatching(/temporary artifact/i) }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).cancel(operationId, async () => true)))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).recover(async () => true)))
+      .resolves.toMatchObject({ needsReview: 1, unresolved: true });
+    expect(await readFile(artifactPath)).toEqual(planEventBytes);
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+  });
+
+  it('does not let a valid-looking temporary event bypass cancellation or admission', async () => {
+    const { root } = await tempRoot('nodus-copy-temp-stale-');
+    const { operationId } = await prepare(root);
+    // A structurally valid cancellation event for the wrong chain tip is not the
+    // artifact the writer would leave for this operation.
+    const artifactPath = await writeCancellationTemporary(root, operationId, { previousSha256: '9'.repeat(64) });
+    const inventoryBefore = await vaultInventory(root);
+
+    await expect(underLock(root, () => journal(root).list()))
+      .resolves.toMatchObject([{ operationId, state: 'Corrupt', issue: expect.stringMatching(/temporary artifact/i) }]);
+    await expect(underLock(root, () => journal(root).assertNoUnresolved())).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(underLock(root, () => journal(root).cancel(operationId, async () => true)))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await readFile(artifactPath)).toBeDefined();
+    expect(await vaultInventory(root)).toEqual(inventoryBefore);
+    await expect(underLock(root, () => journal(root).list())).resolves.toMatchObject([{ state: 'Corrupt' }]);
+    await expect(readFile(join(root, VAULT_PROCESS_LOCK_FILE), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 
   it('rejects invalid identity/path evidence before creating journal state', async () => {
     const { root } = await tempRoot();
@@ -908,6 +1078,31 @@ describe('Phase 19 unresolved-operation gates', () => {
     expect(await vaultInventory(root)).toEqual(before);
     expect(await readFile(importJournal.path)).toEqual(importJournal.bytes);
     await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: prepared.operationId, state: 'NeedsReview' }]);
+  });
+
+  it('blocks import, restore and copy admission for suspicious temporary journal evidence', async () => {
+    const { parent, root, vault, source, sourceBytes } = await vaultWithPreparedCopy();
+    const [operation] = await vault.listCopyOperations();
+    const artifactPath = join(operationDirectory(root, operation!.operationId), `${TEMP_PREFIX}${randomUUID()}`);
+    await mkdir(artifactPath, { mode: 0o700 });
+    const before = await vaultInventory(root);
+
+    const backupSource = await FileSystemVault.open(join(parent, 'temp-artifact-backup-source'));
+    await backupSource.createNote(createNote({ id: randomUUID(), title: 'Incoming', path: 'incoming.md', body: 'Incoming', now }));
+    const backupDir = join(parent, 'temp-artifact-valid-backup');
+    await createBackup(backupSource, backupDir);
+    const queued = createNote({ id: randomUUID(), title: 'Queued', path: 'queued.md', body: 'Queued', now });
+
+    await expect(vault.previewNoteCopy(source.id, 'other.md')).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.assertNoUnresolvedOperations()).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(vault.applyImport({ entries: [], notes: [queued], databases: [], databaseViews: [] }))
+      .rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    await expect(restoreBackup(backupDir, root)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+
+    expect(await vaultInventory(root)).toEqual(before);
+    expect((await lstat(artifactPath)).isDirectory()).toBe(true);
+    expect(await readFile(join(root, source.path))).toEqual(sourceBytes);
+    await expect(vault.listCopyOperations()).resolves.toMatchObject([{ operationId: operation!.operationId, state: 'Corrupt' }]);
   });
 
   it('fails closed when both journals are unresolved and preserves them for manual intervention', async () => {
