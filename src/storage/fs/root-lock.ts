@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { lstat, open, unlink } from 'node:fs/promises';
@@ -6,6 +7,8 @@ import { join } from 'node:path';
 import { StorageError, storageFailure } from '../errors.js';
 
 const queues = new Map<string, Promise<void>>();
+interface LockScope { key: string; active: boolean }
+const lockScopes = new AsyncLocalStorage<readonly LockScope[]>();
 export const VAULT_PROCESS_LOCK_FILE = '.nodus-vault-write.lock';
 
 interface ProcessLockOwner {
@@ -19,6 +22,15 @@ interface ProcessLockOwner {
 /** Serialize Nodus mutations to one real vault root, within and across processes. */
 export async function withVaultRootLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
   const key = process.platform === 'win32' ? root.toLowerCase() : root;
+  const inheritedScopes = lockScopes.getStore() ?? [];
+  if (inheritedScopes.some((scope) => scope.active && scope.key === key)) {
+    throw new StorageError(
+      'CONFLICT',
+      'Nested vault write-lock acquisition for the same root is not allowed; use the active storage operation capability.',
+      { path: VAULT_PROCESS_LOCK_FILE, details: { paths: [VAULT_PROCESS_LOCK_FILE] } },
+    );
+  }
+
   const previous = queues.get(key) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -27,10 +39,16 @@ export async function withVaultRootLock<T>(root: string, operation: () => Promis
   const tail = previous.then(() => current);
   queues.set(key, tail);
 
+  const scope: LockScope = { key, active: true };
   await previous;
   try {
-    return await withProcessLock(root, operation);
+    const activeScopes = inheritedScopes.filter((candidate) => candidate.active);
+    return await lockScopes.run([...activeScopes, scope], () => withProcessLock(root, operation));
   } finally {
+    // Async descendants retain their context object. Mark it inactive before
+    // releasing the queue so detached work cannot mistake an expired scope for
+    // current ownership; calls made while active are rejected as nested.
+    scope.active = false;
     release();
     if (queues.get(key) === tail) queues.delete(key);
   }

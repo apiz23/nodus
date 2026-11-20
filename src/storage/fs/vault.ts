@@ -1,4 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { CopyOperationJournal, type CopyOperationPlan } from './copy-operation-journal.js';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir, rm } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
@@ -35,6 +37,7 @@ import { parseDatabase, serializeDatabase } from '../../database/schema.js';
 import { parseDatabaseView, serializeDatabaseView, validateViewReferences, type DatabaseView } from '../../database/database-view.js';
 import { parseDatabaseViewOrder, resolveDatabaseViewOrder, serializeDatabaseViewOrder } from '../../database/database-view-order.js';
 import { resolveLink } from '../../links/wikilink.js';
+import { compareResolverStability } from '../../links/resolver-stability.js';
 import { addNoteDatabaseMembership, setNotePropertyValue, setNotePropertyValuesAtomically, type SetNotePropertyInput, type SetNotePropertyResult } from '../../database/note-properties.js';
 import { configurationIssues, projectRelations, relationWriteIssue } from '../../database/relations.js';
 import {
@@ -48,8 +51,9 @@ import {
 } from '../../properties/catalog.js';
 import { isUuidV4 } from '../../domain/ids.js';
 import type { Note } from '../../domain/note.js';
+import { buildNoteCopyModel } from '../../domain/note-copy.js';
 import { addTag, normalizeTagList, removeTag, TagValidationError, type TagOperation } from '../../domain/tags.js';
-import { validateNote } from '../../domain/note.js';
+import { NOTE_FORMAT_VERSION, validateNote } from '../../domain/note.js';
 import { validateNotePath } from '../../domain/paths.js';
 import { parseNote, serializeNote } from '../../format/note-format.js';
 import { StorageError, storageFailure, wrapContentError, wrapInputError } from '../errors.js';
@@ -58,7 +62,7 @@ import { linkFileAtomicExclusive, writeFileAtomic, writeFileAtomicExclusive } fr
 import { databasePath, DATABASE_VIEW_ORDER_DIR, databaseViewOrderPath, databaseViewPath, DATABASE_AUTOMATIONS_PATH, DATABASE_AUTOMATION_HISTORY_PATH, TEMPLATE_CATALOG_DIR, TEMPLATE_CATALOG_PATH, TEMPLATE_APPLY_TRANSACTION_PREFIX, IMPORT_TRANSACTION_DIR, TEMP_PREFIX, MERGED_PUBLICATION_PREFIX, isReservedNotePath } from './layout.js';
 import { withVaultRootLock } from './root-lock.js';
 import { assertInsideRoot, assertNotSymlink, pathExists, resolveInsideRoot } from './safe-path.js';
-import { isManagedAttachmentDirectory, walkVault, type WalkEntry } from './scan.js';
+import { boundedEntries, isManagedAttachmentDirectory, walkVault, type TraversalBudget, type WalkEntry } from './scan.js';
 import { attachmentPathId, createAttachmentPath, markdownReferencesAttachment, validateAttachmentBytes, ATTACHMENT_MAX_BYTES, ATTACHMENTS_DIR } from './attachments.js';
 import { createVaultFolder, deleteVaultFolder, inspectVaultFolder, listVaultFolders, moveVaultFolder } from './folders.js';
 import { SnapshotReconciler, type SnapshotReconciler as SnapshotReconcilerType, type SnapshotReconcilerOptions } from './snapshot-reconciler.js';
@@ -71,6 +75,24 @@ interface ParsedNote {
   text: string;
   /** Raw file bytes the note was parsed from; source of the SHA-256 token. */
   bytes: Buffer;
+}
+
+interface CopyPreviewBudget extends TraversalBudget {
+  readonly deadline: number;
+}
+
+interface CopyPreviewBinding {
+  readonly sourceId: string;
+  readonly destination: string;
+  readonly digest: string;
+  readonly copyId: string;
+  readonly instant: string;
+  readonly expires: number;
+}
+
+interface CopyPreviewNote {
+  readonly note: Note;
+  readonly rawSha256: string;
 }
 
 interface ParsedDatabase {
@@ -214,6 +236,8 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   private databaseSnapshotReconciler?: SnapshotReconcilerType<DatabaseRowsVaultSnapshot>;
   private lastDatabaseRowsMetrics?: DatabaseRowsSnapshotMetrics;
   private disposed = false;
+  // Preview capabilities are private to this vault instance and never persisted.
+  #copyPreviews = new Map<string, CopyPreviewBinding>();
 
   private constructor(root: string) {
     this.root = root;
@@ -223,6 +247,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.#copyPreviews.clear();
     this.noteSnapshot.clear();
     this.databaseRowsCache = undefined;
     this.databaseSnapshotReconciler?.dispose();
@@ -235,6 +260,269 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     await mkdir(absolute, { recursive: true });
     const realRoot = await realpath(absolute);
     return new FileSystemVault(realRoot);
+  }
+
+  /** Read-only copy preview. Its token is private to this vault instance and expires after five minutes. */
+  async previewNoteCopy(sourceId: string, destinationPath: string) {
+    if (arguments.length !== 2 || typeof sourceId !== 'string' || !isUuidV4(sourceId) || typeof destinationPath !== 'string') {
+      throw new StorageError('INVALID_INPUT', 'Supply a valid source ID and destination path.');
+    }
+    return withVaultRootLock(this.root, async () => {
+      this.assertCopyPreviewLive();
+      const startedAt = performance.now();
+      const budget = this.createCopyPreviewBudget(startedAt + 10_000);
+      const wallNow = Date.now();
+      for (const [token, binding] of this.#copyPreviews) {
+        if (binding.expires <= startedAt) this.#copyPreviews.delete(token);
+      }
+      if (this.#copyPreviews.size >= 16) throw new StorageError('CONFLICT', 'Too many live copy previews.');
+
+      await this.assertTransferAdmissionUnlocked();
+      const copyId = randomUUID();
+      const instant = new Date(wallNow).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const evidence = await this.inspectCopyPreviewUnlocked(sourceId, destinationPath, copyId, instant, budget);
+      this.assertCopyPreviewLive();
+      const expires = startedAt + 5 * 60_000;
+      if (performance.now() >= expires) throw new StorageError('CONFLICT', 'Copy preview expired during capture.');
+
+      const token = randomBytes(32).toString('hex');
+      this.#copyPreviews.set(token, { sourceId, destination: destinationPath, digest: evidence.digest, copyId, instant, expires });
+      return {
+        token,
+        expiresAt: new Date(wallNow + 5 * 60_000).toISOString(),
+        intent: structuredClone(evidence.model),
+        outgoing: structuredClone(evidence.outgoing),
+      };
+    });
+  }
+
+  async confirmNoteCopy(token: string) {
+    return withVaultRootLock(this.root, async () => {
+      this.assertCopyPreviewLive();
+      const binding = this.#copyPreviews.get(token);
+      if (!binding) throw new StorageError('CONFLICT', 'Copy preview is missing or consumed.');
+      this.#copyPreviews.delete(token);
+      await this.assertTransferAdmissionUnlocked();
+      if (performance.now() >= binding.expires) throw new StorageError('CONFLICT', 'Copy preview expired.');
+      const evidence = await this.inspectCopyPreviewUnlocked(binding.sourceId, binding.destination, binding.copyId, binding.instant);
+      if (evidence.digest !== binding.digest || performance.now() >= binding.expires) {
+        throw new StorageError('CONFLICT', 'Copy preview is stale.');
+      }
+      const prepared = await new CopyOperationJournal(this.root).prepare({
+        previewTokenSha256: sha256Hex(token), previewBindingSha256: binding.digest,
+        snapshotSha256: evidence.digest, confirmedAt: new Date().toISOString(),
+        source: { ...evidence.source, createdAt: evidence.model.provenance.sourceCreatedAt, updatedAt: evidence.model.provenance.sourceUpdatedAt },
+        destination: { path: binding.destination, collisionKey: foldPath(binding.destination) },
+        copy: {
+          id: binding.copyId, instant: binding.instant, serializedSha256: evidence.copyContentSha256,
+          serializedBytes: evidence.copyContentBytes, noteFormatVersion: NOTE_FORMAT_VERSION,
+        },
+        resolverProjectionSha256: evidence.resolverProjectionSha256,
+      });
+      return { ...prepared, validated: true as const, published: false as const };
+    });
+  }
+
+  async listCopyOperations() {
+    return withVaultRootLock(this.root, () => new CopyOperationJournal(this.root).list());
+  }
+
+  private async verifyPreparedCopyUnlocked(plan: CopyOperationPlan): Promise<boolean> {
+    const evidence = await this.inspectCopyPreviewUnlocked(plan.source.id, plan.destination.path, plan.copy.id, plan.copy.instant);
+    return evidence.digest === plan.snapshotSha256 && evidence.source.rawSha256 === plan.source.rawSha256
+      && evidence.copyContentSha256 === plan.copy.serializedSha256
+      && evidence.resolverProjectionSha256 === plan.resolverProjectionSha256;
+  }
+
+  async recoverCopyOperations(): Promise<import('../contracts.js').CopyOperationRecoveryReport> {
+    return withVaultRootLock(this.root, async () => {
+      await this.assertImportTransactionsSnapshotSafe();
+      const report = await new CopyOperationJournal(this.root).recover((plan) => this.verifyPreparedCopyUnlocked(plan));
+      return { ...report, operations: await new CopyOperationJournal(this.root).list() };
+    });
+  }
+
+  async cancelPreparedCopyOperation(operationId: string) {
+    return withVaultRootLock(this.root, async () => {
+      await this.assertImportTransactionsSnapshotSafe();
+      return new CopyOperationJournal(this.root).cancel(operationId, async (plan) => {
+        // The Prepared chain has no publication step. Revalidate the reviewed
+        // inventory to rule out a destination that appeared outside that chain.
+        try { return await this.verifyPreparedCopyUnlocked(plan); } catch { return false; }
+      });
+    });
+  }
+
+  async assertNoUnresolvedCopyOperations(): Promise<void> {
+    return withVaultRootLock(this.root, () => new CopyOperationJournal(this.root).assertNoUnresolved());
+  }
+
+  async assertNoUnresolvedOperations(): Promise<void> {
+    return withVaultRootLock(this.root, () => this.assertTransferAdmissionUnlocked());
+  }
+
+  private async assertTransferAdmissionUnlocked(allowedImportOperationId?: string): Promise<void> {
+    await this.assertImportTransactionsSnapshotSafe(allowedImportOperationId);
+    await new CopyOperationJournal(this.root).assertNoUnresolved();
+  }
+
+  private createCopyPreviewBudget(deadline: number): CopyPreviewBudget {
+    const check = () => {
+      this.assertCopyPreviewLive();
+      if (performance.now() >= deadline) {
+        throw new StorageError('CONFLICT', 'Copy snapshot capture exceeded its cooperative time budget.');
+      }
+    };
+    return { count: 0, max: 50_000, check, deadline };
+  }
+
+  private assertCopyPreviewLive(): void {
+    if (this.disposed) throw new StorageError('CONFLICT', 'Vault is disposed.');
+  }
+
+  /** Caller holds the root lock. Capture twice and retain parsed notes only from the second pass. */
+  private async inspectCopyPreviewUnlocked(
+    sourceId: string,
+    destination: string,
+    copyId: string,
+    instant: string,
+    budget = this.createCopyPreviewBudget(performance.now() + 10_000),
+  ) {
+    const checkBudget = () => {
+      this.assertCopyPreviewLive();
+      if (performance.now() >= budget.deadline) {
+        throw new StorageError('CONFLICT', 'Copy snapshot capture exceeded its cooperative time budget.');
+      }
+    };
+    const validateDestination = async () => {
+      checkBudget();
+      const absolute = await this.validateNoteTarget(destination, budget);
+      if (await pathExists(absolute)) throw new StorageError('CONFLICT', 'Copy destination already exists.', { path: destination });
+      let parent = this.root;
+      for (const segment of destination.split('/')) {
+        checkBudget();
+        let children;
+        try {
+          children = await boundedEntries(parent, budget);
+        } catch (error) {
+          if (isMissing(error)) break;
+          throw error;
+        }
+        const key = (name: string) => name.normalize('NFC').toLowerCase();
+        const matches = children.filter((entry) => key(entry.name) === key(segment));
+        if (matches.some((entry) => entry.name !== segment) || (parent === dirname(absolute) && matches.length > 0)) {
+          throw new StorageError('CONFLICT', 'Copy destination has a case or normalization collision.', { path: destination });
+        }
+        parent = join(parent, segment);
+      }
+      checkBudget();
+    };
+
+    await validateDestination();
+    const capture = async (retainNotes: boolean): Promise<{ digest: string; notes?: CopyPreviewNote[] }> => {
+      checkBudget();
+      const inventory = await walkVault(this.root, { budget, maxDepth: 64 });
+      if (inventory.issues.length > 0) {
+        throw new StorageError('INVALID_CONTENT', 'Incomplete copy inventory.', {
+          details: { issues: inventory.issues.map((issue) => issue.message) },
+        });
+      }
+      if (inventory.entries.some((entry) => entry.kind === 'temp')) {
+        throw new StorageError('CONFLICT', 'An interrupted-write artifact requires review before copying.');
+      }
+      if (inventory.entries.length > 10_000) throw new StorageError('INVALID_CONTENT', 'Copy inventory exceeds the 10,000-resource limit.');
+
+      const parsed: CopyPreviewNote[] = [];
+      const manifest: Array<[string, string, string]> = [];
+      const ids = new Set<string>();
+      let totalBytes = 0;
+      for (const entry of inventory.entries) {
+        if (entry.kind !== 'note') continue;
+        checkBudget();
+        const info = await lstat(entry.absolute);
+        if (!info.isFile() || info.isSymbolicLink() || info.size > 32 * 1024 * 1024 - totalBytes) {
+          throw new StorageError('INVALID_CONTENT', 'A copy source file is unsafe or exceeds the aggregate note-size limit.', { path: entry.path });
+        }
+        const bytes = await this.readBytes(entry);
+        totalBytes += bytes.byteLength;
+        if (totalBytes > 32 * 1024 * 1024) throw new StorageError('INVALID_CONTENT', 'Copy snapshot exceeds the 32 MiB aggregate note-size limit.');
+        const note = parseNote(decodeVaultText(bytes, entry.path), entry.path);
+        if (ids.has(note.id)) throw new StorageError('DUPLICATE_ID', `Duplicate note identity "${note.id}" in copy snapshot.`, { path: entry.path });
+        ids.add(note.id);
+        const rawSha256 = sha256Hex(bytes);
+        manifest.push([note.id, note.path, rawSha256]);
+        if (retainNotes) parsed.push({ note, rawSha256 });
+      }
+      const digest = sha256Hex(Buffer.from(JSON.stringify({
+        manifest,
+        entries: inventory.entries.map((entry) => [entry.kind, entry.path]),
+        folders: inventory.folders,
+      })));
+      return { digest, ...(retainNotes ? { notes: parsed } : {}) };
+    };
+
+    const first = await capture(false);
+    const second = await capture(true);
+    if (first.digest !== second.digest) throw new StorageError('CONFLICT', 'Vault changed during copy preview capture.');
+    const parsed = second.notes;
+    if (parsed === undefined) throw new StorageError('STORAGE_FAILURE', 'Copy preview did not retain its verified note snapshot.');
+    const source = parsed.find(({ note }) => note.id === sourceId);
+    if (source === undefined) throw new StorageError('NOT_FOUND', 'Copy source was not found.', { details: { ids: [sourceId] } });
+
+    const model = buildNoteCopyModel(source.note, {
+      copyId,
+      copyInstant: instant,
+      existingIds: new Set(parsed.map(({ note }) => note.id)),
+    });
+    if (!model.ok) {
+      throw new StorageError('INVALID_INPUT', 'Copy source contains unsupported or unsafe content.', {
+        details: { issues: model.rejections.map((issue) => issue.message) },
+      });
+    }
+
+    const proposed: Note = {
+      id: model.model.note.id,
+      path: destination,
+      title: model.model.note.title,
+      body: model.model.note.body,
+      createdAt: model.model.note.createdAt,
+      updatedAt: model.model.note.updatedAt,
+      tags: [...model.model.note.tags],
+      aliases: [...model.model.note.aliases],
+      extraFrontmatter: model.model.note.icon === null ? {} : { icon: model.model.note.icon },
+    };
+    const serialized = Buffer.from(serializeNote(proposed), 'utf8');
+    if (serialized.byteLength > 32 * 1024 * 1024) throw new StorageError('INVALID_CONTENT', 'Serialized copy exceeds the 32 MiB operation-plan limit.');
+
+    const resolverNotes = parsed.map(({ note, rawSha256 }) => ({
+      id: note.id, title: note.title, path: note.path, body: note.body,
+      aliases: [...note.aliases], sourceRawContentHash: rawSha256,
+    }));
+    const projection = compareResolverStability(
+      { complete: true, notes: resolverNotes },
+      { complete: true, notes: [...resolverNotes, {
+        id: proposed.id, title: proposed.title, path: proposed.path, body: proposed.body,
+        aliases: [...proposed.aliases], sourceRawContentHash: sha256Hex(serialized),
+      }] },
+      copyId,
+    );
+    if (!projection.stable) {
+      throw new StorageError('CONFLICT', 'Copy would change an existing wiki-link resolution.', {
+        details: { issues: projection.issues.map((issue) => issue.message) },
+      });
+    }
+    checkBudget();
+    await validateDestination();
+
+    return {
+      digest: second.digest,
+      model: model.model,
+      outgoing: projection.copiedNoteOutgoing,
+      source: { id: source.note.id, path: source.note.path, rawSha256: source.rawSha256 },
+      copyContentSha256: sha256Hex(serialized),
+      copyContentBytes: serialized.byteLength,
+      resolverProjectionSha256: sha256Hex(JSON.stringify({ before: projection.before, afterExisting: projection.afterExisting, copiedNoteOutgoing: projection.copiedNoteOutgoing })),
+    };
   }
 
   async listNotes(): Promise<NoteSummary[]> {
@@ -1502,10 +1790,10 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   }
 
   async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {
-    return withVaultRootLock(this.root, async () => ({
-      entries: await this.snapshotUnlocked(),
-      propertyCatalog: await this.readPropertyCatalogFileUnlocked(),
-    }));
+    return withVaultRootLock(this.root, async () => {
+      await new CopyOperationJournal(this.root).assertNoUnresolved();
+      return { entries: await this.snapshotUnlocked(), propertyCatalog: await this.readPropertyCatalogFileUnlocked() };
+    });
   }
 
   /** Captures every Nodus-managed portable resource while holding one root lock. */
@@ -1515,6 +1803,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
 
   /** Caller must hold the root lock. */
   private async snapshotForPortableExportUnlocked(allowedImportOperationId?: string): Promise<PortableExportSnapshot> {
+    await new CopyOperationJournal(this.root).assertNoUnresolved();
     const entries = await this.snapshotUnlocked(allowedImportOperationId);
     const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
     const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
@@ -1819,7 +2108,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async applyImport(plan: ImportPlan, options: ImportOptions = {}): Promise<ImportReport> {
     return withVaultRootLock(this.root, async () => {
       try {
-        await this.assertImportTransactionsSnapshotSafe();
+        await this.assertTransferAdmissionUnlocked();
         if (options.atomicNewFiles) await this.recoverTemplateApplyTransactionsUnlocked();
         return await this.applyImportLocked(plan, options);
       } finally {
@@ -1863,9 +2152,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       resources.push(resource);
       payloads.push({ resource, bytes });
     }
-    const transactionRoot = await this.ensureImportTransactionRoot();
-    const transactionDirectory = join(transactionRoot, operationId);
-    await mkdir(transactionDirectory, { mode: 0o700 });
+    const transactionDirectory = join(this.root, IMPORT_TRANSACTION_DIR, operationId);
     const stagedDirectory = join(transactionDirectory, 'staged');
     const backupDirectory = join(transactionDirectory, 'backup');
     let journal: ImportTransactionJournal = {
@@ -1873,11 +2160,16 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
       sourceFingerprint: binding.sourceFingerprint, destinationFingerprint: binding.destinationFingerprint,
       startedAt, updatedAt: new Date().toISOString(), files: resources, decisions: decisions.map((decision) => ({ ...decision })), folders: [],
     };
-    try { await this.writeImportJournal(transactionDirectory, journal); }
-    catch (error) {
-      await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
-      throw error;
-    }
+    await withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked();
+      await this.ensureImportTransactionRoot();
+      await mkdir(transactionDirectory, { mode: 0o700 });
+      try { await this.writeImportJournal(transactionDirectory, journal); }
+      catch (error) {
+        await this.removeImportTransactionDirectory(transactionDirectory).catch(() => undefined);
+        throw error;
+      }
+    });
     try {
       await mkdir(stagedDirectory, { mode: 0o700 });
       await mkdir(backupDirectory, { mode: 0o700 });
@@ -2015,6 +2307,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async recoverImportOperation(operationId: string): Promise<import('../contracts.js').ImportOperationStatus> {
     if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
     return withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked(operationId);
       const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
       let rootInfo;
       try { rootInfo = await lstat(transactionRoot); } catch (error) { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; }
@@ -2041,6 +2334,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async retryImportOperation(operationId: string): Promise<import('../contracts.js').ImportExecutionReport> {
     if (!isUuidV4(operationId)) throw new StorageError('INVALID_INPUT', 'Import operation ID must be a lowercase UUID v4.');
     return withVaultRootLock(this.root, async () => {
+      await this.assertTransferAdmissionUnlocked(operationId);
       const transactionRoot = join(this.root, IMPORT_TRANSACTION_DIR);
       const rootInfo = await lstat(transactionRoot).catch((error) => { if (isMissing(error)) throw new StorageError('NOT_FOUND', 'Import operation was not found.'); throw error; });
       if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new StorageError('UNSAFE_PATH', 'Import transaction storage must be a real directory.', { path: IMPORT_TRANSACTION_DIR });
@@ -3416,7 +3710,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     return absolute;
   }
 
-  private async validateNoteTarget(path: string): Promise<string> {
+  private async validateNoteTarget(path: string, previewBudget?: TraversalBudget): Promise<string> {
     const absolute = await this.validateDocumentPath(path);
     if (path.split('/').some((segment) => segment.startsWith('.'))) {
       throw new StorageError('UNSAFE_PATH', `Hidden note path "${path}" is excluded from the vault`, {
@@ -3432,7 +3726,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
     }
     if (path.split('/')[0]?.normalize('NFC').toLowerCase() === ATTACHMENTS_DIR) {
       const attachmentDirectory = resolveInsideRoot(this.root, ATTACHMENTS_DIR);
-      if (await pathExists(attachmentDirectory) && await isManagedAttachmentDirectory(attachmentDirectory)) {
+      if (await pathExists(attachmentDirectory) && (previewBudget === undefined
+        ? await isManagedAttachmentDirectory(attachmentDirectory)
+        : (await boundedEntries(attachmentDirectory, previewBudget)).every((child) => child.name.startsWith('.') || (!child.isSymbolicLink() && child.isFile() && attachmentPathId(`${ATTACHMENTS_DIR}/${child.name}`) !== undefined)))) {
         throw new StorageError('INVALID_INPUT', `Path "${path}" is reserved for managed attachments`, { path });
       }
     }

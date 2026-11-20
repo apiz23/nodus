@@ -1,6 +1,6 @@
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { serializeDatabaseViewOrder } from '../src/database/database-view-order.js';
 import type { DatabaseDefinition } from '../src/database/schema.js';
 import { createBackup, previewRestore, restoreBackup, validateBackup } from '../src/storage/backup/backup.js';
@@ -86,6 +86,30 @@ describe('saved-view ordering portability', () => {
       const restored = await FileSystemVault.open(restoredRoot);
       expect(await restored.readDatabaseViewOrder(DB)).toMatchObject({ revision: 1, viewIds: [V2, V1] });
       expect((await restored.listDatabaseViews(DB)).map((item) => item.view.id)).toEqual([V1, V2]);
+    });
+  });
+
+  it('builds a backup from one complete snapshot when the vault changes immediately afterward', async () => {
+    await withTempDir(async (dir) => {
+      const source = await seedVault(join(dir, 'source'), true);
+      const target = join(dir, 'backup');
+      const originalSnapshot = source.snapshotForPortableExport.bind(source);
+      let changedAfterCapture = false;
+      const capture = vi.spyOn(source, 'snapshotForPortableExport').mockImplementation(async () => {
+        const snapshot = await originalSnapshot();
+        const order = snapshot.databaseViewOrders[0]!;
+        await source.writeDatabaseViewOrder(DB, [V1, V2], { expectedHash: order.hash });
+        changedAfterCapture = true;
+        return snapshot;
+      });
+
+      await createBackup(source, target);
+
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(changedAfterCapture).toBe(true);
+      expect((await source.readDatabaseViewOrder(DB)).viewIds).toEqual([V1, V2]);
+      const validation = await validateBackup(target);
+      expect(validation.databaseViewOrders?.[0]).toMatchObject({ revision: 1, viewIds: [V2, V1] });
     });
   });
 
