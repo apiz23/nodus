@@ -1,4 +1,5 @@
 import { CopyOperationJournal, type CopyOperationPlan } from './copy-operation-journal.js';
+import { assertNoUnresolvedPublicationEvidence } from './copy-publication-execution.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { lstat, mkdir, readFile, readdir, realpath, unlink, rmdir, rm } from 'node:fs/promises';
@@ -337,6 +338,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async recoverCopyOperations(): Promise<import('../contracts.js').CopyOperationRecoveryReport> {
     return withVaultRootLock(this.root, async () => {
       await this.assertImportTransactionsSnapshotSafe();
+      await assertNoUnresolvedPublicationEvidence(this.root);
       const report = await new CopyOperationJournal(this.root).recover((plan) => this.verifyPreparedCopyUnlocked(plan));
       return { ...report, operations: await new CopyOperationJournal(this.root).list() };
     });
@@ -345,6 +347,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async cancelPreparedCopyOperation(operationId: string) {
     return withVaultRootLock(this.root, async () => {
       await this.assertImportTransactionsSnapshotSafe();
+      await assertNoUnresolvedPublicationEvidence(this.root);
       return new CopyOperationJournal(this.root).cancel(operationId, async (plan) => {
         // The Prepared chain has no publication step. Revalidate the reviewed
         // inventory to rule out a destination that appeared outside that chain.
@@ -364,6 +367,9 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   private async assertTransferAdmissionUnlocked(allowedImportOperationId?: string): Promise<void> {
     await this.assertImportTransactionsSnapshotSafe(allowedImportOperationId);
     await new CopyOperationJournal(this.root).assertNoUnresolved();
+    // Phase 19 M6.2: interrupted or unreadable publication staging/receipt
+    // evidence must also block transfers until a human reviews it.
+    await assertNoUnresolvedPublicationEvidence(this.root);
   }
 
   private createCopyPreviewBudget(deadline: number): CopyPreviewBudget {
@@ -1792,6 +1798,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   async snapshotWithPropertyCatalog(): Promise<{ entries: VaultEntry[]; propertyCatalog: PropertyCatalogFile | null }> {
     return withVaultRootLock(this.root, async () => {
       await new CopyOperationJournal(this.root).assertNoUnresolved();
+      await assertNoUnresolvedPublicationEvidence(this.root);
       return { entries: await this.snapshotUnlocked(), propertyCatalog: await this.readPropertyCatalogFileUnlocked() };
     });
   }
@@ -1804,6 +1811,7 @@ export class FileSystemVault implements VaultStorage, NoteStore, DatabaseStore {
   /** Caller must hold the root lock. */
   private async snapshotForPortableExportUnlocked(allowedImportOperationId?: string): Promise<PortableExportSnapshot> {
     await new CopyOperationJournal(this.root).assertNoUnresolved();
+    await assertNoUnresolvedPublicationEvidence(this.root);
     const entries = await this.snapshotUnlocked(allowedImportOperationId);
     const propertyCatalog = await this.readPropertyCatalogFileUnlocked();
     const databaseViewOrders = await this.listDatabaseViewOrderFilesUnlocked();
