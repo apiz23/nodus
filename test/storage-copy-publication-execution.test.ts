@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -10,6 +10,7 @@ import { CopyOperationJournal, type CopyOperationPlanInput } from '../src/storag
 import {
   COPY_PUBLICATION_RECEIPT_DIR,
   COPY_PUBLICATION_STAGING_DIR,
+  assertNoUnresolvedPublicationEvidence,
   executeCopyPublication,
   inspectCopyPublicationEvidence,
   type CopyPublicationExecutionDependencies,
@@ -150,6 +151,62 @@ describe('Phase 19 M6.2 publication execution', () => {
     expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
     const before = await inventory(root);
     expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('already-published');
+    expect(await inventory(root)).toEqual(before);
+  });
+
+  it.each(['deleted', 'modified', 'replaced', 'symlink'] as const)('preserves evidence when a previously published destination is %s', async (change) => {
+    const root = await tempRoot();
+    const bytes = bytesFor();
+    const { operationId, attemptId } = await prepareOperation(root, bytes);
+    expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
+    const path = join(root, 'copy.md');
+    if (change === 'deleted') await rm(path);
+    if (change === 'modified') await writeFile(path, Buffer.alloc(bytes.length, 0x61));
+    if (change === 'replaced' || change === 'symlink') {
+      await rename(path, join(root, 'original.md'));
+      if (change === 'replaced') await writeFile(path, bytes);
+      else await symlink('original.md', path);
+    }
+    const before = await inventory(root);
+    await expect(publish(root, operationId, attemptId, bytes)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
+    expect(await inventory(root)).toEqual(before);
+  });
+
+  it.each([
+    ['notes', 'Notes'],
+    ['café'.normalize('NFD'), 'café'],
+  ])('rejects a folded intermediate parent alias %s → %s', async (existing, requested) => {
+    const root = await tempRoot();
+    const bytes = bytesFor();
+    await mkdir(join(root, 'outer', existing, 'inner'), { recursive: true });
+    const { operationId, attemptId } = await prepareOperation(root, bytes, `outer/${requested}/inner/copy.md`);
+    const before = await inventory(root);
+    await expect(publish(root, operationId, attemptId, bytes)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await inventory(root)).toEqual(before);
+  });
+
+  it('accepts exact nested parent names', async () => {
+    const root = await tempRoot();
+    const bytes = bytesFor();
+    await mkdir(join(root, 'Outer', 'Inner'), { recursive: true });
+    const { operationId, attemptId } = await prepareOperation(root, bytes, 'Outer/Inner/copy.md');
+    expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
+    expect(await readFile(join(root, 'Outer/Inner/copy.md'))).toEqual(bytes);
+  });
+
+  it.each(['operation', 'attempt'] as const)('blocks a receipt stored under the wrong %s', async (mismatch) => {
+    const root = await tempRoot();
+    const bytes = bytesFor();
+    const { operationId, attemptId } = await prepareOperation(root, bytes);
+    expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
+    const directory = join(root, COPY_PUBLICATION_RECEIPT_DIR, operationId);
+    if (mismatch === 'operation') await rename(directory, join(dirname(directory), randomUUID()));
+    else await rename(join(directory, `${attemptId}.json`), join(directory, `${randomUUID()}.json`));
+    const before = await inventory(root);
+    const report = await inspectCopyPublicationEvidence(root);
+    expect(report.receipts).toEqual([]);
+    expect(report.unresolved).toHaveLength(1);
+    await expect(assertNoUnresolvedPublicationEvidence(root)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
     expect(await inventory(root)).toEqual(before);
   });
 

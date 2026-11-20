@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { chmod, link, lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
@@ -177,7 +178,19 @@ async function executeCopyPublicationUnlocked(
   // 4. Idempotency and receipt integrity, before touching staging or destination.
   const receiptPath = join(root, COPY_PUBLICATION_RECEIPT_DIR, bound.ownerJournalOperationId, `${bound.attemptId}.json`);
   const existing = await readReceipt(receiptPath, bound);
-  if (existing.kind === 'valid') return { kind: 'already-published', receipt: existing.receipt };
+  if (existing.kind === 'valid') {
+    try {
+      const destination = await resolveLiveDestination(root, bound.destination.path);
+      await verifyPublishedDestination(destination, existing.receipt);
+    } catch (error) {
+      throw new StorageError('PARTIAL_WRITE', 'The live destination does not verify against its copy publication receipt. Preserve both for manual review.', {
+        cause: error,
+        path: bound.destination.path,
+        details: { paths: [bound.destination.path, `${COPY_PUBLICATION_RECEIPT_DIR}/${bound.ownerJournalOperationId}/${bound.attemptId}.json`] },
+      });
+    }
+    return { kind: 'already-published', receipt: existing.receipt };
+  }
   if (existing.kind === 'invalid') {
     throw new StorageError('PARTIAL_WRITE', `Existing copy publication receipt is unusable: ${existing.reason}. Preserve it for manual review.`, {
       path: `${COPY_PUBLICATION_RECEIPT_DIR}/${bound.ownerJournalOperationId}/${bound.attemptId}.json`,
@@ -328,7 +341,13 @@ export async function inspectCopyPublicationEvidence(root: string): Promise<Copy
           const relative = `${COPY_PUBLICATION_RECEIPT_DIR}/${operationName}/${attemptName}`;
           if (!attemptName.endsWith('.json')) { add(`${relative}: unrecognized receipt file.`); continue; }
           const checked = await readReceipt(join(directory, attemptName), undefined);
-          if (checked.kind === 'valid') receipts.push(`${operationName}/${attemptName}`);
+          if (checked.kind === 'valid') {
+            if (checked.receipt.operationId !== operationName || `${checked.receipt.attemptId}.json` !== attemptName) {
+              add(`${relative}: receipt identity does not match its operation directory or attempt filename.`);
+            } else {
+              receipts.push(`${operationName}/${attemptName}`);
+            }
+          }
           else if (checked.kind === 'invalid') add(`${relative}: ${checked.reason}`);
         }
       }
@@ -348,7 +367,7 @@ export async function assertNoUnresolvedPublicationEvidence(root: string): Promi
   });
 }
 
-async function authorizeLiveDestination(root: string, notePath: string): Promise<string> {
+async function resolveLiveDestination(root: string, notePath: string): Promise<string> {
   let absolute: string;
   try { absolute = resolveInsideRoot(root, notePath); }
   catch (error) { throw new StorageError('UNSAFE_PATH', 'Copy publication destination escapes the vault.', { path: notePath, cause: error }); }
@@ -356,6 +375,13 @@ async function authorizeLiveDestination(root: string, notePath: string): Promise
   const segments = notePath.split('/');
   let current = root;
   for (const segment of segments.slice(0, -1)) {
+    const siblings = await boundedDirectoryNames(current, 50_000);
+    if (siblings.truncated) {
+      throw new StorageError('INVALID_CONTENT', 'Copy publication destination directory exceeds the inventory bound.', { path: notePath });
+    }
+    if (siblings.names.some((name) => name !== segment && foldName(name) === foldName(segment))) {
+      throw new StorageError('CONFLICT', 'Copy publication destination parent collides by case or Unicode normalization with an existing entry.', { path: notePath });
+    }
     current = join(current, segment);
     const info = await lstatOrNull(current);
     if (info === null) throw new StorageError('NOT_FOUND', 'Copy publication destination parent directory does not exist.', { path: notePath });
@@ -364,6 +390,41 @@ async function authorizeLiveDestination(root: string, notePath: string): Promise
     }
   }
 
+  return absolute;
+}
+
+async function verifyPublishedDestination(absolute: string, receipt: CopyPublicationReceipt): Promise<void> {
+  const initial = await lstat(absolute, { bigint: true });
+  const expectedSize = BigInt(receipt.destination.contentBytes);
+  const matchesReceipt = (info: typeof initial) => info.isFile() && info.size === expectedSize
+    && String(info.dev) === receipt.objectIdentity.deviceId && String(info.ino) === receipt.objectIdentity.fileId;
+  if (!matchesReceipt(initial)) throw new Error('Destination type, size, or identity differs from the receipt.');
+
+  const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!matchesReceipt(opened)) throw new Error('Destination changed while opening.');
+    const hash = createHash('sha256');
+    const buffer = Buffer.alloc(64 * 1024);
+    let remaining = receipt.destination.contentBytes;
+    while (remaining > 0) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(remaining, buffer.length), null);
+      if (bytesRead === 0) throw new Error('Destination ended before the recorded size.');
+      hash.update(buffer.subarray(0, bytesRead));
+      remaining -= bytesRead;
+    }
+    const final = await lstat(absolute, { bigint: true });
+    if (!matchesReceipt(final) || final.mtimeNs !== opened.mtimeNs || final.ctimeNs !== opened.ctimeNs
+      || hash.digest('hex') !== receipt.destination.contentSha256) {
+      throw new Error('Destination content or identity differs from the receipt.');
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function authorizeLiveDestination(root: string, notePath: string): Promise<string> {
+  const absolute = await resolveLiveDestination(root, notePath);
   const existing = await lstatOrNull(absolute);
   if (existing !== null) {
     throw new StorageError('CONFLICT', 'Copy publication destination already exists.', { path: notePath });
@@ -466,7 +527,8 @@ async function readReceipt(path: string, identity: CopyPublicationIdentity | und
       && receipt.preparedEventSha256 === identity.preparedEventSha256
       && receipt.destination.path === identity.destination.path
       && receipt.destination.noteId === identity.destination.noteId
-      && receipt.destination.contentSha256 === identity.destination.contentSha256;
+      && receipt.destination.contentSha256 === identity.destination.contentSha256
+      && receipt.destination.contentBytes === identity.destination.contentBytes;
     if (!matches) return { kind: 'invalid', reason: 'receipt belongs to a different operation, attempt, or destination' };
   }
   return { kind: 'valid', receipt };
