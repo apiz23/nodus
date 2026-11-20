@@ -377,6 +377,52 @@ export class CopyOperationJournal {
     return statuses;
   }
 
+  /**
+   * Reads one durable v1 `Prepared` plan record through the journal's own
+   * inspection path so a later milestone can bind publication execution to
+   * durable evidence instead of caller-supplied data. Read-only: it appends no
+   * event, changes no state, and repairs nothing.
+   * Must be called while holding withVaultRootLock for this root.
+   */
+  async readPreparedEvent(operationId: string): Promise<CopyJournalPreparedEventRead> {
+    if (!isUuidV4(operationId)) {
+      return { kind: 'invalid', reason: 'Copy operation ID is not a UUID v4.', code: 'INVALID_INPUT' };
+    }
+    const journalRoot = join(this.#root, COPY_OPERATION_JOURNAL_DIR);
+    const identity = await this.readIdentity();
+    if (identity === undefined) {
+      return { kind: 'invalid', reason: 'The copy journal has no vault identity.', code: 'NOT_FOUND' };
+    }
+    await this.assertOperationsDirectory(journalRoot);
+    const operationPath = join(journalRoot, OPERATIONS_DIR, operationId);
+    if (await this.lstatOrMissing(operationPath) === undefined) {
+      return { kind: 'invalid', reason: 'Copy operation was not found.', code: 'NOT_FOUND' };
+    }
+    let inspection: OperationInspection;
+    try { inspection = await this.inspectOperation(operationId, operationPath, identity); }
+    catch (error) {
+      return { kind: 'invalid', reason: `Prepared journal evidence could not be read: ${describe(error)}`, code: 'PARTIAL_WRITE' };
+    }
+    if (inspection.state === 'Corrupt') {
+      return { kind: 'invalid', reason: inspection.issue ?? 'corrupt journal evidence', code: 'PARTIAL_WRITE' };
+    }
+    if (inspection.state !== 'Prepared') {
+      return { kind: 'invalid', reason: `Copy operation state is ${inspection.state}, not Prepared.`, code: 'CONFLICT' };
+    }
+    const record = inspection.events[0];
+    if (record === undefined || record.plan === undefined) {
+      return { kind: 'invalid', reason: 'Prepared operation has no durable plan record.', code: 'PARTIAL_WRITE' };
+    }
+    return {
+      kind: 'valid',
+      record,
+      event: {
+        operationId: record.operationId, vaultInstanceId: record.vaultInstanceId, vaultLineageId: record.vaultLineageId,
+        recordedAt: record.recordedAt, digestSha256: record.sha256, plan: record.plan,
+      },
+    };
+  }
+
   private async appendTransitionUnlocked(operation: OperationInspection, state: CopyOperationState, evidence: Record<string, unknown>): Promise<void> {
     const current = operation.state;
     if (current === 'Corrupt' || !isLegalCopyOperationTransition(current, state)) {
@@ -855,6 +901,11 @@ export interface CopyJournalPreparedEvent {
 export type CopyJournalPreparedEventValidation =
   | { readonly kind: 'valid'; readonly event: CopyJournalPreparedEvent }
   | { readonly kind: 'invalid'; readonly reason: string };
+
+/** Result of reading one durable Prepared record; `code` maps to a storage error. */
+export type CopyJournalPreparedEventRead =
+  | { readonly kind: 'valid'; readonly event: CopyJournalPreparedEvent; readonly record: unknown }
+  | { readonly kind: 'invalid'; readonly reason: string; readonly code: 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT' | 'PARTIAL_WRITE' };
 
 /**
  * Read-only validation of an already parsed v1 `Prepared` journal event,
