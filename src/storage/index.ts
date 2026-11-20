@@ -8,15 +8,21 @@ export {
 
 export {
   assessCopyPublicationEvidence,
+  assessCopyPublicationTemporalPlausibility,
   copyPublicationReceiptDigest,
+  createCopyPublicationIdentity,
+  deriveCopyPublicationPreparedEventDigest,
   matchesPreparedCopyIdentity,
   validateCopyPublicationIdentity,
+  PUBLICATION_MAX_CLOCK_SKEW_MS,
+  PUBLICATION_MAX_OBSERVATION_AGE_MS,
   type CopyDestinationNoteId,
   type CopyJournalOperationId,
   type CopyPublicationAttemptId,
   type CopyPublicationCollisionKey,
   type CopyPublicationEvidenceDocument,
   type CopyPublicationIdentity,
+  type CopyPublicationIdentityConstruction,
   type CopyPublicationNotePath,
   type CopyPublicationReceiptEvidence,
   type CopyPublicationReceiptDigestInput,
@@ -29,6 +35,8 @@ export {
   type PublicationEvidenceClassification,
   type PublicationFilesystemObjectIdentity,
   type PublicationSourceObservation,
+  type PublicationTemporalAssessment,
+  type PublicationTemporalStatus,
 } from './copy-publication.js';
 
 export {

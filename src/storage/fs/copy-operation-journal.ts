@@ -836,6 +836,73 @@ export function isLegalCopyOperationTransition(from: CopyOperationState, to: Cop
   }
 }
 
+/**
+ * The journal's authoritative event digest domain. A journal event's identity is
+ * the value stored in its own `sha256` field: `sha256Hex(JSON.stringify(body))`
+ * over the canonical event body (fixed key order, canonical plan and evidence
+ * projection). It is never the digest of the serialized file bytes, which also
+ * contain the trailing newline and the `sha256` field itself.
+ */
+export interface CopyJournalPreparedEvent {
+  readonly operationId: string;
+  readonly vaultInstanceId: string;
+  readonly vaultLineageId: string;
+  readonly recordedAt: string;
+  readonly digestSha256: string;
+  readonly plan: CopyOperationPlan;
+}
+
+export type CopyJournalPreparedEventValidation =
+  | { readonly kind: 'valid'; readonly event: CopyJournalPreparedEvent }
+  | { readonly kind: 'invalid'; readonly reason: string };
+
+/**
+ * Read-only validation of an already parsed v1 `Prepared` journal event,
+ * returning the canonical digest the journal itself computed. This is a purely
+ * additive surface so later milestones bind publication evidence to the same
+ * digest domain instead of re-implementing canonicalization. It changes no
+ * journal serialization, state, resolution, recovery, or admission behavior.
+ */
+export function validateCopyJournalPreparedEvent(input: unknown): CopyJournalPreparedEventValidation {
+  try {
+    if (!isRecord(input)) return { kind: 'invalid', reason: 'Prepared event is not a JSON object.' };
+    if (!hasOnlyKeys(input, ['format', 'version', 'operationId', 'vaultInstanceId', 'vaultLineageId', 'sequence', 'state', 'recordedAt', 'previousSha256', 'plan', 'evidence', 'sha256'])) {
+      return { kind: 'invalid', reason: 'Prepared event contains unknown fields.' };
+    }
+    const event = input as unknown as JournalEvent;
+    if (event.format !== 'nodus-copy-operation-event' || event.version !== 1) {
+      return { kind: 'invalid', reason: 'Prepared event format or version is unsupported.' };
+    }
+    if (!isUuidV4(event.operationId) || !isUuidV4(event.vaultInstanceId) || !isUuidV4(event.vaultLineageId)) {
+      return { kind: 'invalid', reason: 'Prepared event identity fields are invalid.' };
+    }
+    if (event.sequence !== 0 || event.state !== 'Prepared' || event.previousSha256 !== null
+      || event.plan === undefined || event.evidence !== undefined) {
+      return { kind: 'invalid', reason: 'Event is not an immutable v1 Prepared plan record.' };
+    }
+    if (!isTimestamp(event.recordedAt) || !isSha256(event.sha256)) {
+      return { kind: 'invalid', reason: 'Prepared event timestamp or digest is invalid.' };
+    }
+    if (sha256Hex(JSON.stringify(eventBody(event))) !== event.sha256) {
+      return { kind: 'invalid', reason: 'Prepared event canonical checksum is invalid.' };
+    }
+    validatePlan(event.plan);
+    if (event.plan.operationId !== event.operationId || event.plan.vaultInstanceId !== event.vaultInstanceId
+      || event.plan.vaultLineageId !== event.vaultLineageId) {
+      return { kind: 'invalid', reason: 'Prepared plan identity does not match its event.' };
+    }
+    return {
+      kind: 'valid',
+      event: {
+        operationId: event.operationId, vaultInstanceId: event.vaultInstanceId, vaultLineageId: event.vaultLineageId,
+        recordedAt: event.recordedAt, digestSha256: event.sha256, plan: event.plan,
+      },
+    };
+  } catch (error) {
+    return { kind: 'invalid', reason: error instanceof Error ? error.message : 'Prepared event could not be read safely.' };
+  }
+}
+
 function validatePlanInput(value: CopyOperationPlanInput): void {
   if (!isRecord(value) || !isSha256(value.previewTokenSha256) || !isSha256(value.previewBindingSha256)
     || !isSha256(value.snapshotSha256) || !isTimestamp(value.confirmedAt) || !isRecord(value.source)

@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { isUuidV4 } from '../domain/ids.js';
 import { isTimestamp as isNoteTimestamp } from '../domain/note.js';
 import { validateNotePath } from '../domain/paths.js';
+import { ATTACHMENTS_DIR } from './fs/attachments.js';
+import { validateCopyJournalPreparedEvent } from './fs/copy-operation-journal.js';
+import { isReservedNotePath } from './fs/layout.js';
 import {
   assessFilesystemPublicationCapability,
   parseFilesystemPublicationCapabilityProbe,
@@ -33,7 +36,13 @@ export interface CopyPublicationIdentity {
   readonly ownerJournalOperationId: CopyJournalOperationId;
   /** Must be the operation whose v1 Prepared plan is being extended. */
   readonly preparedOperationId: CopyJournalOperationId;
-  /** Binds the identity to the exact immutable v1 Prepared event bytes. */
+  /**
+   * The authoritative v1 Prepared journal event digest: the event's own
+   * `sha256` value, i.e. `sha256Hex(JSON.stringify(canonicalEventBody))` as
+   * computed by `copy-operation-journal.ts`. It is NOT a digest of the
+   * serialized file bytes and no other digest domain is accepted. Derive it
+   * with `createCopyPublicationIdentity`, never by hand.
+   */
   readonly preparedEventSha256: CopyPublicationSha256;
   /** Distinguishes one future attempt from another attempt for the same plan. */
   readonly attemptId: CopyPublicationAttemptId;
@@ -96,6 +105,121 @@ export function matchesPreparedCopyIdentity(
     && identity.destination.noteId === prepared.copy.id
     && identity.destination.contentSha256 === prepared.copy.serializedSha256
     && identity.destination.contentBytes === prepared.copy.serializedBytes;
+}
+
+export type CopyPublicationIdentityConstruction =
+  | { readonly kind: 'valid'; readonly identity: CopyPublicationIdentity }
+  | { readonly kind: 'invalid'; readonly reason: string };
+
+/**
+ * The only sanctioned way to obtain a publication identity: pass the parsed
+ * v1 `Prepared` journal event read from durable journal storage. Every bound
+ * field — operation IDs, vault IDs, source, destination, content digest and
+ * length, and the canonical `preparedEventSha256` — is taken from the journal's
+ * own validated record, so a caller cannot hand-map a digest from a different
+ * domain. Malformed, non-`Prepared`, or checksum-inconsistent events are
+ * rejected rather than trusted.
+ */
+export function createCopyPublicationIdentity(input: {
+  readonly preparedEvent: unknown;
+  readonly attemptId: string;
+}): CopyPublicationIdentityConstruction {
+  if (!isRecord(input)) return { kind: 'invalid', reason: 'Publication identity construction input is not an object.' };
+  const validated = validateCopyJournalPreparedEvent(input.preparedEvent);
+  if (validated.kind !== 'valid') return { kind: 'invalid', reason: validated.reason };
+  if (typeof input.attemptId !== 'string' || !isUuidV4(input.attemptId)) {
+    return { kind: 'invalid', reason: 'Publication attempt ID must be a distinct UUID v4.' };
+  }
+  const plan = validated.event.plan;
+  return validateCopyPublicationIdentity({
+    format: 'nodus-copy-publication-identity',
+    version: 1,
+    ownerJournalOperationId: validated.event.operationId,
+    preparedOperationId: validated.event.operationId,
+    preparedEventSha256: validated.event.digestSha256,
+    attemptId: input.attemptId,
+    vault: { instanceId: validated.event.vaultInstanceId, lineageId: validated.event.vaultLineageId },
+    source: { noteId: plan.source.id, path: plan.source.path, rawSha256: plan.source.rawSha256 },
+    destination: {
+      noteId: plan.copy.id, path: plan.destination.path, collisionKey: plan.destination.collisionKey,
+      contentSha256: plan.copy.serializedSha256, contentBytes: plan.copy.serializedBytes,
+    },
+  });
+}
+
+/** Derives the authoritative canonical digest of a v1 Prepared journal event. */
+export function deriveCopyPublicationPreparedEventDigest(preparedEvent: unknown):
+  | { readonly kind: 'valid'; readonly preparedEventSha256: CopyPublicationSha256; readonly recordedAt: string }
+  | { readonly kind: 'invalid'; readonly reason: string } {
+  const validated = validateCopyJournalPreparedEvent(preparedEvent);
+  if (validated.kind === 'valid') {
+    const digest = validated.event.digestSha256;
+    if (!isSha256(digest)) return { kind: 'invalid', reason: 'Journal event digest is not a lowercase SHA-256 encoding.' };
+    return { kind: 'valid', preparedEventSha256: digest, recordedAt: validated.event.recordedAt };
+  }
+  return { kind: 'invalid', reason: validated.reason };
+}
+
+export type PublicationTemporalStatus =
+  | 'malformed'
+  | 'not-after-prepared'
+  | 'future-dated'
+  | 'stale'
+  | 'plausible-unverified';
+
+export interface PublicationTemporalAssessment {
+  readonly status: PublicationTemporalStatus;
+  readonly detail: string;
+  /**
+   * Always false in M6.1: temporal plausibility is arithmetic over
+   * caller-supplied strings. Only a trusted verifier that re-observes the
+   * filesystem can attest that an observation actually happened.
+   */
+  readonly attested: false;
+}
+
+/** Bounded to the accepted preview/confirmation window, not a durability claim. */
+export const PUBLICATION_MAX_CLOCK_SKEW_MS = 30_000;
+export const PUBLICATION_MAX_OBSERVATION_AGE_MS = 5 * 60_000;
+
+/**
+ * Separates timestamp syntax from temporal plausibility. This does not and
+ * cannot establish trusted freshness: `observedAt`, `preparedRecordedAt`, and
+ * `referenceTime` are all untrusted inputs, and a serialized receipt cannot
+ * authenticate its own observation time. A plausible result only means the
+ * timestamps are mutually consistent within documented bounds.
+ */
+export function assessCopyPublicationTemporalPlausibility(input: {
+  readonly preparedRecordedAt: unknown;
+  readonly observedAt: unknown;
+  readonly referenceTime: unknown;
+  readonly maxClockSkewMs?: number;
+  readonly maxObservationAgeMs?: number;
+}): PublicationTemporalAssessment {
+  const times = [input?.preparedRecordedAt, input?.observedAt, input?.referenceTime];
+  if (!times.every((value) => typeof value === 'string' && isNoteTimestamp(value) && Number.isFinite(Date.parse(value)))) {
+    return { status: 'malformed', detail: 'A publication timestamp is malformed or not a canonical ISO-8601 value.', attested: false };
+  }
+  const preparedAt = Date.parse(input.preparedRecordedAt as string);
+  const observedAt = Date.parse(input.observedAt as string);
+  const referenceAt = Date.parse(input.referenceTime as string);
+  const skew = boundedMilliseconds(input.maxClockSkewMs, PUBLICATION_MAX_CLOCK_SKEW_MS);
+  const maximumAge = boundedMilliseconds(input.maxObservationAgeMs, PUBLICATION_MAX_OBSERVATION_AGE_MS);
+  if (observedAt + skew < preparedAt) {
+    return { status: 'not-after-prepared', detail: 'The observation predates the Prepared journal event beyond the permitted clock skew.', attested: false };
+  }
+  if (observedAt > referenceAt + skew) {
+    return { status: 'future-dated', detail: 'The observation is dated after the supplied reference time beyond the permitted clock skew.', attested: false };
+  }
+  if (referenceAt - observedAt > maximumAge) {
+    return { status: 'stale', detail: 'The observation is older than the permitted freshness window.', attested: false };
+  }
+  return { status: 'plausible-unverified', detail: 'Timestamps are mutually consistent, but nothing here attests that the observation occurred.', attested: false };
+}
+
+function boundedMilliseconds(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 24 * 60 * 60 * 1000) return fallback;
+  return Math.floor(value);
 }
 
 export interface PublicationFilesystemObjectIdentity {
@@ -163,17 +287,28 @@ export interface CopyPublicationEvidenceDocument {
 }
 
 export type PublicationEvidenceClassification =
+  /**
+   * FUTURE-ONLY (M6.3). Reachable only when a trusted verifier has attested a
+   * fresh filesystem observation on a qualified filesystem. Serialized evidence
+   * alone must never produce this value, and no M6.1 code path returns it.
+   */
   | { readonly classification: 'definitely-not-published'; readonly identity: CopyPublicationIdentity }
+  /**
+   * FUTURE-ONLY (M6.3). Same attestation requirement as
+   * `definitely-not-published`; never derivable from unauthenticated input.
+   */
   | { readonly classification: 'definitely-published'; readonly identity: CopyPublicationIdentity; readonly objectIdentity: PublicationFilesystemObjectIdentity }
   | { readonly classification: 'ambiguous'; readonly reason: string; readonly identity?: CopyPublicationIdentity }
   | { readonly classification: 'invalid'; readonly reason: string };
 
 /**
- * Validates identity, provenance and cross-field consistency. The current
- * empty qualification allowlist intentionally makes every non-contradictory
- * filesystem outcome ambiguous, even when the supplied facts look complete.
- * A later qualified adapter must also independently establish provenance and
- * freshness before this parser's observations can resolve an operation.
+ * Validates identity, provenance and cross-field consistency, then classifies.
+ * Invariant enforced by tests: this function returns only `ambiguous` or
+ * `invalid`. Missing, incomplete, stale, unqualified, or internally consistent
+ * serialized evidence is never promoted to `definitely-published` or
+ * `definitely-not-published`, because M6.1 has no trusted verifier and the
+ * qualification allowlist is empty. Contradictory, foreign, or malformed
+ * evidence is `invalid` so callers fail closed instead of guessing.
  */
 export function assessCopyPublicationEvidence(
   input: unknown,
@@ -206,22 +341,24 @@ function parseCopyPublicationIdentity(input: unknown): IdentityValidation {
     return { kind: 'invalid', reason: 'Publication vault identity is invalid.' };
   }
   if (!isRecord(input.source) || !hasExactlyKeys(input.source, ['noteId', 'path', 'rawSha256'])
-    || !isSourceNoteId(input.source.noteId) || !isNotePath(input.source.path) || !isSha256(input.source.rawSha256)) {
+    || !isSourceNoteId(input.source.noteId) || !isSha256(input.source.rawSha256)) {
     return { kind: 'invalid', reason: 'Publication source identity is invalid.' };
   }
+  const sourcePath = authorizePublicationNotePath(input.source.path);
+  if (sourcePath.kind !== 'valid') return { kind: 'invalid', reason: `Publication source path is not authorized: ${sourcePath.reason}` };
   if (!isRecord(input.destination) || !hasExactlyKeys(input.destination, [
     'noteId', 'path', 'collisionKey', 'contentSha256', 'contentBytes',
-  ]) || !isDestinationNoteId(input.destination.noteId) || !isNotePath(input.destination.path)
+  ]) || !isDestinationNoteId(input.destination.noteId)
     || !isCollisionKey(input.destination.collisionKey) || !isSha256(input.destination.contentSha256)
     || typeof input.destination.contentBytes !== 'number' || !Number.isSafeInteger(input.destination.contentBytes)
     || input.destination.contentBytes < 0 || input.destination.contentBytes > 32 * 1024 * 1024) {
     return { kind: 'invalid', reason: 'Publication destination identity is invalid.' };
   }
-  const sourcePath = input.source.path;
-  const destinationPath = input.destination.path;
-  if (input.destination.collisionKey !== foldPath(destinationPath)
+  const destinationPath = authorizePublicationNotePath(input.destination.path);
+  if (destinationPath.kind !== 'valid') return { kind: 'invalid', reason: `Publication destination path is not authorized: ${destinationPath.reason}` };
+  if (input.destination.collisionKey !== foldPath(destinationPath.path)
     || sameText(input.source.noteId, input.destination.noteId)
-    || foldPath(sourcePath) === foldPath(destinationPath)) {
+    || foldPath(sourcePath.path) === foldPath(destinationPath.path)) {
     return { kind: 'invalid', reason: 'Publication source and destination identities conflict.' };
   }
   const identity: CopyPublicationIdentity = Object.freeze({
@@ -231,14 +368,36 @@ function parseCopyPublicationIdentity(input: unknown): IdentityValidation {
     preparedEventSha256: input.preparedEventSha256,
     attemptId: input.attemptId,
     vault: Object.freeze({ instanceId: input.vault.instanceId, lineageId: input.vault.lineageId }),
-    source: Object.freeze({ noteId: input.source.noteId, path: sourcePath, rawSha256: input.source.rawSha256 }),
+    source: Object.freeze({ noteId: input.source.noteId, path: sourcePath.path, rawSha256: input.source.rawSha256 }),
     destination: Object.freeze({
-      noteId: input.destination.noteId, path: destinationPath,
+      noteId: input.destination.noteId, path: destinationPath.path,
       collisionKey: input.destination.collisionKey, contentSha256: input.destination.contentSha256,
       contentBytes: input.destination.contentBytes,
     }),
   });
   return { kind: 'valid', identity };
+}
+
+/**
+ * A syntactically valid note path is NOT an authorized publication target.
+ * Identity validation is one security boundary; the actual filesystem
+ * authorization performed by a future publisher under the root lock is a second,
+ * independent boundary that must re-check the live vault (existence, case and
+ * normalization collisions against real inventory, symlink/identity checks,
+ * attachment management state). This mirrors the accepted vault target rules
+ * (`validateNoteTarget`: hidden segments, `isReservedNotePath`, the managed
+ * attachments namespace) without weakening or duplicating them: it is a stricter
+ * static pre-filter that refuses internal namespaces outright, including the
+ * copy journal's own directory, which vault writes already exclude as hidden.
+ */
+function authorizePublicationNotePath(value: unknown):
+  | { readonly kind: 'valid'; readonly path: CopyPublicationNotePath }
+  | { readonly kind: 'invalid'; readonly reason: string } {
+  if (!isNotePath(value)) return { kind: 'invalid', reason: 'not a canonical validated note path' };
+  if (value.split('/').some((segment) => segment.startsWith('.'))) return { kind: 'invalid', reason: 'hidden path segments are reserved for Nodus-internal storage' };
+  if (isReservedNotePath(value.normalize('NFC').toLowerCase())) return { kind: 'invalid', reason: 'the database metadata namespace is reserved' };
+  if (value.split('/')[0]?.normalize('NFC').toLowerCase() === ATTACHMENTS_DIR) return { kind: 'invalid', reason: 'the managed attachments namespace is reserved' };
+  return { kind: 'valid', path: value };
 }
 
 function assessEvidence(input: unknown, expected: CopyPublicationIdentity): PublicationEvidenceClassification {

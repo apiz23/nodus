@@ -21,7 +21,7 @@ export type PublicationCapabilityAssessment =
   | { readonly status: 'supported'; readonly target: FilesystemPublicationCapabilityTarget }
   | { readonly status: 'unsupported'; readonly reason: string; readonly target?: FilesystemPublicationCapabilityTarget }
   | { readonly status: 'not-qualified'; readonly reason: string; readonly target: FilesystemPublicationCapabilityTarget }
-  | { readonly status: 'unavailable'; readonly reason: string }
+  | { readonly status: 'unavailable'; readonly reason: string; readonly target?: FilesystemPublicationCapabilityTarget }
   | { readonly status: 'disabled'; readonly reason: string };
 
 /**
@@ -52,7 +52,7 @@ export function assessFilesystemPublicationCapability(input: unknown): Publicati
       return { status: 'unsupported', reason: 'The required exclusive no-replace primitive is unavailable.', target };
     }
     if (parsed.primitiveSupport === 'unknown') {
-      return { status: 'unavailable', reason: 'The required exclusive no-replace primitive could not be inspected.' };
+      return { status: 'unavailable', reason: 'The required exclusive no-replace primitive could not be inspected.', target };
     }
     if (!FILESYSTEM_PUBLICATION_ALLOWLIST.some((entry) => sameCapabilityTarget(entry, target))) {
       return { status: 'not-qualified', reason: 'No filesystem publication target has completed native qualification.', target };
