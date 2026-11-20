@@ -146,7 +146,12 @@ All storage failures are `StorageError`, which is separate from the Phase 1 `Nod
 | `CORRUPT_BACKUP` | The manifest is missing/invalid, a file is missing, a hash mismatches, or a document is inconsistent. |
 | `PARTIAL_WRITE` | A multi-file operation stopped after changing paths. `details.paths` lists completed paths and the path where it stopped. |
 | `STALE_WRITE` | A conditional write (`expectedHash`) found different bytes on disk. `details.currentHash` carries the current SHA-256 when the file still exists. No write occurred. |
+| `STALE_PREVIEW` | A preview, source package, reviewed decision set, or destination vault changed after review. Nothing was written; create a fresh preview and review it again. |
+| `PREVIEW_EXPIRED` | A preview or confirmation token passed its expiry before use. Nothing was written; create a fresh preview. |
+| `PUBLICATION_CAPABILITY_REFUSED` | Copy publication was refused because the filesystem capability is `unsupported`, `not-qualified`, `unavailable`, or `disabled`. The refusal happens before any write and has no fallback: nothing is staged, published, renamed, or overwritten. |
 | `STORAGE_FAILURE` | An I/O operation failed. |
+
+The loopback UI API maps these codes with `storageStatus`: `NOT_FOUND` → 404; `CONFLICT`, `DUPLICATE_ID`, `STALE_WRITE`, `STALE_PREVIEW`, `PREVIEW_EXPIRED` → 409; `UNSAFE_PATH`, `INVALID_INPUT` → 400; `INVALID_CONTENT`, `UNSUPPORTED_VERSION`, `CORRUPT_BACKUP` → 422; `PARTIAL_WRITE` → 500; `PUBLICATION_CAPABILITY_REFUSED` → 501. `501` is deliberate: the refusal states that this build will not perform the operation on this filesystem, so retrying without a qualification change cannot succeed. Everything else defaults to 500.
 
 ## Safe writes
 
