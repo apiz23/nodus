@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { isUuidV4 } from '../domain/ids.js';
-import { isTimestamp as isNoteTimestamp } from '../domain/note.js';
 import { validateNotePath } from '../domain/paths.js';
 import { ATTACHMENTS_DIR } from './fs/attachments.js';
-import { validateCopyJournalPreparedEvent } from './fs/copy-operation-journal.js';
+import { isCopyJournalTimestamp, validateCopyJournalPreparedEvent } from './fs/copy-operation-journal.js';
 import { isReservedNotePath } from './fs/layout.js';
 import {
   assessFilesystemPublicationCapability,
@@ -183,11 +182,15 @@ export const PUBLICATION_MAX_CLOCK_SKEW_MS = 30_000;
 export const PUBLICATION_MAX_OBSERVATION_AGE_MS = 5 * 60_000;
 
 /**
- * Separates timestamp syntax from temporal plausibility. This does not and
- * cannot establish trusted freshness: `observedAt`, `preparedRecordedAt`, and
- * `referenceTime` are all untrusted inputs, and a serialized receipt cannot
- * authenticate its own observation time. A plausible result only means the
- * timestamps are mutually consistent within documented bounds.
+ * Separates timestamp syntax from temporal plausibility. Inputs must be in the
+ * journal timestamp domain (`isCopyJournalTimestamp`), which is what real
+ * `recordedAt`, `confirmedAt` and evidence `observedAt` values use. This does
+ * not and cannot establish trusted freshness: `observedAt`,
+ * `preparedRecordedAt`, and `referenceTime` are all untrusted inputs, and a
+ * serialized receipt cannot authenticate its own observation time. A plausible
+ * result only means the timestamps are mutually consistent within the applied
+ * bounds, which the result reports so an out-of-range request is never silently
+ * replaced by a default.
  */
 export function assessCopyPublicationTemporalPlausibility(input: {
   readonly preparedRecordedAt: unknown;
@@ -197,24 +200,28 @@ export function assessCopyPublicationTemporalPlausibility(input: {
   readonly maxObservationAgeMs?: number;
 }): PublicationTemporalAssessment {
   const times = [input?.preparedRecordedAt, input?.observedAt, input?.referenceTime];
-  if (!times.every((value) => typeof value === 'string' && isNoteTimestamp(value) && Number.isFinite(Date.parse(value)))) {
-    return { status: 'malformed', detail: 'A publication timestamp is malformed or not a canonical ISO-8601 value.', attested: false };
+  if (!times.every((value) => isCopyJournalTimestamp(value))) {
+    return { status: 'malformed', detail: 'A publication timestamp is malformed or outside the journal timestamp domain.', attested: false };
   }
   const preparedAt = Date.parse(input.preparedRecordedAt as string);
   const observedAt = Date.parse(input.observedAt as string);
   const referenceAt = Date.parse(input.referenceTime as string);
   const skew = boundedMilliseconds(input.maxClockSkewMs, PUBLICATION_MAX_CLOCK_SKEW_MS);
   const maximumAge = boundedMilliseconds(input.maxObservationAgeMs, PUBLICATION_MAX_OBSERVATION_AGE_MS);
+  // Requested bounds that fall back to the defaults are reported, never applied
+  // silently (M6.1R2 review F5): a caller asking for an out-of-range recovery
+  // window must be able to see which window was actually used.
+  const applied = ` Applied bounds: skew=${skew}ms, maxAge=${maximumAge}ms.`;
   if (observedAt + skew < preparedAt) {
-    return { status: 'not-after-prepared', detail: 'The observation predates the Prepared journal event beyond the permitted clock skew.', attested: false };
+    return { status: 'not-after-prepared', detail: `The observation predates the Prepared journal event beyond the permitted clock skew.${applied}`, attested: false };
   }
   if (observedAt > referenceAt + skew) {
-    return { status: 'future-dated', detail: 'The observation is dated after the supplied reference time beyond the permitted clock skew.', attested: false };
+    return { status: 'future-dated', detail: `The observation is dated after the supplied reference time beyond the permitted clock skew.${applied}`, attested: false };
   }
   if (referenceAt - observedAt > maximumAge) {
-    return { status: 'stale', detail: 'The observation is older than the permitted freshness window.', attested: false };
+    return { status: 'stale', detail: `The observation is older than the permitted freshness window.${applied}`, attested: false };
   }
-  return { status: 'plausible-unverified', detail: 'Timestamps are mutually consistent, but nothing here attests that the observation occurred.', attested: false };
+  return { status: 'plausible-unverified', detail: `Timestamps are mutually consistent within these bounds, but nothing here attests that the observation occurred.${applied}`, attested: false };
 }
 
 function boundedMilliseconds(value: unknown, fallback: number): number {
@@ -274,6 +281,12 @@ export interface CopyPublicationEvidenceDocument {
   readonly identity: CopyPublicationIdentity;
   readonly provenance: {
     readonly observerId: string;
+    /**
+     * Journal timestamp domain: second-precision note timestamps and full
+     * ISO-8601 millisecond instants, i.e. exactly what
+     * `new Date().toISOString()` and the v1 journal write. Validating it proves
+     * nothing about when the observation happened and never attests freshness.
+     */
     readonly observedAt: string;
     readonly capability: FilesystemPublicationCapabilityProbe;
   };
@@ -379,21 +392,32 @@ function parseCopyPublicationIdentity(input: unknown): IdentityValidation {
 }
 
 /**
- * A syntactically valid note path is NOT an authorized publication target.
+ * A structurally valid note path is NOT an authorized publication target.
  * Identity validation is one security boundary; the actual filesystem
  * authorization performed by a future publisher under the root lock is a second,
  * independent boundary that must re-check the live vault (existence, case and
- * normalization collisions against real inventory, symlink/identity checks,
- * attachment management state). This mirrors the accepted vault target rules
- * (`validateNoteTarget`: hidden segments, `isReservedNotePath`, the managed
- * attachments namespace) without weakening or duplicating them: it is a stricter
- * static pre-filter that refuses internal namespaces outright, including the
- * copy journal's own directory, which vault writes already exclude as hidden.
+ * Unicode-normalization collisions against the real inventory, symlink and inode
+ * identity, attachment-directory management state). This mirrors the accepted
+ * vault target rules (`validateNoteTarget`: hidden segments, `isReservedNotePath`,
+ * the managed attachments namespace) without weakening or duplicating them, and
+ * it is a stricter static pre-filter that refuses internal namespaces outright,
+ * including the copy journal's own directory, which vault writes already exclude
+ * as hidden.
+ *
+ * Deliberately NOT enforced here (M6.1R2 review F2): Unicode NFC canonicalization
+ * of the path itself. The accepted vault and journal rules do not require NFC
+ * form, so refusing NFD paths would reject legitimately prepared copies and would
+ * imply a guarantee the static layer cannot verify. Normalization parity is
+ * instead pinned by the fold domain: `collisionKey` must equal the NFC-folded
+ * destination path, and source/destination conflict detection compares folded
+ * paths, so NFC and NFD spellings of the same visible name are treated as the
+ * same target. The live inventory check that maps those spellings onto real
+ * directory entries remains an explicit M6.2 prerequisite.
  */
 function authorizePublicationNotePath(value: unknown):
   | { readonly kind: 'valid'; readonly path: CopyPublicationNotePath }
   | { readonly kind: 'invalid'; readonly reason: string } {
-  if (!isNotePath(value)) return { kind: 'invalid', reason: 'not a canonical validated note path' };
+  if (!isNotePath(value)) return { kind: 'invalid', reason: 'not a structurally valid note path' };
   if (value.split('/').some((segment) => segment.startsWith('.'))) return { kind: 'invalid', reason: 'hidden path segments are reserved for Nodus-internal storage' };
   if (isReservedNotePath(value.normalize('NFC').toLowerCase())) return { kind: 'invalid', reason: 'the database metadata namespace is reserved' };
   if (value.split('/')[0]?.normalize('NFC').toLowerCase() === ATTACHMENTS_DIR) return { kind: 'invalid', reason: 'the managed attachments namespace is reserved' };
@@ -479,7 +503,7 @@ type ParseResult<T> = { readonly kind: 'valid'; readonly value: T } | { readonly
 function parseProvenance(input: unknown): ParseResult<CopyPublicationEvidenceDocument['provenance']> {
   if (!isRecord(input) || !hasExactlyKeys(input, ['observerId', 'observedAt', 'capability'])
     || typeof input.observerId !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(input.observerId)
-    || typeof input.observedAt !== 'string' || !isNoteTimestamp(input.observedAt)) return invalid('Publication evidence provenance is malformed.');
+    || !isCopyJournalTimestamp(input.observedAt)) return invalid('Publication evidence provenance is malformed.');
   const capability = parseFilesystemPublicationCapabilityProbe(input.capability);
   if (capability === undefined) return invalid('Publication evidence capability provenance is malformed.');
   return valid({ observerId: input.observerId, observedAt: input.observedAt, capability });

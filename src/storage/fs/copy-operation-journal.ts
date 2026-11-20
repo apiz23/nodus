@@ -1181,6 +1181,18 @@ function toPublicCopyOperationState(state: CopyOperationState | 'Corrupt'): Copy
   if (state === 'Publishing' || state === 'Published' || state === 'Succeeded' || state === 'Failed') return 'NeedsReview';
   return state;
 }
+/**
+ * The journal's authoritative timestamp domain, exported so later milestones
+ * bind to the same rule instead of narrowing it. A journal-produced timestamp
+ * is either an accepted note timestamp (second precision) or a complete
+ * canonical ISO-8601 instant, which includes the millisecond form that
+ * `new Date().toISOString()` writes into `recordedAt`, `confirmedAt` and
+ * evidence `observedAt` fields. This is the same predicate the journal already
+ * uses to validate its own durable records; nothing here changes journal
+ * serialization. Accepting a timestamp never attests that it is fresh.
+ */
+export function isCopyJournalTimestamp(value: unknown): value is string { return isTimestamp(value); }
+
 function isTimestamp(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 40 || !Number.isFinite(Date.parse(value))) return false;
   if (isNoteTimestamp(value)) return true;
