@@ -6,6 +6,42 @@ export {
   type StorageErrorOptions,
 } from './errors.js';
 
+export {
+  assessCopyPublicationEvidence,
+  copyPublicationReceiptDigest,
+  matchesPreparedCopyIdentity,
+  validateCopyPublicationIdentity,
+  type CopyDestinationNoteId,
+  type CopyJournalOperationId,
+  type CopyPublicationAttemptId,
+  type CopyPublicationCollisionKey,
+  type CopyPublicationEvidenceDocument,
+  type CopyPublicationIdentity,
+  type CopyPublicationNotePath,
+  type CopyPublicationReceiptEvidence,
+  type CopyPublicationReceiptDigestInput,
+  type CopyPublicationSha256,
+  type CopyPublicationVaultId,
+  type CopySourceNoteId,
+  type IdentityValidation,
+  type PreparedCopyIdentityBinding,
+  type PublicationDestinationObservation,
+  type PublicationEvidenceClassification,
+  type PublicationFilesystemObjectIdentity,
+  type PublicationSourceObservation,
+} from './copy-publication.js';
+
+export {
+  FILESYSTEM_PUBLICATION_ALLOWLIST,
+  assessFilesystemPublicationCapability,
+  requireFilesystemPublicationCapability,
+  type FilesystemPublicationCapabilityProbe,
+  type FilesystemPublicationCapabilityTarget,
+  type PublicationCapabilityAssessment,
+  type PublicationPlatform,
+  type PublicationPrimitiveSupport,
+} from './fs/publication-capability.js';
+
 export type {
   BackupManifest,
   BackupManifestApp,

@@ -13,6 +13,7 @@ export type StorageErrorCode =
   | 'STALE_WRITE'
   | 'STALE_PREVIEW'
   | 'PREVIEW_EXPIRED'
+  | 'PUBLICATION_CAPABILITY_REFUSED'
   | 'STORAGE_FAILURE';
 
 export interface StorageErrorDetails {

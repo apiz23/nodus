@@ -2775,6 +2775,8 @@ export function storageStatus(code: string): number {
       return 422;
     case 'PARTIAL_WRITE':
       return 500;
+    case 'PUBLICATION_CAPABILITY_REFUSED':
+      return 501;
     default:
       return 500;
   }
