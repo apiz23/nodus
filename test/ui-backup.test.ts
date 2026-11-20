@@ -173,6 +173,10 @@ describe('storageStatus', () => {
     expect(storageStatus('PARTIAL_WRITE')).toBe(500);
   });
 
+  it('maps an unavailable publication capability to 501', () => {
+    expect(storageStatus('PUBLICATION_CAPABILITY_REFUSED')).toBe(501);
+  });
+
   it('keeps the existing mappings', () => {
     expect(storageStatus('NOT_FOUND')).toBe(404);
     expect(storageStatus('CONFLICT')).toBe(409);
