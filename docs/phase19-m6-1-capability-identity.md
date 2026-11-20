@@ -212,6 +212,8 @@ The accepted M1–M5 documentation does not define the exact M6.2/M6.3/M6.4 allo
 
 Now settled by M6.1R and therefore **not** open questions: the authoritative `preparedEventSha256` digest domain (§3.1), and the static publication path policy boundary (§3.2).
 
+M6.2 has since been implemented (owner-authorized after M6.1R2 acceptance); its §10 decisions — staging location, the no-replace protocol and crash points, live-inventory normalization/case checks, and evidence locations — are recorded in [phase19-m6-2-publication-execution.md](phase19-m6-2-publication-execution.md). Publication remains disabled in production and journal resolution/recovery remains M6.3.
+
 ## 11. Explicit non-implementation statement
 
 **Publication is not implemented or enabled.** No destination file is created, replaced, staged, retried, rolled back, or recovered by M6.1. The filesystem capability allowlist remains empty. M6.2, M6.3, M6.4, native qualification, and all later publication work require separate authorization.
