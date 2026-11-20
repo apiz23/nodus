@@ -135,19 +135,18 @@ export async function executeCopyPublication(
   request: CopyPublicationRequest,
   dependencies: CopyPublicationExecutionDependencies = {},
 ): Promise<CopyPublicationExecution> {
-  return withVaultRootLock(root, () => executeCopyPublicationUnlocked(root, request, dependencies));
-}
-
-async function executeCopyPublicationUnlocked(
-  root: string,
-  request: CopyPublicationRequest,
-  dependencies: CopyPublicationExecutionDependencies,
-): Promise<CopyPublicationExecution> {
   // 1. Capability gate before any path work or filesystem mutation.
   const probe = dependencies.probe ?? DEFAULT_PRODUCTION_PROBE;
   const assessment = (dependencies.assessCapability ?? assessFilesystemPublicationCapability)(probe);
   if (assessment.status !== 'supported') throw publicationRefused(assessment);
 
+  return withVaultRootLock(root, () => executeCopyPublicationUnlocked(root, request));
+}
+
+async function executeCopyPublicationUnlocked(
+  root: string,
+  request: CopyPublicationRequest,
+): Promise<CopyPublicationExecution> {
   // 2. Bind to durable journal evidence; never to caller-supplied identity data.
   if (typeof request?.operationId !== 'string' || typeof request?.attemptId !== 'string') {
     throw new StorageError('INVALID_INPUT', 'Copy publication requires an operation ID and an attempt ID.');
@@ -413,6 +412,13 @@ async function verifyPublishedDestination(absolute: string, receipt: CopyPublica
       hash.update(buffer.subarray(0, bytesRead));
       remaining -= bytesRead;
     }
+    const expectedName = basename(receipt.destination.path);
+    const siblings = await boundedDirectoryNames(dirname(absolute), 50_000);
+    if (siblings.truncated || !siblings.names.includes(expectedName)
+      || siblings.names.some((name) => name !== expectedName && foldName(name) === foldName(expectedName))) {
+      throw new Error('Destination basename does not uniquely match the exact name in the receipt.');
+    }
+
     const final = await lstat(absolute, { bigint: true });
     if (!matchesReceipt(final) || final.mtimeNs !== opened.mtimeNs || final.ctimeNs !== opened.ctimeNs
       || hash.digest('hex') !== receipt.destination.contentSha256) {

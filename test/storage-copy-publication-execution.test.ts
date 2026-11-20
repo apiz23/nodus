@@ -2,9 +2,10 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, lsta
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNote } from '../src/domain/note.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
+import * as rootLock from '../src/storage/fs/root-lock.js';
 import { withVaultRootLock } from '../src/storage/fs/root-lock.js';
 import { CopyOperationJournal, type CopyOperationPlanInput } from '../src/storage/fs/copy-operation-journal.js';
 import {
@@ -98,6 +99,19 @@ describe('Phase 19 M6.2 publication capability gate', () => {
     await expect(readFile(join(root, 'copy.md'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('refuses unsupported capability without attempting to acquire the vault root lock', async () => {
+    const root = await tempRoot();
+    const lock = vi.spyOn(rootLock, 'withVaultRootLock');
+    try {
+      await expect(publish(root, randomUUID(), randomUUID(), bytesFor(), {}))
+        .rejects.toMatchObject({ code: 'PUBLICATION_CAPABILITY_REFUSED' });
+      expect(lock).not.toHaveBeenCalled();
+      await expect(lstat(join(root, rootLock.VAULT_PROCESS_LOCK_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      lock.mockRestore();
+    }
+  });
+
   it('refuses when a qualified-looking probe is still declined by policy', async () => {
     const root = await tempRoot();
     const bytes = bytesFor();
@@ -151,6 +165,21 @@ describe('Phase 19 M6.2 publication execution', () => {
     expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
     const before = await inventory(root);
     expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('already-published');
+    expect(await inventory(root)).toEqual(before);
+  });
+
+  it('rejects a receipt retry after a case-only rename preserves the destination inode', async () => {
+    const root = await tempRoot();
+    const bytes = bytesFor();
+    const { operationId, attemptId } = await prepareOperation(root, bytes);
+    expect((await publish(root, operationId, attemptId, bytes)).kind).toBe('published');
+    const original = await lstat(join(root, 'copy.md'));
+    await rename(join(root, 'copy.md'), join(root, 'Copy.md'));
+    const renamed = await lstat(join(root, 'Copy.md'));
+    expect(renamed).toMatchObject({ dev: original.dev, ino: original.ino });
+    expect(await readdir(root)).not.toContain('copy.md');
+    const before = await inventory(root);
+    await expect(publish(root, operationId, attemptId, bytes)).rejects.toMatchObject({ code: 'PARTIAL_WRITE' });
     expect(await inventory(root)).toEqual(before);
   });
 
