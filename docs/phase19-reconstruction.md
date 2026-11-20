@@ -1,6 +1,6 @@
 # Phase 19B reconstruction
 
-The owner approved this reconstructed scope against `63bec0bd884691e3d16928541206c832e1bd9765`. The older candidate supplied implementation evidence. Implementation acceptance is pending review.
+The owner approved this reconstructed scope against `63bec0bd884691e3d16928541206c832e1bd9765`. The older candidate supplied implementation evidence. The project owner has since accepted the implementation (`ACCEPTED — Phase 19 M1–M5 reconstruction`) at `3ccc6e772a930138283657ce5cec6bcb74dde74d`; the final independent review found it ready, and the integration is recorded in [phase19-m1-m5-integration-20261120.md](phase19-m1-m5-integration-20261120.md). Merge into the development line still requires a pull request and its review.
 
 - M1 (`618eb43`) defines supported note fields, fresh IDs and timestamps, shared icon validation, and a check for changed resolution of existing wiki links.
 - M2 (`cd41edc`) adds a storage preview with instance-local expiring tokens and repeated capture. Entry limits are inclusive. Hidden and specialized entries count when discovered, while skipped directories are not traversed. The scanner reads at most one overflow entry to distinguish a complete inventory at the limit. Deadlines are cooperative.

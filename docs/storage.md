@@ -231,7 +231,7 @@ The note-copy journal records durable **evidence** for a prepared note copy. It 
 ### Layout and scope
 
 - `.nodus-copy-journal/vault.json` holds the vault instance/lineage identity. `.nodus-copy-journal/operations/<operationId>/event-NNNNNN.json` holds one append-only, checksum-chained event per state transition. Every file is written `0600` inside `0700` directories, verified by exclusive creation, fsync, directory sync, and byte read-back.
-- The journal is a hidden root directory: it is invisible to scans, exports, backups, and note paths, and no other writer can create a path inside an operation directory because note targets reject hidden segments.
+- The journal is a hidden root directory: it is never scanned as content, never carried as portable export or backup resource data, and never reachable as a note path. Portable export does name it in its exclusion diagnostics (`Hidden user data is not part of the portable resource contract.`), so an export report can show the journal was skipped even though none of its bytes are copied. No other writer can create a path inside an operation directory because note targets reject hidden segments.
 - Every journal read and write happens while holding the vault root lock.
 
 ### Preparation and cancellation
@@ -246,11 +246,11 @@ The note-copy journal records durable **evidence** for a prepared note copy. It 
 |---|---|---|
 | `Prepared` | Evidence journaled, nothing published | Yes |
 | `Cancelled` | Proven no-effect terminal outcome | No — the only resolved state |
-| `NeedsReview` | Recovery or admission found evidence that a human must interpret | Yes |
+| `NeedsReview` | Recovery appends it when evidence needs a human; status reporting also presents publication and unsupported terminal chains this way. Admission blocks it but never appends it | Yes |
 | `Corrupt` | Chain, checksum, schema, identity, or filesystem type failed validation | Yes |
 | `Publishing`, `Published`, `Succeeded`, `Failed` | Journal states with no supported publisher or verifier in this milestone | Yes — reported as `NeedsReview`, never as resolved |
 
-Status reporting, recovery, cancellation, and admission all derive from one classification helper, so a state cannot be reported as needing review in one place while being treated as resolved in another.
+Two shared helpers give each state a single meaning: `isResolvedCopyOperationState()` decides resolution for admission, cancellation, and the recovery terminal count, while `toPublicCopyOperationState()` maps internal states onto the public status vocabulary. Status reporting therefore cannot present an outcome as resolved that admission still blocks, or the reverse.
 
 ### Admission blocking
 
