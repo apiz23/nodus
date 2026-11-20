@@ -224,6 +224,67 @@ Import and restore never overwrite by default. They abort with `CONFLICT` before
 - Folder deletion is permanent and requires a fresh inventory token. The folder is atomically renamed to a hidden `.nodus-tmp-delete-*` sibling before recursive removal, so a failed cleanup leaves remaining files recoverable at the exact path returned by the error and visible to storage health as an interrupted write. Stop vault writers, copy the vault, then manually recover that reported directory before retrying; Nodus never silently moves it to a trash location.
 - Wiki links are resolved from stable IDs, titles, and aliases, not filesystem paths. Folder moves therefore do not rewrite Markdown links. Database relation IDs and note frontmatter remain intact when a valid note is moved.
 
+## Note-copy operation journal (Phase 19M)
+
+The note-copy journal records durable **evidence** for a prepared note copy. It never publishes a destination, moves content, or deletes anything: destination publication is deferred to a later milestone. Its purpose is to make an unfinished copy operation visible so that transfer operations cannot proceed over uncertain evidence.
+
+### Layout and scope
+
+- `.nodus-copy-journal/vault.json` holds the vault instance/lineage identity. `.nodus-copy-journal/operations/<operationId>/event-NNNNNN.json` holds one append-only, checksum-chained event per state transition. Every file is written `0600` inside `0700` directories, verified by exclusive creation, fsync, directory sync, and byte read-back.
+- The journal is a hidden root directory: it is invisible to scans, exports, backups, and note paths, and no other writer can create a path inside an operation directory because note targets reject hidden segments.
+- Every journal read and write happens while holding the vault root lock.
+
+### Preparation and cancellation
+
+- `previewNoteCopy` captures the vault twice under one deadline and requires identical digests, then issues a single-use instance-local token that expires. Confirmation revalidates the preview and journals a `Prepared` plan event bound to the reviewed evidence (source hash, destination, serialized copy, resolver projection). No workspace file is created.
+- `cancelPreparedCopyOperation` cancels only a valid `Prepared` chain whose current evidence still matches the plan, and publishes the terminal `Cancelled` event through an exclusive hard link that refuses to replace a racing record. Cancellation is idempotent: a valid `Cancelled` record answers a repeated call without writing.
+- `listCopyOperations` remains available while operations are blocked, so the journal can always be inspected.
+
+### Resolved and unresolved states
+
+| State | Meaning | Blocks transfers |
+|---|---|---|
+| `Prepared` | Evidence journaled, nothing published | Yes |
+| `Cancelled` | Proven no-effect terminal outcome | No — the only resolved state |
+| `NeedsReview` | Recovery or admission found evidence that a human must interpret | Yes |
+| `Corrupt` | Chain, checksum, schema, identity, or filesystem type failed validation | Yes |
+| `Publishing`, `Published`, `Succeeded`, `Failed` | Journal states with no supported publisher or verifier in this milestone | Yes — reported as `NeedsReview`, never as resolved |
+
+Status reporting, recovery, cancellation, and admission all derive from one classification helper, so a state cannot be reported as needing review in one place while being treated as resolved in another.
+
+### Admission blocking
+
+Unresolved or corrupt copy evidence, or unresolved import-transaction evidence, rejects the operation with `PARTIAL_WRITE` and a "preserve the journal" message. Gated paths: note-copy preview and confirmation, copy recovery and cancellation, normal and reviewed import, import recovery and retry (each lets only its own import operation pass), restore, backup creation, portable export, and the portable import/restore preview through the locked snapshot boundary. A journal block is re-checked under the final root lock immediately before transfer writes, so an operation queued behind the lock cannot pass a stale check.
+
+### Recovery behavior
+
+`recoverCopyOperations` reconciles journal state and never publishes or deletes:
+
+- `Prepared` evidence is revalidated against the live vault. Matching evidence stays `Prepared`; changed or unavailable evidence appends exactly one durable `NeedsReview` event.
+- An interrupted publication chain (`Publishing`/`Published`) appends one `NeedsReview` event, because no qualified publisher or recovery verifier exists yet.
+- `NeedsReview`, `Corrupt`, and unsupported terminal chains are left byte-for-byte untouched and keep blocking.
+- The report carries `scanned`, `prepared`, `terminal`, `needsReview`, `unresolved`, per-operation issues, and the status list. Recovery is deterministic and idempotent: repeated runs on unchanged evidence produce the same report and the same bytes.
+
+### Temporary artifacts
+
+The only writer that creates a hidden `.nodus-tmp-<uuid>` entry inside an operation directory is the cancellation publication path. Its contract is an exclusive, private (`0600`), single-link regular file holding the complete, synced bytes of the pending `Cancelled` event for this journal, bound to the current chain tip; the writer then hard-links it into place and removes the temporary name.
+
+- An abnormal exit before that publication can leave exactly such a file. It is recognized, retained, and ignored for state determination, so the operation stays inspectable and cancellation can be retried. A leftover that a completed `Cancelled` or recovery `NeedsReview` event has superseded is treated the same way.
+- A matching name is never trusted by itself. An entry with that name that is a directory, a symbolic link, a hard link, group/world-readable, oversized, malformed, checksum-invalid, foreign to this journal or vault identity, or otherwise not the pending or superseded cancellation event makes the operation `Corrupt` and blocks transfers.
+- Recognition failure does not authorize cleanup. Nodus never deletes, renames, overwrites, or repairs a journal artifact automatically, because its name and bytes alone cannot prove that another writer does not own it.
+
+### Manual review responsibilities
+
+`PARTIAL_WRITE` on an unresolved journal means: stop every Nodus writer for that vault, keep `.nodus-copy-journal` byte-for-byte, and inspect it with `listCopyOperations` plus `recoverCopyOperations` reports and the event files of the named operation. Resolve the underlying question by hand — usually confirming that no destination was created — and only then act on the journal. Never remove a temporary artifact or an operation directory based on age, filename shape, or a desire to unblock a transfer, and follow [lock recovery](#lock-recovery) if a stale root lock is involved. If evidence is genuinely ambiguous, the correct steady state is a permanently blocked transfer path with preserved evidence.
+
+### Journal limitations
+
+- No journal cleanup or retention policy exists. Resolved `Cancelled` operations accumulate; reads are bounded by 6 records per operation, 50,000 discovered entries, and a 10-second cooperative deadline, and exceeding a bound fails closed rather than degrading.
+- Digests detect accidental damage, not a malicious local actor with write access to the vault.
+- Durability depends on the operating system and filesystem: no power-loss guarantee, and no guarantee on network or shared filesystems.
+- The root lock coordinates cooperating Nodus processes only.
+- The journal does not yet authorize or verify destination publication; that work is deliberately outside this milestone.
+
 ## Vault switching allow-list
 
 `POST /api/vault/open` only accepts directories inside an allow-list of roots:
