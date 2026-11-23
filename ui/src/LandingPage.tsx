@@ -1,28 +1,39 @@
-import { useEffect, useRef, useState, type ReactNode, type SVGProps } from 'react';
 import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+  type SVGProps,
+} from 'react';
+import {
+  Archive,
   ArrowRight,
   ArrowUpRight,
-  CalendarDays,
   Check,
   CheckCircle2,
+  CloudOff,
   Columns3,
+  CornerDownLeft,
   Database,
+  FileJson,
   FileText,
-  GitBranch,
-  Folder,
+  FolderOpen,
   HardDrive,
   Link2,
+  ListChecks,
+  LockKeyhole,
   Menu,
   Moon,
-  Sun,
-  ListChecks,
+  MousePointer2,
   Network,
   Search,
   ShieldCheck,
-  Sigma,
-  Table2,
+  Sun,
+  WifiOff,
+  type LucideIcon,
 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -31,11 +42,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { LandingStatement } from './LandingStatement';
 import { NodusMark } from './NodusMark';
 import { readWorkspaceTheme, saveGlobalTheme, type WorkspaceTheme } from './workspacePreferences';
+import './landing.css';
 
 const GITHUB_URL = 'https://github.com/apiz23/nodus';
 const WORKSPACE_PATH = '/app';
@@ -56,23 +67,16 @@ function GithubMark(props: SVGProps<SVGSVGElement>) {
 
 function Wordmark() {
   return (
-    <a
-      href="/"
-      className="group inline-flex items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-      aria-label="Nodus home"
-    >
-      <NodusMark className="size-7 text-foreground transition-transform duration-200 group-hover:-rotate-3" />
-      <span className="text-[17px] font-semibold tracking-[-0.03em]">Nodus</span>
+    <a href="/" className="nl-wordmark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Nodus home">
+      <NodusMark className="size-7" />
+      <span>Nodus</span>
     </a>
   );
 }
 
 function NavLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <a
-      href={href}
-      className="rounded-sm text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
-    >
+    <a href={href} className="nl-nav-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       {children}
     </a>
   );
@@ -89,25 +93,32 @@ function LandingNav() {
     try { saveGlobalTheme(window.localStorage, next); } catch { /* Theme still works for this visit. */ }
   };
   return (
-    <header className="relative z-40 border-b border-border bg-background">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-5">
+    <header className="nl-nav">
+      <div className="nl-nav-inner">
         <Wordmark />
-        <nav aria-label="Primary" className="hidden items-center gap-7 md:flex">
-          {navLinks.map((link) => (
-            <NavLink key={link.href} href={link.href}>{link.label}</NavLink>
-          ))}
+        <nav aria-label="Primary" className="nl-nav-links">
+          {navLinks.map((link) => <NavLink key={link.href} href={link.href}>{link.label}</NavLink>)}
           <a
             href={GITHUB_URL}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-sm text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
+            className="nl-nav-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             GitHub <ArrowUpRight className="size-3" aria-hidden="true" />
           </a>
         </nav>
-        <div className="ml-auto flex items-center gap-2">
-          <Button type="button" variant="ghost" size="icon" className="size-11" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={toggleTheme}>{theme === 'dark' ? <Sun /> : <Moon />}</Button>
-          <Button asChild size="sm" className="hidden h-11 sm:inline-flex">
+        <div className="nl-nav-actions">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="nl-theme-button"
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            onClick={toggleTheme}
+          >
+            {theme === 'dark' ? <Sun /> : <Moon />}
+          </Button>
+          <Button asChild className="nl-nav-cta hidden sm:inline-flex">
             <a href={WORKSPACE_PATH}>
               Open workspace
               <ArrowRight data-icon="inline-end" aria-hidden="true" />
@@ -115,13 +126,7 @@ function LandingNav() {
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-11 md:hidden"
-                aria-label="Open menu"
-              >
+              <Button type="button" variant="ghost" size="icon" className="nl-theme-button lg:hidden" aria-label="Open menu">
                 <Menu />
               </Button>
             </DropdownMenuTrigger>
@@ -150,623 +155,946 @@ function LandingNav() {
   );
 }
 
-function ProductPreview() {
+/* -------------------------------------------------------------------------
+   Hooks
+   ------------------------------------------------------------------------- */
+
+function useRevealOnScroll() {
+  useEffect(() => {
+    const elements = Array.from(document.querySelectorAll<HTMLElement>('[data-reveal]'));
+    if (elements.length === 0) return;
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    if (media.matches || !('IntersectionObserver' in window)) {
+      elements.forEach((element) => element.classList.add('is-visible'));
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add('is-visible');
+        observer.unobserve(entry.target);
+      });
+    }, { threshold: 0.14, rootMargin: '0px 0px -8% 0px' });
+
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, []);
+}
+
+function useHeroMotion(ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const finePointer = window.matchMedia('(pointer: fine)');
+    let frame = 0;
+    let x = 0;
+    let y = 0;
+
+    const apply = () => {
+      frame = 0;
+      element.style.setProperty('--hero-x', x.toFixed(4));
+      element.style.setProperty('--hero-y', y.toFixed(4));
+      element.style.setProperty('--hero-mx', `${((x * 0.5 + 0.5) * 100).toFixed(2)}%`);
+      element.style.setProperty('--hero-my', `${((y * 0.5 + 0.5) * 100).toFixed(2)}%`);
+    };
+    const queue = () => { if (!frame) frame = requestAnimationFrame(apply); };
+    const onPointerMove = (event: PointerEvent) => {
+      if (reduce.matches || !finePointer.matches) return;
+      const rect = element.getBoundingClientRect();
+      x = Math.max(-1, Math.min(1, ((event.clientX - rect.left) / rect.width - 0.5) * 2));
+      y = Math.max(-1, Math.min(1, ((event.clientY - rect.top) / rect.height - 0.5) * 2));
+      queue();
+    };
+    const reset = () => { x = 0; y = 0; queue(); };
+    const onMotionChange = () => { if (reduce.matches) reset(); };
+
+    element.addEventListener('pointermove', onPointerMove);
+    element.addEventListener('pointerleave', reset);
+    reduce.addEventListener('change', onMotionChange);
+    return () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerleave', reset);
+      reduce.removeEventListener('change', onMotionChange);
+    };
+  }, [ref]);
+}
+
+function useRailProgress(
+  sectionRef: RefObject<HTMLElement | null>,
+  trackRef: RefObject<HTMLDivElement | null>,
+) {
+  useEffect(() => {
+    const section = sectionRef.current;
+    const track = trackRef.current;
+    if (section === null || track === null) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let frame = 0;
+
+    const update = () => {
+      frame = 0;
+      if (reduce.matches) {
+        section.style.removeProperty('--rail-progress');
+        section.style.removeProperty('--rail-x');
+        return;
+      }
+      const rect = section.getBoundingClientRect();
+      const travel = Math.max(1, rect.height - window.innerHeight);
+      const progress = Math.min(1, Math.max(0, -rect.top / travel));
+      const shift = Math.max(0, track.scrollWidth - window.innerWidth);
+      section.style.setProperty('--rail-progress', progress.toFixed(4));
+      section.style.setProperty('--rail-x', `${(-progress * shift).toFixed(2)}px`);
+    };
+    const queue = () => { if (!frame) frame = requestAnimationFrame(update); };
+
+    update();
+    window.addEventListener('scroll', queue, { passive: true });
+    window.addEventListener('resize', queue);
+    reduce.addEventListener('change', queue);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', queue);
+      window.removeEventListener('resize', queue);
+      reduce.removeEventListener('change', queue);
+    };
+  }, [sectionRef, trackRef]);
+}
+
+/* -------------------------------------------------------------------------
+   Small visual components
+   ------------------------------------------------------------------------- */
+
+function BrowserWindow({
+  title,
+  state = 'local',
+  className,
+  children,
+}: {
+  title: string;
+  state?: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <figure className="landing-rise landing-delay-3 mx-auto mt-12 w-full max-w-6xl overflow-hidden rounded-lg border border-border bg-card shadow-[0_24px_80px_-40px_var(--foreground)]" aria-label="An example workspace in the current Nodus application">
-      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 text-xs text-muted-foreground">
-        <span className="flex items-center gap-2"><NodusMark className="size-4 text-success" />Inside Nodus</span>
-        <span>Example local workspace</span>
+    <div className={cn('nl-window', className)}>
+      <div className="nl-window-bar">
+        <span className="nl-window-dots" aria-hidden="true"><i /><i /><i /></span>
+        <span className="nl-window-title">{title}</span>
+        <span className="nl-window-state">{state}</span>
       </div>
-      <div className="relative overflow-hidden bg-background">
-        <img src="/brand/nodus-editor-light.jpg" alt="Nodus showing a Markdown project note, wiki links, tasks, a note sidebar, and the Connections action." width={1440} height={900} fetchPriority="high" className="block h-auto w-full dark:hidden" />
-        <img src="/brand/nodus-editor-dark.jpg" alt="Nodus project note in the dark theme, with Markdown tasks and linked research." width={1440} height={900} className="hidden h-auto w-full dark:block" />
+      {children}
+    </div>
+  );
+}
+
+function NoteCard() {
+  return (
+    <div className="nl-mini-card nl-note-card">
+      <div className="nl-note-head">
+        <FileText className="size-3.5" aria-hidden="true" />
+        Research index
+        <span className="nl-note-pill">note</span>
       </div>
+      <p className="nl-note-kicker"># research-index</p>
+      <p className="nl-note-title">A map of local-first tools.</p>
+      <div className="nl-note-lines" aria-hidden="true"><span /><span /><span /></div>
+      <span className="nl-note-link">[[product-brief]]</span>
+      <div className="nl-note-tags"><span>#research</span><span>#reading</span></div>
+    </div>
+  );
+}
+
+function CommandPalette() {
+  return (
+    <div className="nl-palette">
+      <div className="nl-palette-input">
+        <Search className="size-3.5" aria-hidden="true" />
+        Search notes and commands…
+        <kbd>⌘K</kbd>
+      </div>
+      <ul className="nl-palette-list">
+        <li><FileText className="size-3" aria-hidden="true" />A quieter launch <em>note</em></li>
+        <li><Database className="size-3" aria-hidden="true" />Launch notebook <em>database</em></li>
+        <li><Network className="size-3" aria-hidden="true" />Local graph <em>view</em></li>
+      </ul>
+      <div className="nl-palette-foot"><CornerDownLeft className="inline size-2.5" aria-hidden="true" /> open · esc close</div>
+    </div>
+  );
+}
+
+function SavedToast() {
+  return (
+    <div className="nl-toast">
+      <span className="nl-toast-icon"><Check className="size-3" aria-hidden="true" /></span>
+      <span>
+        <strong>Saved to your vault</strong>
+        <span>just now · local</span>
+      </span>
+    </div>
+  );
+}
+
+function MiniGraph() {
+  return (
+    <div className="nl-graph-card">
+      <div className="nl-graph-head"><Network className="size-3" aria-hidden="true" /> Local graph <span>12 notes</span></div>
+      <svg viewBox="0 0 240 132" fill="none" aria-hidden="true">
+        <g stroke="currentColor" strokeOpacity="0.16">
+          <path d="M50 34 Q86 52 120 66" />
+          <path d="M120 66 Q153 44 191 30" />
+          <path d="M120 66 Q152 88 188 103" />
+          <path d="M120 66 Q86 91 52 104" />
+          <path d="M50 34 Q55 68 52 104" />
+          <path d="M191 30 Q197 68 188 103" />
+        </g>
+        <path d="M120 66 Q153 44 191 30" className="graph-link-flow" stroke="var(--success)" strokeOpacity="0.7" strokeWidth="1.2" />
+        <g fill="var(--success)">
+          <circle cx="120" cy="66" r="7" fillOpacity="0.16" className="graph-node-pulse" />
+          <circle cx="120" cy="66" r="4.2" />
+        </g>
+        <g fill="currentColor" fillOpacity="0.7">
+          <circle cx="50" cy="34" r="3" />
+          <circle cx="191" cy="30" r="3" />
+          <circle cx="188" cy="103" r="3" />
+          <circle cx="52" cy="104" r="3" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function CursorChip({ label, moss = false }: { label: string; moss?: boolean }) {
+  return (
+    <span className={cn('nl-hero-cursor', moss && 'nl-hero-cursor--moss')} aria-hidden="true">
+      <MousePointer2 />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function SelectionHandles() {
+  return (
+    <>
+      <span className="nl-handle nl-handle--tl" aria-hidden="true" />
+      <span className="nl-handle nl-handle--tr" aria-hidden="true" />
+      <span className="nl-handle nl-handle--bl" aria-hidden="true" />
+      <span className="nl-handle nl-handle--br" aria-hidden="true" />
+      <span className="nl-handle nl-handle--tc" aria-hidden="true" />
+      <span className="nl-handle nl-handle--bc" aria-hidden="true" />
+    </>
+  );
+}
+
+function EditorFigure({ compact = false }: { compact?: boolean }) {
+  return (
+    <figure className={cn('nl-window', compact && 'nl-mobile-preview-window')} aria-label="An example local workspace in Nodus">
+      <div className="nl-window-bar">
+        <span className="nl-window-dots" aria-hidden="true"><i /><i /><i /></span>
+        <span className="nl-window-title">Nodus — A quieter launch</span>
+        <span className="nl-window-state">saved</span>
+      </div>
+      <img
+        src="/brand/nodus-editor-light.jpg"
+        alt="Nodus showing a Markdown project note, wiki links, tasks, and a note sidebar."
+        width={1440}
+        height={900}
+        fetchPriority="high"
+        className="block h-auto w-full dark:hidden"
+      />
+      <img
+        src="/brand/nodus-editor-dark.jpg"
+        alt="The Nodus project note in the dark theme."
+        width={1440}
+        height={900}
+        className="hidden h-auto w-full dark:block"
+      />
     </figure>
   );
 }
 
-function Hero() {
+/* -------------------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------------------- */
+
+function Hero({ sectionRef }: { sectionRef: RefObject<HTMLElement | null> }) {
+  useHeroMotion(sectionRef);
   return (
-    <section className="relative overflow-hidden" data-enter>
-      <div className="mx-auto grid max-w-6xl gap-10 px-5 pt-12 pb-14 sm:pt-16 lg:min-h-[calc(100svh-4rem)] lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] lg:items-center lg:gap-12 lg:py-12">
-        <div className="mx-auto w-full max-w-2xl text-center lg:mx-0 lg:max-w-none lg:text-left">
-          <p className="landing-rise mb-5 flex items-center justify-center gap-2 text-[13px] font-medium tracking-wide text-muted-foreground lg:justify-start"><span className="size-1.5 rounded-full bg-success" />Local-first. No account required.</p>
-          <h1 className="landing-rise font-heading text-[clamp(2.5rem,5vw,4.25rem)] leading-[1.08] font-bold tracking-[-0.04em] text-balance">Your local workspace<br /><span className="text-muted-foreground">for notes and projects.</span></h1>
-          <p className="landing-rise landing-delay-2 mx-auto mt-6 max-w-[56ch] text-base leading-7 text-muted-foreground sm:text-lg sm:leading-8 lg:mx-0">Write in Markdown, connect your research, and shape flexible databases around the work. Your notes stay in files you control.</p>
-          <div className="landing-rise landing-delay-3 mt-7 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
-            <Button asChild className="h-11 px-5"><a href={WORKSPACE_PATH}>Start writing<ArrowRight data-icon="inline-end" aria-hidden="true" /></a></Button>
-            <Button asChild variant="outline" className="h-11 px-5"><a href="#features">Explore the features<ArrowRight data-icon="inline-end" aria-hidden="true" /></a></Button>
-          </div>
-          <p className="landing-rise landing-delay-3 mt-4 text-[13px] text-muted-foreground">Your notes are Markdown files. Your workspace stays yours.</p>
+    <section ref={sectionRef} className="nl-hero" aria-labelledby="landing-hero-title">
+      <div className="nl-hero-floats" aria-hidden="true">
+        <div className="nl-float nl-float--editor"><div className="nl-float-in"><div className="nl-float-bob"><EditorFigure /></div></div></div>
+        <div className="nl-float nl-float--note"><div className="nl-float-in"><div className="nl-float-bob"><NoteCard /></div></div></div>
+        <div className="nl-float nl-float--palette"><div className="nl-float-in"><div className="nl-float-bob"><CommandPalette /></div></div></div>
+        <div className="nl-float nl-float--toast"><div className="nl-float-in"><div className="nl-float-bob"><SavedToast /></div></div></div>
+        <div className="nl-float nl-float--graph"><div className="nl-float-in"><div className="nl-float-bob"><MiniGraph /></div></div></div>
+        <div className="nl-float nl-float--cursor"><div className="nl-float-in"><CursorChip label="writer" moss /></div></div>
+      </div>
+
+      <div className="nl-hero-content">
+        <p className="nl-hero-note"><span className="nl-dot" aria-hidden="true" />Local-first · No account required</p>
+        <h1 id="landing-hero-title" className="nl-hero-title" aria-label="Your local workspace for notes and projects.">
+          <span className="nl-title-line">
+            <span>Your local <span className="nl-selection">workspace<SelectionHandles /></span></span>
+          </span>
+          <span className="nl-title-line nl-title-line--sub"><span>for notes <em>and</em> projects.</span></span>
+        </h1>
+        <p className="nl-hero-sub">
+          Write in Markdown, connect your research, and shape flexible databases around the work.
+          The vault stays on your disk — readable, portable, and yours.
+        </p>
+        <div className="nl-hero-actions">
+          <Button asChild className="nl-cta h-12">
+            <a href={WORKSPACE_PATH}>
+              Start writing
+              <ArrowRight data-icon="inline-end" aria-hidden="true" />
+            </a>
+          </Button>
+          <Button asChild variant="outline" className="nl-cta nl-cta--outline h-12">
+            <a href="#features">
+              See how it works
+              <ArrowRight data-icon="inline-end" aria-hidden="true" />
+            </a>
+          </Button>
         </div>
-        <div className="min-w-0"><ProductPreview /></div>
+        <p className="nl-hero-meta">Plain Markdown · Portable databases · Your workspace stays yours.</p>
+        <div className="nl-mobile-preview">
+          <EditorFigure compact />
+          <figcaption>An example local workspace. Every row still opens a Markdown note.</figcaption>
+        </div>
       </div>
     </section>
   );
 }
 
-function PrincipleStrip() {
-  const items = [
-    { icon: FileText, label: 'Plain files, always' },
-    { icon: HardDrive, label: 'Local by default' },
-    { icon: ShieldCheck, label: 'No account required' },
-    { icon: GithubMark, label: 'Apache-2.0' },
-  ];
+/* -------------------------------------------------------------------------
+   Capabilities
+   ------------------------------------------------------------------------- */
 
+function Capabilities() {
   return (
-    <div className="border-y border-border bg-background">
-      <div className="mx-auto max-w-6xl px-5">
-        <div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4">
-          {items.map((item) => (
-            <div key={item.label} className="flex items-center gap-2 bg-background px-3 py-4 text-[12.5px] text-muted-foreground sm:px-4">
-              <item.icon className="size-3.5 shrink-0 text-success" aria-hidden="true" />
-              <span>{item.label}</span>
+    <section id="features" className="nl-section scroll-mt-20" aria-labelledby="capabilities-title">
+      <div className="nl-shell">
+        <div className="nl-section-head" data-reveal>
+          <div>
+            <p className="nl-index">01 — Capabilities</p>
+            <h2 id="capabilities-title" className="nl-h2">A workspace with a memory.</h2>
+          </div>
+          <p className="nl-copy">
+            Nodus keeps Markdown as the source of truth and builds the connections around it.
+            Write freely, then let the workspace remember where each thought belongs.
+          </p>
+        </div>
+
+        <div className="nl-cap-grid">
+          <article className="nl-cap nl-cap--ink" data-reveal>
+            <div className="nl-cap-top">
+              <span className="nl-cap-num">01 / WRITE</span>
+              <span className="nl-cap-icon"><FileText className="size-4" aria-hidden="true" /></span>
             </div>
-          ))}
+            <h3 className="nl-cap-title">Write in Markdown. Keep the links.</h3>
+            <p className="nl-cap-copy">
+              Notes are plain Markdown with YAML frontmatter and stable IDs. Open them anywhere;
+              Nodus adds backlinks, search, and a local graph.
+            </p>
+            <div className="nl-cap-visual">
+              <div className="nl-mock">
+                <div className="nl-mock-title"><FileText className="size-3" aria-hidden="true" /> research-index.md</div>
+                <span className="nl-mock-line" /><span className="nl-mock-line nl-mock-line--short" />
+                <div className="nl-note-link">[[product-brief]]</div>
+              </div>
+            </div>
+            <a className="nl-cap-link" href="#philosophy">Your files, in the open <ArrowUpRight className="size-3.5" aria-hidden="true" /></a>
+          </article>
+
+          <article className="nl-cap nl-cap--paper" data-reveal>
+            <div className="nl-cap-top">
+              <span className="nl-cap-num">02 / STRUCTURE</span>
+              <span className="nl-cap-icon"><Database className="size-4" aria-hidden="true" /></span>
+            </div>
+            <h3 className="nl-cap-title">Structure without a cage.</h3>
+            <p className="nl-cap-copy">
+              Turn notes into databases with typed properties, saved views, relations, and rollups.
+              Every row still opens the Markdown note behind it.
+            </p>
+            <div className="nl-cap-visual">
+              <div className="nl-mock">
+                <div className="nl-mock-title"><Database className="size-3" aria-hidden="true" /> launch-notebook</div>
+                <table className="nl-mock-table">
+                  <thead><tr><th>Note</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>A quieter launch</td><td><span className="nl-mock-pill">in progress</span></td></tr>
+                    <tr><td>Reading list</td><td><span className="nl-mock-pill">ready</span></td></tr>
+                    <tr><td>Research notes</td><td><span className="nl-mock-pill">ready</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <a className="nl-cap-link" href="#databases">Explore the workspace <ArrowUpRight className="size-3.5" aria-hidden="true" /></a>
+          </article>
+
+          <article className="nl-cap nl-cap--warm" data-reveal>
+            <div className="nl-cap-top">
+              <span className="nl-cap-num">03 / KEEP</span>
+              <span className="nl-cap-icon"><FolderOpen className="size-4" aria-hidden="true" /></span>
+            </div>
+            <h3 className="nl-cap-title">Yours, on disk.</h3>
+            <p className="nl-cap-copy">
+              Local vaults, verified backups, portable export. Your work stays usable offline,
+              with no account standing between you and the folder.
+            </p>
+            <div className="nl-cap-visual">
+              <div className="nl-mock">
+                <div className="nl-tree">
+                  <strong>vault/</strong>
+                  <span>├── notes/</span>
+                  <span>│   ├── research-index.md</span>
+                  <span>│   └── product-brief.md</span>
+                  <span>├── databases/</span>
+                  <span className="is-moss">│   └── reading-list.json</span>
+                  <span>└── database-views/</span>
+                </div>
+              </div>
+            </div>
+            <a className="nl-cap-link" href="#philosophy">See where it lives <ArrowUpRight className="size-3.5" aria-hidden="true" /></a>
+          </article>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
-function SectionHeader({ title, copy }: { title: string; copy: string }) {
+/* -------------------------------------------------------------------------
+   Process
+   ------------------------------------------------------------------------- */
+
+interface ProcessStep {
+  number: string;
+  title: string;
+  copy: string;
+  sample: string;
+  icon: LucideIcon;
+  image: { light: string; dark: string; alt: string };
+}
+
+const processSteps: ProcessStep[] = [
+  {
+    number: '01',
+    title: 'Capture a note',
+    copy: 'Write in plain Markdown. Nodus keeps stable IDs and preserves your frontmatter.',
+    sample: 'meeting-notes.md',
+    icon: FileText,
+    image: {
+      light: '/brand/nodus-editor-light.jpg',
+      dark: '/brand/nodus-editor-dark.jpg',
+      alt: 'A Markdown note in Nodus with tasks, links, and the note sidebar.',
+    },
+  },
+  {
+    number: '02',
+    title: 'Connect the context',
+    copy: 'Link related notes and follow backlinks. Search and the local graph keep the trail visible.',
+    sample: '[[product-brief]]',
+    icon: Link2,
+    image: {
+      light: '/brand/nodus-connections-light.jpg',
+      dark: '/brand/nodus-connections-dark.jpg',
+      alt: 'The Nodus Connections sheet showing backlinks, outgoing links, and related notes.',
+    },
+  },
+  {
+    number: '03',
+    title: 'Structure what matters',
+    copy: 'Add the note to a database, type its properties, and save the view that fits the work.',
+    sample: 'Status · Focus · Owner',
+    icon: Database,
+    image: {
+      light: '/brand/nodus-database-light.jpg',
+      dark: '/brand/nodus-database-dark.jpg',
+      alt: 'A Nodus database table with note-backed records and a Status property.',
+    },
+  },
+];
+
+function StepImage({ step, className }: { step: ProcessStep; className?: string }) {
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:items-start lg:gap-16">
-      <h2 className="max-w-[20ch] font-heading text-[clamp(2.15rem,4.6vw,3.5rem)] leading-[1.08] font-bold tracking-[-0.022em] text-balance">
-        {title}
-      </h2>
-      <p className="max-w-[56ch] text-[17px] leading-7 text-muted-foreground">
-        {copy}
-      </p>
-    </div>
+    <span className={className}>
+      <img src={step.image.light} alt={step.image.alt} width={1440} height={900} loading="lazy" className="block h-full w-full dark:hidden" />
+      <img src={step.image.dark} alt={step.image.alt} width={1440} height={900} loading="lazy" className="hidden h-full w-full dark:block" />
+    </span>
   );
 }
 
-type GraphNodeKind = 'hub' | 'note' | 'database';
+function ProcessShowcase() {
+  const [active, setActive] = useState(0);
+  const stepRefs = useRef<Array<HTMLElement | null>>([]);
 
-interface DemoGraphNode {
-  id: string;
-  label: string;
-  detail: string;
-  left: number;
-  top: number;
-  kind: GraphNodeKind;
-}
-
-const demoGraphNodes: DemoGraphNode[] = [
-  { id: 'research', label: 'Research index', detail: '4 backlinks', left: 50, top: 49, kind: 'hub' },
-  { id: 'brief', label: 'Product brief', detail: '2 links in', left: 21, top: 24, kind: 'note' },
-  { id: 'reading', label: 'Reading list', detail: 'database', left: 79, top: 20, kind: 'database' },
-  { id: 'local', label: 'Local-first notes', detail: '3 links in', left: 21, top: 79, kind: 'note' },
-  { id: 'weekly', label: 'Weekly review', detail: '1 link in', left: 79, top: 80, kind: 'note' },
-];
-
-const demoGraphEdges: Array<[string, string]> = [
-  ['research', 'brief'],
-  ['research', 'reading'],
-  ['research', 'local'],
-  ['research', 'weekly'],
-  ['brief', 'local'],
-  ['reading', 'weekly'],
-];
-
-function graphEdgePath(from: DemoGraphNode, to: DemoGraphNode): string {
-  const midX = (from.left + to.left) / 2;
-  const midY = (from.top + to.top) / 2 - 6;
-  return `M ${from.left} ${from.top} Q ${midX} ${midY} ${to.left} ${to.top}`;
-}
-
-function KnowledgeMap() {
-  const [focusedId, setFocusedId] = useState<string | null>(null);
-  const mapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const map = mapRef.current;
-    if (map === null || !('IntersectionObserver' in window)) return;
-
-    map.classList.add('landing-living-map--armed');
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry?.isIntersecting) return;
-      map.classList.add('landing-living-map--revealed');
-      observer.disconnect();
-    }, { threshold: 0.18, rootMargin: '0px 0px -8% 0px' });
-
-    observer.observe(map);
+    if (!('IntersectionObserver' in window)) return;
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const index = Number((entry.target as HTMLElement).dataset.step);
+        if (Number.isFinite(index)) setActive(index);
+      });
+    }, { rootMargin: '-40% 0px -46% 0px', threshold: 0 });
+    const elements = stepRefs.current.filter((element): element is HTMLElement => element !== null);
+    elements.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
   }, []);
 
-  const byId = new Map(demoGraphNodes.map((node) => [node.id, node]));
-  const focused = focusedId === null ? null : byId.get(focusedId) ?? null;
-  const connectionCount = focusedId === null
-    ? 0
-    : demoGraphEdges.filter(([from, to]) => from === focusedId || to === focusedId).length;
-
   return (
-    <div ref={mapRef} className="landing-living-map relative h-[380px] overflow-hidden bg-card sm:h-[430px]">
-      <div className="landing-map-grid absolute inset-0 opacity-70" aria-hidden="true" />
-      <div className="absolute top-4 left-4 z-10 flex items-center gap-2 font-mono text-[9px] tracking-[0.12em] text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-success" />
-        LOCAL GRAPH
-        <span className="text-border">/</span>
-        12 NOTES · 28 LINKS
-      </div>
-
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 size-full" aria-hidden="true">
-        {demoGraphEdges.map(([fromId, toId]) => {
-          const from = byId.get(fromId);
-          const to = byId.get(toId);
-          if (from === undefined || to === undefined) return null;
-          const connected = focusedId === null || focusedId === fromId || focusedId === toId;
-          const d = graphEdgePath(from, to);
-          return (
-            <g key={`${fromId}:${toId}`} className="transition-opacity duration-300">
-              <path
-                d={d}
-                fill="none"
-                vectorEffect="non-scaling-stroke"
-                className={cn(
-                  'landing-map-edge transition-colors duration-300',
-                  connected ? 'stroke-success/55' : 'stroke-border',
-                  focusedId === null ? 'opacity-70' : connected ? 'opacity-100' : 'opacity-35',
-                )}
-                strokeWidth={connected && focusedId !== null ? 1.4 : 1}
-              />
-              {focusedId !== null && connected ? (
-                <path d={d} fill="none" vectorEffect="non-scaling-stroke" className="graph-link-flow stroke-success/70" strokeWidth="1.25" />
-              ) : null}
-            </g>
-          );
-        })}
-      </svg>
-
-      {demoGraphNodes.map((node) => {
-        const active = focusedId === null || focusedId === node.id || demoGraphEdges.some(([from, to]) =>
-          (from === focusedId && to === node.id) || (to === focusedId && from === node.id),
-        );
-        const isHub = node.kind === 'hub';
-        return (
-          <button
-            key={node.id}
-            type="button"
-            aria-pressed={focusedId === node.id}
-            aria-label={`${node.label}: ${node.detail}`}
-            onMouseEnter={() => setFocusedId(node.id)}
-            onMouseLeave={() => setFocusedId(null)}
-            onFocus={() => setFocusedId(node.id)}
-            onBlur={() => setFocusedId(null)}
-            onClick={() => setFocusedId((current) => current === node.id ? null : node.id)}
-            style={{ left: `${node.left}%`, top: `${node.top}%` }}
-            className={cn(
-              'absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-md border text-left transition-all duration-300',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card',
-              isHub ? 'w-[142px] border-success/40 bg-background px-3 py-2' : 'w-[120px] bg-background px-2.5 py-1.5 sm:w-auto sm:max-w-[128px]',
-              isHub ? 'shadow-[0_10px_30px_-24px_rgba(47,125,99,0.55)]' : 'border-border',
-              focusedId !== null && focusedId !== node.id && !active ? 'scale-[0.98] opacity-35' : 'opacity-100',
-              focusedId !== null && active ? 'border-success/60' : '',
-              focusedId === node.id ? 'scale-[1.03]' : '',
-            )}
-          >
-            <div className={cn('flex items-center gap-1.5', isHub ? 'text-[12px]' : 'text-[9.5px] sm:text-[10px]')}>
-              {node.kind === 'database'
-                ? <Database className="size-3 text-success" aria-hidden="true" />
-                : <FileText className={cn('size-3', isHub && 'text-success')} aria-hidden="true" />}
-              <span className={cn('truncate', isHub ? 'font-semibold' : 'font-medium')}>{node.label}</span>
-            </div>
-            <div className={cn('mt-1 truncate font-mono text-muted-foreground', isHub ? 'text-[9px]' : 'text-[8px]')}>
-              {node.detail}
-            </div>
-            {isHub ? (
-              <span className={cn(
-                'absolute -top-1.5 -right-1.5 size-3 rounded-full border-2 border-card bg-success transition-transform duration-300',
-                focusedId === node.id && 'scale-125',
-              )}>
-                <span className="graph-node-pulse absolute inset-0 rounded-full bg-success" />
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-
-      <div className="absolute inset-x-4 bottom-3 z-10 flex items-end justify-between gap-3">
-        <span className="max-w-[24ch] text-[9px] leading-4 text-muted-foreground sm:max-w-none sm:text-[10px]" aria-live="polite">
-          {focused === null ? 'Focus a note to trace its links.' : `${focused.label} · ${connectionCount} direct links · ${focused.detail}`}
-        </span>
-        <span className="hidden items-center gap-3 font-mono text-[8px] text-muted-foreground sm:flex">
-          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-full bg-success" /> note</span>
-          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-full bg-border" /> link</span>
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ConnectedKnowledge() {
-  const features = [
-    {
-      icon: Link2,
-      title: 'Wiki links and backlinks',
-      copy: 'Connect notes with [[wiki links]]. Open Connections for backlinks, outgoing links, database references, and related notes.',
-    },
-    {
-      icon: Search,
-      title: 'Search notes and their contents',
-      copy: 'Search note titles, aliases, paths, and body content. Find the passage and open the note where it belongs.',
-    },
-    {
-      icon: Network,
-      title: 'A local graph of your knowledge',
-      copy: 'See connected notes, unresolved links, and neighborhoods without sending your vault anywhere.',
-    },
-  ];
-
-  return (
-    <section id="features" className="scroll-mt-20">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
-        <SectionHeader
-          title="Connected notes and their links."
-          copy="Nodus keeps Markdown as the source of truth and builds the connections around it. Link freely, then follow the trail through backlinks, search, and the local graph."
-        />
-        <div className=" mt-10 grid overflow-hidden rounded-lg border border-border lg:grid-cols-[1.15fr_1fr]">
-          <figure className="min-w-0 overflow-hidden bg-card" aria-label="The Connections sheet in an example Nodus workspace">
-            <img src="/brand/nodus-connections-light.jpg" alt="The actual Nodus Connections sheet, showing backlinks and related notes beside a Markdown document." width={1440} height={900} loading="lazy" className="block h-auto w-full dark:hidden" />
-            <img src="/brand/nodus-connections-dark.jpg" alt="The Nodus Connections sheet in dark mode." width={1440} height={900} loading="lazy" className="hidden h-auto w-full dark:block" />
-          </figure>
-          <div className="divide-y divide-border border-t border-border bg-background lg:border-t-0 lg:border-l">
-            {features.map((feature) => (
-              <div key={feature.title} className="flex gap-3 px-5 py-6 sm:px-7">
-                <feature.icon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" />
-                <div>
-                  <h3 className="text-[15px] font-semibold tracking-tight">{feature.title}</h3>
-                  <p className="mt-1.5 max-w-[42ch] text-[15px] leading-6 text-muted-foreground">{feature.copy}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function DatabaseShowcase() {
-  return <figure className="overflow-hidden rounded-lg border border-border bg-card" aria-label="A real example database in Nodus">
-    <img src="/brand/nodus-database-light.jpg" alt="Nodus Launch notebook database with four note-backed records and a custom Status property." width={1440} height={900} loading="lazy" className="block h-auto w-full dark:hidden" />
-    <img src="/brand/nodus-database-dark.jpg" alt="The Nodus Launch notebook database in dark mode." width={1440} height={900} loading="lazy" className="hidden h-auto w-full dark:block" />
-  </figure>;
-}
-
-function StructuredThinking() {
-  const features = [
-    { icon: Table2, title: 'Five views for one database', copy: 'Explore Table, List, Gallery, Kanban, and Calendar views with saved filters and visible properties.' },
-    { icon: ListChecks, title: 'Typed properties', copy: 'Build around text, dates, numbers, selections, checkboxes, and formulas.' },
-    { icon: GitBranch, title: 'Relations', copy: 'Connect records across databases with single or multiple references.' },
-    { icon: Sigma, title: 'Rollups', copy: 'Count, sum, conditional count, and completion figures derived from relations.' },
-  ];
-
-  return (
-    <section id="databases" className="scroll-mt-20 border-t border-border bg-secondary/25">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
-        <SectionHeader
-          title="Build flexible databases around your work."
-          copy="Turn Markdown notes into a database without locking them inside one. Add typed properties, save the views that fit the work, and connect records across your vault."
-        />
-        <div className=" mt-10">
-          <DatabaseShowcase />
-          <p className="mt-3 text-[13px] leading-5 text-muted-foreground">
-            An example project notebook in the current application. Every row opens a Markdown note.
-          </p>
-        </div>
-        <div className="mt-10 grid gap-x-10 sm:grid-cols-2 lg:grid-cols-4">
-          {features.map((feature) => (
-            <div key={feature.title} className="border-t border-border py-4">
-              <div className="flex items-center gap-2">
-                <feature.icon className="size-3.5 text-success" aria-hidden="true" />
-                <h3 className="text-[14px] font-semibold">{feature.title}</h3>
-              </div>
-              <p className="mt-1.5 text-[14.5px] leading-6 text-muted-foreground">{feature.copy}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function VaultTree() {
-  return (
-    <div className="overflow-hidden rounded-lg bg-[#232220] text-[#e8e5df] shadow-[0_20px_60px_-40px_rgba(43,42,38,0.55)]">
-      <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5">
-        <span className="size-2 rounded-full bg-[#f0736c]/70" />
-        <span className="size-2 rounded-full bg-[#d6b26a]/70" />
-        <span className="size-2 rounded-full bg-[#7fbfa6]/70" />
-        <span className="ml-2 font-mono text-[9.5px] text-white/65">~/nodus-vault</span>
-        <span className="ml-auto font-mono text-[9px] text-[#7fbfa6]">portable</span>
-      </div>
-      <div className="p-4 font-mono text-[10.5px] leading-6 sm:p-5 sm:text-[11px]">
-        <div className="text-white/65">vault/</div>
-        <div className="text-white/80">├── notes/</div>
-        <div className="pl-7 text-white/65">│   ├── research-index.md</div>
-        <div className="pl-7 text-white/65">│   ├── product-brief.md</div>
-        <div className="pl-7 text-white/65">│   └── reading-list.md</div>
-        <div className="text-white/80">├── databases/</div>
-        <div className="pl-7 text-white/65">│   └── reading-list.json</div>
-        <div className="text-white/80">└── database-views/</div>
-        <div className="pl-7 text-white/65">    └── reading-list/</div>
-        <Separator className="my-3.5 bg-white/10" />
-        <div className="text-white/65">---</div>
-        <div><span className="text-[#7fbfa6]">title</span>: Research index</div>
-        <div><span className="text-[#7fbfa6]">id</span>: 7c9e4a2d-…</div>
-        <div className="text-white/65">---</div>
-        <div className="mt-2 text-white/75">A map of <span className="text-[#7fbfa6]">[[local-first]]</span> tools.</div>
-      </div>
-    </div>
-  );
-}
-
-function Ownership() {
-  return (
-    <section id="philosophy" className="scroll-mt-20 border-t border-border">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
-        <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] lg:items-start lg:gap-20">
-          <div>
-            <h2 className="max-w-[18ch] font-heading text-[clamp(2.15rem,4.6vw,3.5rem)] leading-[1.08] font-bold tracking-[-0.022em] text-balance">
-              Nothing between you and your files.
+    <section className="nl-process" aria-labelledby="process-title">
+      <div className="nl-shell">
+        <div className="nl-process-shell">
+          <div className="nl-process-head" data-reveal>
+            <p className="nl-index">02 — How it works</p>
+            <h2 id="process-title" className="nl-process-title">
+              From a thought<br />to a <span className="nl-selection">system.<SelectionHandles /></span>
             </h2>
-            <p className="mt-4 max-w-[56ch] text-[17px] leading-7 text-muted-foreground">
-              Your vault is a folder of ordinary Markdown, portable database definitions, and saved views. Read it in any editor, move it with your filesystem, and back it up on your terms.
-            </p>
-            <div className="mt-7 grid gap-5 border-t border-border pt-5 sm:grid-cols-2 sm:gap-8">
-              <div>
-                <div className="flex items-center gap-2 text-[12.5px] font-semibold">
-                  <CheckCircle2 className="size-3.5 text-success" aria-hidden="true" />
-                  Available today
-                </div>
-                <p className="mt-2 text-[14.5px] leading-6 text-muted-foreground">
-                  Local vaults, Markdown editing, verified backups, and portable database views.
-                </p>
-              </div>
-              <div className="border-t border-border pt-4 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-8">
-                <div className="flex items-center gap-2 text-[12.5px] font-semibold">
-                  <HardDrive className="size-3.5 text-muted-foreground" aria-hidden="true" />
-                  Planned, not shipped
-                </div>
-                <p className="mt-2 text-[14.5px] leading-6 text-muted-foreground">
-                  Cloud workspaces and team collaboration are not included. Optional relay pairing remains experimental and explicit.
-                </p>
-              </div>
-            </div>
-            <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[12.5px] text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No telemetry</span>
-              <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No account</span>
-              <span className="inline-flex items-center gap-1.5"><ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> No network dependency</span>
-            </div>
-          </div>
-          <div>
-            <VaultTree />
-            <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
-              Example vault layout. Note bodies and frontmatter stay readable outside Nodus.
+            <p className="nl-process-sub">
+              Start loose. Add structure only where it helps. The note remains Markdown at every step —
+              and the system stays visible while you work.
             </p>
           </div>
-        </div>
-      </div>
-    </section>
-  );
-}
 
-function Workflow() {
-  const steps = [
-    {
-      number: '01',
-      icon: FileText,
-      title: 'Capture a note',
-      copy: 'Write in plain Markdown. Nodus keeps stable IDs and preserves your frontmatter.',
-      sample: 'meeting-notes.md',
-    },
-    {
-      number: '02',
-      icon: Link2,
-      title: 'Connect the context',
-      copy: 'Link related notes and follow backlinks. Search and the local graph keep the trail visible.',
-      sample: '[[product-brief]]',
-    },
-    {
-      number: '03',
-      icon: Database,
-      title: 'Structure what matters',
-      copy: 'Add the note to a database, type its properties, and shape the view around the work.',
-      sample: 'Status · Owner · Priority',
-    },
-  ];
-
-  return (
-    <section className="border-t border-border bg-card/35">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-24">
-        <SectionHeader
-          title="From a thought to a system."
-          copy="Start loose. Add structure only where it helps. The note remains Markdown at every step."
-        />
-        <div className="relative mt-12">
-          <div className="workflow-connector absolute top-4 right-[16%] left-[16%] hidden border-t border-dashed border-border md:block" aria-hidden="true" />
-          <ol className="relative grid gap-8 md:grid-cols-3 md:gap-0">
-            {steps.map((step) => (
-              <li key={step.number} className=" relative md:px-6 md:first:pl-0 md:last:pr-0">
-                <div className="flex items-center gap-3">
-                  <span className="grid size-9 place-items-center rounded-full border border-border bg-background text-[10px] font-semibold tracking-[0.08em]">
-                    {step.number}
+          <div className="nl-process-grid">
+            <div className="nl-process-steps">
+              {processSteps.map((step, index) => (
+                <article
+                  key={step.number}
+                  ref={(element) => { stepRefs.current[index] = element; }}
+                  data-step={index}
+                  className={cn('nl-step', active === index && 'is-active')}
+                >
+                  <button
+                    type="button"
+                    className="nl-step-hit"
+                    onClick={() => setActive(index)}
+                    aria-pressed={active === index}
+                    aria-label={`Show step ${step.number}: ${step.title}`}
+                  />
+                  <span className="nl-step-top">
+                    <span className="nl-step-num">{step.number}</span>
+                    <span className="nl-step-icon"><step.icon className="size-3.5" aria-hidden="true" /></span>
                   </span>
-                  <span className="h-px flex-1 bg-border md:hidden" aria-hidden="true" />
+                  <h3>{step.title}</h3>
+                  <p>{step.copy}</p>
+                  <span className="nl-step-sample">{step.sample}</span>
+                  <span className="nl-step-media">
+                    <span className="nl-device nl-device--inline">
+                      <span className="nl-device-screen">
+                        <StepImage step={step} className="nl-device-img is-active" />
+                      </span>
+                    </span>
+                  </span>
+                </article>
+              ))}
+            </div>
+
+            <div className="nl-process-media">
+              <div className="nl-device">
+                <div className="nl-device-bar">
+                  <span className="nl-window-dots" aria-hidden="true"><i /><i /><i /></span>
+                  <span>Nodus — a working example</span>
                 </div>
-                <div className="mt-5 flex items-center gap-2">
-                  <step.icon className="size-4 text-success" aria-hidden="true" />
-                  <h3 className="text-[15px] font-semibold tracking-tight">{step.title}</h3>
+                <div className="nl-device-screen">
+                  {processSteps.map((step, index) => (
+                    <StepImage key={step.number} step={step} className={cn('nl-device-img', active === index && 'is-active')} />
+                  ))}
                 </div>
-                <p className="mt-2 max-w-[34ch] text-[15px] leading-6 text-muted-foreground">{step.copy}</p>
-                <div className="mt-4 inline-flex rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
-                  {step.sample}
-                </div>
-              </li>
-            ))}
-          </ol>
+              </div>
+              <div className="nl-device-caption">
+                {processSteps[active]?.title ?? ''} <span>live example</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-interface CtaGraphNode {
-  id: string;
-  label: string;
-  x: number;
-  y: number;
-  radius: number;
-  accent?: boolean;
-  dashed?: boolean;
+/* -------------------------------------------------------------------------
+   Module rail
+   ------------------------------------------------------------------------- */
+
+interface RailCard {
+  number: string;
+  title: string;
+  copy: string;
+  icon: LucideIcon;
+  tone: 'paper' | 'ink' | 'warm';
+  visual: 'note' | 'graph' | 'table' | 'views' | 'tasks' | 'backup';
 }
 
-const ctaGraphNodes: CtaGraphNode[] = [
-  { id: 'notes', label: 'NOTES', x: 104, y: 84, radius: 7 },
-  { id: 'links', label: 'WIKI LINKS', x: 454, y: 66, radius: 5, dashed: true },
-  { id: 'graph', label: 'LOCAL GRAPH', x: 488, y: 186, radius: 8 },
-  { id: 'databases', label: 'DATABASES', x: 414, y: 298, radius: 6 },
-  { id: 'vault', label: 'YOUR VAULT', x: 92, y: 286, radius: 9, accent: true },
+const railCards: RailCard[] = [
+  {
+    number: '01',
+    title: 'Notes that stay readable.',
+    copy: 'Markdown bodies, YAML frontmatter, tags, aliases, and stable IDs. Open the vault in any editor.',
+    icon: FileText,
+    tone: 'paper',
+    visual: 'note',
+  },
+  {
+    number: '02',
+    title: 'Links that come back.',
+    copy: 'Wiki links, backlinks, full-text search, and a local graph. Follow the thread without leaving the vault.',
+    icon: Link2,
+    tone: 'ink',
+    visual: 'graph',
+  },
+  {
+    number: '03',
+    title: 'Databases made of notes.',
+    copy: 'Typed properties and relations layered over Markdown. The record is the note; the database is the view.',
+    icon: Database,
+    tone: 'paper',
+    visual: 'table',
+  },
+  {
+    number: '04',
+    title: 'Views that match the work.',
+    copy: 'Table, list, gallery, kanban, and calendar. Save the filters and properties each project needs.',
+    icon: Columns3,
+    tone: 'warm',
+    visual: 'views',
+  },
+  {
+    number: '05',
+    title: 'Tasks from the writing.',
+    copy: 'A derived dashboard reads tasks from your notes. Completion writes back to the Markdown source.',
+    icon: ListChecks,
+    tone: 'paper',
+    visual: 'tasks',
+  },
+  {
+    number: '06',
+    title: 'Backups you can prove.',
+    copy: 'Verified backup and restore, portable export, and a vault you can move with the filesystem.',
+    icon: Archive,
+    tone: 'ink',
+    visual: 'backup',
+  },
 ];
 
-const ctaGraphEdges: Array<[string, string, boolean?]> = [
-  ['vault', 'notes', true],
-  ['notes', 'links'],
-  ['links', 'graph', true],
-  ['graph', 'databases'],
-  ['databases', 'vault'],
-  ['notes', 'graph'],
-];
-
-function OpenSourceGraph() {
-  const center = { x: 280, y: 178 };
-  const byId = new Map(ctaGraphNodes.map((node) => [node.id, node]));
-  const pathFor = (from: { x: number; y: number }, to: { x: number; y: number }) => {
-    const midX = (from.x + to.x) / 2;
-    const midY = (from.y + to.y) / 2 - 24;
-    return `M ${from.x} ${from.y} Q ${midX} ${midY} ${to.x} ${to.y}`;
-  };
-
+function RailVisual({ kind }: { kind: RailCard['visual'] }) {
+  if (kind === 'note') {
+    return (
+      <div className="nl-mock">
+        <div className="nl-mock-title"><FileText className="size-3" aria-hidden="true" /> product-brief.md</div>
+        <span className="nl-mock-line" /><span className="nl-mock-line" /><span className="nl-mock-line nl-mock-line--short" />
+      </div>
+    );
+  }
+  if (kind === 'graph') {
+    return (
+      <div className="nl-mock">
+        <div className="nl-mock-title"><Network className="size-3" aria-hidden="true" /> local graph</div>
+        <MiniGraph />
+      </div>
+    );
+  }
+  if (kind === 'table') {
+    return (
+      <div className="nl-mock">
+        <div className="nl-mock-title"><Database className="size-3" aria-hidden="true" /> launch-notebook</div>
+        <table className="nl-mock-table">
+          <thead><tr><th>Note</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>A quieter launch</td><td><span className="nl-mock-pill">in progress</span></td></tr>
+            <tr><td>Reading list</td><td><span className="nl-mock-pill">ready</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  if (kind === 'views') {
+    return (
+      <div className="nl-mock">
+        <div className="nl-mock-title"><Columns3 className="size-3" aria-hidden="true" /> saved views</div>
+        <div className="nl-view-chips">
+          <span>Table</span><span>List</span><span>Gallery</span><span>Kanban</span><span>Calendar</span>
+        </div>
+      </div>
+    );
+  }
+  if (kind === 'tasks') {
+    return (
+      <div className="nl-mock">
+        <div className="nl-mock-title"><ListChecks className="size-3" aria-hidden="true" /> this week</div>
+        <div className="nl-check-row"><span className="nl-check-box is-done"><Check className="size-2" aria-hidden="true" /></span>Map the first writing experience</div>
+        <div className="nl-check-row"><span className="nl-check-box" />Test the reading list</div>
+        <div className="nl-check-row"><span className="nl-check-box" />Gather notes from the field</div>
+      </div>
+    );
+  }
   return (
-    <div className="relative mx-auto h-[260px] w-full max-w-[560px] text-background sm:h-[310px] lg:h-[350px]" aria-hidden="true">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,color-mix(in_oklab,var(--success)_14%,transparent),transparent_60%)]" />
-      <svg viewBox="0 0 560 360" className="relative size-full" fill="none">
-        <g>
-          {ctaGraphEdges.map(([fromId, toId, animated]) => {
-            const from = byId.get(fromId);
-            const to = byId.get(toId);
-            if (from === undefined || to === undefined) return null;
-            const d = pathFor(from, to);
-            return (
-              <g key={`${fromId}:${toId}`}>
-                <path d={d} stroke="currentColor" strokeOpacity=".18" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-                {animated ? (
-                  <path d={d} stroke="var(--success)" strokeOpacity=".55" strokeWidth="1.15" vectorEffect="non-scaling-stroke" className="graph-link-flow" />
-                ) : null}
-              </g>
-            );
-          })}
-          {ctaGraphNodes.map((node) => pathFor(center, node)).map((d, index) => (
-            <path key={`center-${index}`} d={d} stroke="currentColor" strokeOpacity=".12" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-          ))}
-        </g>
-
-        <g>
-          <circle cx={center.x} cy={center.y} r="36" stroke="currentColor" strokeOpacity=".12" />
-          <circle cx={center.x} cy={center.y} r="22" stroke="var(--success)" strokeOpacity=".32" />
-          <circle cx={center.x} cy={center.y} r="17" fill="var(--success)" fillOpacity=".14" className="graph-node-pulse" />
-          <circle cx={center.x} cy={center.y} r="7.5" fill="var(--success)" />
-        </g>
-
-        {ctaGraphNodes.map((node) => {
-          const labelOnLeft = node.x <= center.x || node.x > 440;
-          const labelX = labelOnLeft ? node.x - node.radius - 10 : node.x + node.radius + 10;
-          const anchor = labelOnLeft ? 'end' : 'start';
-          const labelY = node.y + 3;
-          return (
-            <g key={node.id}>
-              <circle cx={node.x} cy={node.y} r={node.radius + 8} stroke={node.accent ? 'var(--success)' : 'currentColor'} strokeOpacity={node.accent ? '.35' : '.12'} strokeDasharray={node.dashed ? '2 4' : undefined} />
-              <circle cx={node.x} cy={node.y} r={node.radius} fill={node.accent ? 'var(--success)' : 'currentColor'} fillOpacity={node.accent ? '.85' : '.75'} />
-              <circle cx={node.x} cy={node.y} r={Math.max(2, node.radius * 0.3)} fill="var(--foreground)" fillOpacity=".8" />
-              <text x={labelX} y={labelY} textAnchor={anchor} fill="currentColor" fillOpacity=".62" fontSize="9" letterSpacing="1" fontFamily="ui-monospace, SFMono-Regular, Consolas, monospace">
-                {node.label}
-              </text>
-            </g>
-          );
-        })}
-
-        <text x={center.x} y={center.y + 55} textAnchor="middle" fill="currentColor" fillOpacity=".38" fontSize="8.5" letterSpacing="1.1" fontFamily="ui-monospace, SFMono-Regular, Consolas, monospace">
-          ONE VAULT · EVERY CONNECTION LOCAL
-        </text>
-      </svg>
+    <div className="nl-mock">
+      <div className="nl-mock-title"><Archive className="size-3" aria-hidden="true" /> verified backup</div>
+      <div className="nl-tree">
+        <span><strong>nodus-backup.json</strong></span>
+        <span className="is-moss">✓ integrity verified</span>
+        <span>restore checked · portable</span>
+      </div>
     </div>
   );
 }
 
-function OpenSourceCta() {
+function ModuleRail() {
+  const sectionRef = useRef<HTMLElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  useRailProgress(sectionRef, trackRef);
+
   return (
-    <section className="border-t border-border bg-foreground text-background">
-      <div className="relative mx-auto max-w-6xl overflow-hidden px-5 py-16 sm:py-20">
-        <div className="grid items-center gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] lg:gap-14">
-          <div className=" relative max-w-[620px]">
-            <h2 className="font-heading text-[clamp(2.1rem,4.8vw,3.6rem)] leading-[1.08] font-bold tracking-[-0.02em] text-balance">
-              Built in the open. Owned by you.
-            </h2>
-            <p className="mt-4 max-w-[54ch] text-base leading-7 text-background/65">
-              Nodus is Apache-2.0 licensed. Read the code, run it locally, inspect the storage model, and help shape what comes next.
+    <section ref={sectionRef} id="databases" className="nl-rail-section scroll-mt-20" aria-labelledby="rail-title">
+      <div className="nl-rail-sticky">
+        <div className="nl-rail-head">
+          <div className="nl-rail-head-copy" data-reveal>
+            <p className="nl-index">03 — Inside the workspace</p>
+            <h2 id="rail-title" className="nl-h2">Every part earns its place.</h2>
+            <p className="nl-copy">
+              Five views, typed properties, relations, rollups, and a task dashboard derived from your notes.
+              All of it sits on top of plain files.
             </p>
-            <div className="mt-7 flex flex-wrap items-center gap-3">
-              <Button asChild className="h-11 bg-background px-4 text-sm text-foreground hover:bg-background/90 sm:h-10">
-                <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="group">
-                  <GithubMark data-icon="inline-start" />
-                  Explore the repository
-                  <ArrowUpRight data-icon="inline-end" aria-hidden="true" className="transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                </a>
-              </Button>
-              <Button asChild variant="outline" className="h-11 border-background/20 bg-transparent px-4 text-sm text-background hover:bg-background/10 hover:text-background sm:h-10">
-                <a href={WORKSPACE_PATH} className="group">
-                  Open the workspace
-                  <ArrowRight data-icon="inline-end" aria-hidden="true" className="transition-transform duration-200 group-hover:translate-x-0.5" />
-                </a>
-              </Button>
+          </div>
+          <span className="nl-rail-count">06 MODULES · SCROLL</span>
+        </div>
+        <div className="nl-rail-progress" aria-hidden="true"><div className="nl-rail-progress-track"><span className="nl-rail-progress-fill" /></div></div>
+        <div ref={trackRef} className="nl-rail-track">
+          {railCards.map((card) => (
+            <article key={card.number} className={cn('nl-rail-card', `nl-rail-card--${card.tone}`)}>
+              <div className="nl-rail-card-top">
+                <span className="nl-rail-num">{card.number}</span>
+                <span className="nl-rail-icon"><card.icon className="size-4" aria-hidden="true" /></span>
+              </div>
+              <h3 className="nl-rail-title">{card.title}</h3>
+              <p className="nl-rail-copy">{card.copy}</p>
+              <div className="nl-rail-visual"><RailVisual kind={card.visual} /></div>
+            </article>
+          ))}
+        </div>
+        <p className="nl-rail-hint" aria-hidden="true">Swipe to explore the workspace →</p>
+      </div>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   Value marquee
+   ------------------------------------------------------------------------- */
+
+const values = [
+  'Plain Markdown',
+  'Local by default',
+  'No account required',
+  'Apache-2.0',
+  'No telemetry',
+  'Portable databases',
+  'Offline editing',
+  'Files you own',
+];
+
+function ValueMarquee() {
+  return (
+    <div className="nl-marquee" aria-label="Nodus principles">
+      <div className="nl-marquee-track">
+        <ul className="nl-marquee-copy">
+          {values.map((value) => <li key={value}>{value}</li>)}
+        </ul>
+        <ul className="nl-marquee-copy" aria-hidden="true">
+          {values.map((value) => <li key={value}>{value}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   Ownership / files
+   ------------------------------------------------------------------------- */
+
+function FilesSection() {
+  return (
+    <section id="philosophy" className="nl-files scroll-mt-20" aria-labelledby="files-title">
+      <div className="nl-shell">
+        <div className="nl-files-grid">
+          <div className="nl-files-copy" data-reveal>
+            <p className="nl-index">04 — Your files</p>
+            <h2 id="files-title" className="nl-h2">
+              Nothing between you and your <span className="nl-selection">files.<SelectionHandles /></span>
+            </h2>
+            <p className="nl-copy">
+              Your vault is a folder of ordinary Markdown, portable database definitions, and saved views.
+              Read it in any editor, move it with your filesystem, and back it up on your terms.
+            </p>
+
+            <div className="nl-files-facts">
+              <div className="nl-fact">
+                <h3><CheckCircle2 className="size-3.5 text-success" aria-hidden="true" />Available today</h3>
+                <p>Local vaults, Markdown editing, verified backups, and portable database views.</p>
+              </div>
+              <div className="nl-fact nl-fact--planned">
+                <h3><HardDrive className="size-3.5 text-muted-foreground" aria-hidden="true" />Planned, not shipped</h3>
+                <p>Cloud workspaces and team collaboration are not included. Optional relay pairing stays explicit and experimental.</p>
+              </div>
+            </div>
+
+            <div className="nl-files-privacy">
+              <span><ShieldCheck className="size-3.5" aria-hidden="true" />No telemetry</span>
+              <span><CloudOff className="size-3.5" aria-hidden="true" />No account</span>
+              <span><WifiOff className="size-3.5" aria-hidden="true" />No network dependency</span>
             </div>
           </div>
-          <div>
-            <OpenSourceGraph />
+
+          <div className="nl-file-stage" data-reveal>
+            <div className="nl-files-toast" aria-hidden="true"><SavedToast /></div>
+            <div className="nl-vault-window nl-window" aria-hidden="true">
+              <div className="nl-window-bar">
+                <span className="nl-window-dots"><i /><i /><i /></span>
+                <span className="nl-window-title">~/nodus-vault</span>
+                <span className="nl-window-state">portable</span>
+              </div>
+              <div className="nl-vault-body">
+                <div><strong>vault/</strong></div>
+                <div>├── notes/</div>
+                <div>│   ├── research-index.md</div>
+                <div>│   ├── product-brief.md</div>
+                <div>│   └── reading-list.md</div>
+                <div>├── databases/</div>
+                <div className="is-moss">│   └── reading-list.json</div>
+                <div>└── database-views/</div>
+                <div className="nl-vault-rule" />
+                <div>---</div>
+                <div><span className="is-moss">title</span>: Research index</div>
+                <div><span className="is-moss">id</span>: 7c9e4a2d-…</div>
+                <div>---</div>
+                <div>A map of <span className="is-moss">[[local-first]]</span> tools.</div>
+              </div>
+            </div>
+
+            <div className="nl-file-card nl-file-card--note" aria-hidden="true">
+              <FileText className="size-4" />
+              <span><strong>research-index.md</strong><span>note · 2.4 kB</span></span>
+            </div>
+            <div className="nl-file-card nl-file-card--database" aria-hidden="true">
+              <FileJson className="size-4" />
+              <span><strong>reading-list.json</strong><span>database · portable</span></span>
+            </div>
+            <div className="nl-file-card nl-file-card--backup" aria-hidden="true">
+              <Archive className="size-4" />
+              <span><strong>nodus-backup.json</strong><span>verified · 2026-11-16</span></span>
+            </div>
+            <div className="nl-files-cursor" aria-hidden="true"><CursorChip label="owned by you" moss /></div>
           </div>
         </div>
       </div>
     </section>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   Footer / closing
+   ------------------------------------------------------------------------- */
+
+const footerLetters = ['N', 'o', 'd', 'u', 's'];
+
+function FooterSunrise() {
+  const sunriseRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = sunriseRef.current;
+    if (element === null) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) return;
+
+    element.classList.add('is-armed');
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      element.classList.add('is-awake');
+      observer.disconnect();
+    }, { threshold: 0.08 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={sunriseRef} className="nl-footer-sunrise">
+      <div className="nl-footer-glow" aria-hidden="true" />
+      <a href="/" aria-label="Nodus home" className="nl-footer-word focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success">
+        {footerLetters.map((letter, index) => (
+          <span key={`${letter}-${index}`} style={{ '--i': index } as CSSProperties} aria-hidden="true">
+            {letter}
+          </span>
+        ))}
+      </a>
+    </div>
   );
 }
 
 function LandingFooter() {
-  const footerLink = 'inline-flex min-h-11 items-center rounded-sm text-sm text-background/80 transition-colors hover:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background';
   return (
-    <footer className="border-t border-border bg-foreground text-background">
-      <div className="mx-auto max-w-6xl px-5 pt-14 pb-6 sm:pt-20">
-        <div className="grid gap-12 border-b border-background/20 pb-12 md:grid-cols-[1.3fr_1fr] md:gap-20">
+    <footer className="nl-footer">
+      <div className="nl-footer-inner">
+        <div className="nl-footer-top">
           <div>
-            <p className="mb-5 text-[13px] font-medium tracking-wide text-background/80">Local-first. Open source. Yours.</p>
-            <h2 className="max-w-[16ch] font-heading text-[clamp(2.25rem,4.8vw,4rem)] leading-[1.1] font-semibold tracking-[-0.04em]">Make space for what’s next.</h2>
-            <p className="mt-5 max-w-[43ch] text-base leading-7 text-background/80">A note, a project, a new way to organize your thinking. Start in Nodus and keep your files close.</p>
-            <Button asChild className="mt-7 h-11 bg-background px-5 text-foreground hover:bg-background/90 focus-visible:ring-background focus-visible:ring-offset-2 focus-visible:ring-offset-foreground"><a href={WORKSPACE_PATH}>Open your workspace<ArrowRight data-icon="inline-end" aria-hidden="true" /></a></Button>
+            <p className="nl-footer-kicker">Local-first. Open source. Yours.</p>
+            <h2 className="nl-footer-title">Make space for what’s next.</h2>
+            <p className="nl-footer-copy">
+              A note, a project, a new way to organize your thinking. Start in Nodus and keep your files close.
+            </p>
+            <div className="nl-footer-actions">
+              <Button asChild className="nl-footer-action h-12 focus-visible:ring-background focus-visible:ring-offset-2 focus-visible:ring-offset-[#1b1a18]">
+                <a href={WORKSPACE_PATH}>
+                  Open your workspace
+                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                </a>
+              </Button>
+              <Button asChild variant="outline" className="nl-footer-ghost h-12 focus-visible:ring-background focus-visible:ring-offset-2 focus-visible:ring-offset-[#1b1a18]">
+                <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+                  <GithubMark data-icon="inline-start" />
+                  Explore the repository
+                  <ArrowUpRight data-icon="inline-end" aria-hidden="true" />
+                </a>
+              </Button>
+            </div>
           </div>
-          <nav aria-label="Footer" className="grid grid-cols-2 gap-8 md:pt-1">
-            <div className="flex flex-col items-start"><h3 className="mb-3 text-[13px] font-semibold text-background/80">Explore Nodus</h3><a className={footerLink} href="#features">Connected notes</a><a className={footerLink} href="#databases">Flexible databases</a><a className={footerLink} href="#philosophy">Your local files</a><a className={footerLink} href={WORKSPACE_PATH}>Workspace</a></div>
-            <div className="flex flex-col items-start"><h3 className="mb-3 text-[13px] font-semibold text-background/80">Built in the open</h3><a className={footerLink} href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub<ArrowUpRight className="ml-1 size-3" aria-hidden="true" /></a><p className="mt-3 max-w-[22ch] text-sm leading-6 text-background/80">Apache-2.0 licensed. Read the source, run it locally, and make it yours.</p></div>
+
+          <nav aria-label="Footer" className="nl-footer-nav">
+            <div>
+              <h3>Explore Nodus</h3>
+              <a href="#features">Connected notes</a>
+              <a href="#databases">Flexible databases</a>
+              <a href="#philosophy">Your local files</a>
+              <a href={WORKSPACE_PATH}>Workspace</a>
+            </div>
+            <div>
+              <h3>Built in the open</h3>
+              <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub <ArrowUpRight className="size-3" aria-hidden="true" /></a>
+              <p>Apache-2.0 licensed. Read the source, run it locally, and make it yours.</p>
+            </div>
           </nav>
         </div>
-        <a href="/" aria-label="Nodus home" className="flex min-w-0 items-center gap-5 rounded-sm py-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background sm:gap-8 sm:py-10"><NodusMark className="size-[clamp(2.25rem,10vw,8rem)] shrink-0" /><span className="font-heading text-[clamp(4rem,19vw,15rem)] leading-none font-semibold tracking-[-0.065em]">Nodus</span></a>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-background/20 pt-5 text-[13px] text-background/80"><span>A local-first workspace for connected thinking.</span><span>Plain Markdown. No account required.</span></div>
+
+        <div className="nl-footer-bottom">
+          <span>A local-first workspace for connected thinking.</span>
+          <span><LockKeyhole className="size-3" aria-hidden="true" />Plain Markdown. No account required.</span>
+        </div>
       </div>
+      <FooterSunrise />
     </footer>
   );
 }
 
+/* -------------------------------------------------------------------------
+   Page
+   ------------------------------------------------------------------------- */
+
 export default function LandingPage() {
   const [entranceReady, setEntranceReady] = useState(false);
+  const heroRef = useRef<HTMLElement>(null);
+  useRevealOnScroll();
 
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -790,7 +1118,7 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div className={cn('landing-page min-h-dvh bg-background text-foreground', entranceReady && 'landing-started')}>
+    <div className={cn('landing-page nl-page min-h-dvh bg-background text-foreground', entranceReady && 'landing-started')}>
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring/80"
@@ -799,12 +1127,13 @@ export default function LandingPage() {
       </a>
       <LandingNav />
       <main id="main-content" tabIndex={-1} className="outline-none">
-        <Hero />
-        <PrincipleStrip />
-        <ConnectedKnowledge />
-        <StructuredThinking />
-        <Ownership />
-        <LandingStatement />
+        <Hero sectionRef={heroRef} />
+        <div className="nl-statement-wrap"><LandingStatement /></div>
+        <Capabilities />
+        <ProcessShowcase />
+        <ModuleRail />
+        <ValueMarquee />
+        <FilesSection />
       </main>
       <LandingFooter />
     </div>
