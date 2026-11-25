@@ -323,7 +323,7 @@ export function createLocalApiMiddleware(
     return startupPromise;
   };
 
-  const getVault = async (): Promise<FileSystemVault> => {
+  const getVault = async (expectedVaultPath?: string): Promise<FileSystemVault> => {
     if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.');
     await ensureStartup();
     if (setupState !== null || activeVaultPath === null) {
@@ -335,7 +335,11 @@ export function createLocalApiMiddleware(
         throw error;
       });
     }
-    const vault = await vaultPromise;
+    const selectedVault = vaultPromise;
+    const vault = await selectedVault;
+    if (expectedVaultPath !== undefined && (vault.root !== expectedVaultPath || vaultPromise !== selectedVault)) {
+      throw new ApiError(409, 'STALE_VAULT', 'The active vault changed. Reopen Templates in the current vault.');
+    }
     if (disposed) throw new ApiError(503, 'SERVER_SHUTTING_DOWN', 'The local API is shutting down.');
     if (options.watchSnapshots) vault.startDatabaseSnapshotLifecycle({ onInvalidate: markProjectionCachesDirty });
     return vault;
@@ -1169,16 +1173,20 @@ export function createLocalApiMiddleware(
     }
 
     if (path === '/api/templates') {
-      const vault = await getVault();
-      if (method === 'GET') return sendJson(res, 200, await vault.readTemplates());
+      if (method === 'GET') {
+        const vault = await getVault(url.searchParams.get('vaultPath') ?? undefined);
+        return sendJson(res, 200, await vault.readTemplates());
+      }
       if (method === 'PUT') {
         const body = await readJson(req);
-        requireAllowedKeys(body, ['templates', 'baseHash'], 'request');
+        requireAllowedKeys(body, ['templates', 'baseHash', 'vaultPath'], 'request');
+        const expectedVaultPath = requireString(body.vaultPath, 'vaultPath');
         if (!Array.isArray(body.templates)) throw new ApiError(400, 'INVALID_INPUT', 'templates must be an array.');
         const baseHash = body.baseHash === null ? null : requireHash(body.baseHash);
         let templates: NodusTemplate[];
         try { templates = body.templates.map(parseTemplate); }
         catch (error) { throw new ApiError(422, 'INVALID_TEMPLATE', error instanceof Error ? error.message : 'Template catalog is invalid.'); }
+        const vault = await getVault(expectedVaultPath);
         try { return sendJson(res, 200, await vault.writeTemplates(templates, baseHash)); }
         catch (error) { throw toStaleApiError(error, 'saving templates'); }
       }
@@ -1317,7 +1325,7 @@ export function createLocalApiMiddleware(
       return sendJson(
         res,
         200,
-        await listDatabaseRows(await getVault(), decodeURIComponent(databaseRowsMatch[1] ?? ''), expectedSchemaHash, options.watchSnapshots === true),
+        await listDatabaseRows(await getVault(url.searchParams.get('vaultPath') ?? undefined), decodeURIComponent(databaseRowsMatch[1] ?? ''), expectedSchemaHash, options.watchSnapshots === true),
       );
     }
 
@@ -1336,7 +1344,10 @@ export function createLocalApiMiddleware(
     const databaseViewsMatch = /^\/api\/databases\/([^/]+)\/views$/.exec(path);
     if (databaseViewsMatch !== null) {
       const databaseId = requireUuid(decodeURIComponent(databaseViewsMatch[1] ?? ''), 'database ID');
-      if (method === 'GET') return sendJson(res, 200, await listDatabaseViews(await getVault(), databaseId));
+      if (method === 'GET') {
+        const vault = await getVault(url.searchParams.get('vaultPath') ?? undefined);
+        return sendJson(res, 200, await listDatabaseViews(vault, databaseId));
+      }
       if (method === 'POST') {
         const body = await readJson(req);
         return sendJson(res, 201, await createLocalDatabaseView(await getVault(), databaseId, body));

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 
 const root = await mkdtemp(join(tmpdir(), 'nodus-project-management-'));
-process.env.NODUS_VAULT = root;
+const vaultA = join(root, 'vault-a');
+const vaultB = join(root, 'vault-b');
+await mkdir(vaultB);
+process.env.NODUS_VAULT = vaultA;
+process.env.NODUS_VAULT_ROOTS = root;
 process.env.NODUS_PREFERENCES_PATH = join(root, 'app-preferences.json');
 let server, browser;
 try {
@@ -59,9 +63,9 @@ try {
     assert.equal((await response).status(), 200);
     await page.getByRole('dialog', { name: 'Edit database schema' }).waitFor({ state: 'hidden' });
   };
-  const setup = async (suffix) => {
+  const setup = async (suffix, workItemsAlreadyApplied = false) => {
     await apply('Projects');
-    await apply('Work Items');
+    if (!workItemsAlreadyApplied) await apply('Work Items');
     const projects = await database('Projects');
     const items = await database('Work Items');
     assert.deepEqual(items.properties.map(({ name }) => name), ['Type', 'Status', 'Priority']);
@@ -86,13 +90,133 @@ try {
     return { projects, items, relation };
   };
 
+  const captureId = '92929292-9292-4929-8929-929292929292';
+  await request('/databases', 'POST', { database: { id: captureId, name: 'Capture fixture', properties: [] } });
+  await page.reload();
   await templates();
   await page.getByRole('heading', { name: 'Project management' }).waitFor();
+  const list = page.getByRole('navigation', { name: 'Template list' });
+  const templateButton = (name) => list.getByRole('button', { name: `${name} Database`, exact: true });
+  const captureRoute = (url) => url.pathname === `/api/databases/${captureId}/views`;
+  const originatingPath = await realpath(vaultA);
+  const fetched = Promise.withResolvers();
+  const releaseObsoleteCapture = Promise.withResolvers();
+  const obsoleteRouteDone = Promise.withResolvers();
+  let catalogWrites = 0;
+  page.on('request', (pending) => {
+    if (new URL(pending.url()).pathname === '/api/templates' && pending.method() === 'PUT') catalogWrites++;
+  });
+  await page.route(captureRoute, async (route) => {
+    try {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      assert.equal(new URL(route.request().url()).searchParams.get('vaultPath'), originatingPath);
+      fetched.resolve();
+      await releaseObsoleteCapture.promise;
+      // Chromium may already have aborted the intercepted request.
+      await route.fulfill({ response }).catch(() => {});
+    } finally {
+      obsoleteRouteDone.resolve();
+    }
+  }, { times: 1 });
+  await page.getByRole('combobox', { name: 'Create database template' }).selectOption(captureId);
+  await fetched.promise;
   await page.getByRole('button', { name: 'Add project templates' }).click();
-  await page.getByRole('button', { name: 'Save template library', exact: true }).click();
+  await templateButton('Projects').waitFor();
+  await templateButton('Work Items').waitFor();
+  const aborted = page.waitForEvent('requestfailed', (pending) => captureRoute(new URL(pending.url())));
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  assert.match((await aborted).failure()?.errorText ?? '', /ABORTED|CANCELLED/i);
+  const switchVault = async (path) => {
+    await page.getByRole('textbox', { name: 'Vault folder' }).fill(path);
+    const [response] = await Promise.all([
+      page.waitForResponse((result) => new URL(result.url()).pathname === '/api/vault/open'),
+      page.getByRole('button', { name: 'Use folder', exact: true }).click(),
+    ]);
+    assert.equal(response.status(), 200, await response.text());
+  };
+  await switchVault(vaultB);
+  releaseObsoleteCapture.resolve();
+  await obsoleteRouteDone.promise;
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  assert.equal(catalogWrites, 0, 'An obsolete capture attempted to persist its catalog');
+  assert.deepEqual(await request('/templates'), { templates: [], hash: null });
+  for (const target of [vaultA, vaultB]) {
+    await assert.rejects(access(join(target, '.nodus-templates', 'templates.json')), { code: 'ENOENT' });
+  }
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await switchVault(vaultA);
+  await templates();
+
+  const releaseCapture = Promise.withResolvers();
+  await page.route(captureRoute, async (route) => {
+    await releaseCapture.promise;
+    await route.continue();
+  }, { times: 1 });
+  await Promise.all([
+    page.waitForRequest((pending) => captureRoute(new URL(pending.url()))),
+    page.getByRole('combobox', { name: 'Create database template' }).selectOption(captureId),
+  ]);
+  await page.getByRole('button', { name: 'Add project templates' }).click();
+  await templateButton('Projects').waitFor();
+  await templateButton('Work Items').waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Save template library' }).isDisabled(), true);
+  assert.deepEqual((await request('/templates')).templates, []);
+  releaseCapture.resolve();
   await page.getByText('Template library saved.', { exact: true }).waitFor();
+  const expectedTemplates = ['Capture fixture template', 'Projects', 'Work Items'];
+  for (const name of expectedTemplates) await templateButton(name).waitFor();
+  const savedCatalog = await request('/templates');
+  assert.deepEqual(savedCatalog.templates.map(({ name }) => name).sort(), expectedTemplates);
   assert.equal(await page.getByRole('button', { name: 'Add project templates' }).isDisabled(), true);
-  const first = await setup('Alpha');
+
+  const projectsTemplate = savedCatalog.templates.find(({ name }) => name === 'Projects');
+  const workItemsTemplate = savedCatalog.templates.find(({ name }) => name === 'Work Items');
+  const projectsPreview = `**/api/templates/${projectsTemplate.id}/preview`;
+  const workItemsPreview = `**/api/templates/${workItemsTemplate.id}/preview`;
+  const previewButton = page.getByRole('button', { name: 'Preview', exact: true });
+  const applyButton = page.getByTestId('workspace-content').getByRole('button', { name: 'Create from template', exact: true });
+  const previewOutput = page.getByTestId('workspace-content').locator('pre');
+  for (const currentResponseFirst of [false, true]) {
+    const releaseObsolete = Promise.withResolvers();
+    await page.route(projectsPreview, async (route) => {
+      await releaseObsolete.promise;
+      await route.continue();
+    }, { times: 1 });
+    await templateButton('Projects').click();
+    await Promise.all([page.waitForRequest(projectsPreview), previewButton.click()]);
+    await templateButton('Work Items').click();
+    assert.equal(await applyButton.isDisabled(), true);
+    const loadCurrentPreview = async () => {
+      await Promise.all([page.waitForResponse(workItemsPreview), previewButton.click()]);
+      await previewOutput.filter({ hasText: '"name": "Work Items"' }).waitFor();
+      assert.equal(await applyButton.isEnabled(), true);
+    };
+    if (currentResponseFirst) await loadCurrentPreview();
+    const obsolete = page.waitForResponse(projectsPreview);
+    releaseObsolete.resolve();
+    await (await obsolete).finished();
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    if (!currentResponseFirst) {
+      assert.equal(await previewOutput.count(), 0);
+      assert.equal(await applyButton.isDisabled(), true);
+      await loadCurrentPreview();
+    } else {
+      assert.match(await previewOutput.innerText(), /"name": "Work Items"/);
+      assert.equal(await applyButton.isEnabled(), true);
+    }
+  }
+  const [appliedCurrent] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/apply')),
+    applyButton.click(),
+  ]);
+  assert.equal(new URL(appliedCurrent.url()).pathname, `/api/templates/${workItemsTemplate.id}/apply`);
+  assert.equal(appliedCurrent.status(), 201, await appliedCurrent.text());
+  await page.getByText('Database created from template.', { exact: true }).waitFor();
+  await database('Work Items');
+  assert.equal((await request('/databases')).databases.some(({ name }) => name === 'Projects'), false);
+
+  const first = await setup('Alpha', true);
   await templates();
   const second = await setup('Beta');
   assert.notEqual(first.projects.id, second.projects.id);
@@ -172,7 +296,7 @@ try {
   const { templates: savedTemplates } = await request('/templates');
   assert(savedTemplates.every(({ database }) => database.properties.every(({ type }) => type !== 'relation')));
   assert.deepEqual(errors, []);
-  console.log('Project management browser smoke passed: reusable templates, independent pairs, schema linking, project membership, bug filtering, board edits, reload, and stable relations after rename.');
+  console.log('Project management browser smoke passed: cross-vault cancellation, reusable templates, independent pairs, schema linking, project membership, bug filtering, board edits, reload, and stable relations after rename.');
 } finally {
   await browser?.close();
   await server?.close();

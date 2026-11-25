@@ -2115,8 +2115,10 @@ export default function App() {
           />
         ) : null}
 
-        {view === 'templates' ? (
+        {view === 'templates' && status !== null && !vaultSwitching ? (
           <TemplatesView
+            key={status.vault.path}
+            vaultPath={status.vault.path}
             databases={databases}
             onApplied={() => { void Promise.all([refreshNotes(true), refreshDatabases()]); }}
             sidebarCollapsed={sidebarCollapsed}
