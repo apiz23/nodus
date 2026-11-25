@@ -78,6 +78,13 @@ import { diagnoseDatabaseView, type DatabaseView } from '../../src/database/data
 import { SavedViewControls } from './SavedViewControls';
 import { KanbanView, CalendarView, ListView, GalleryView } from './DatabaseLayouts';
 import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } from './database-view-layout';
+import {
+  columnOrderMatchesSchema,
+  mergeColumnOrder,
+  moveVisibleColumn,
+  resetColumnOrder,
+  visibleColumnIds,
+} from './database-column-order';
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
 import { DatabaseAutomations } from './DatabaseAutomations';
@@ -93,6 +100,100 @@ function propertyTypeLabel(type: PropertyType): string {
     case 'checkbox': return 'Checkbox';
     default: return `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
   }
+}
+
+export function ColumnOrderControls({
+  properties,
+  order,
+  hiddenPropertyIds,
+  disabled,
+  onToggle,
+  onMove,
+  onShowAll,
+  onReset,
+}: {
+  properties: readonly Property[];
+  order: readonly string[];
+  hiddenPropertyIds: ReadonlySet<string>;
+  disabled: boolean;
+  onToggle: (propertyId: string, visible: boolean) => void;
+  onMove: (propertyId: string, delta: -1 | 1) => void;
+  onShowAll: () => void;
+  onReset: () => void;
+}) {
+  const schemaIds = properties.map((property) => property.id);
+  const propertyById = new Map(properties.map((property) => [property.id, property]));
+  const orderedProperties = mergeColumnOrder(schemaIds, order).flatMap((id) => propertyById.get(id) ?? []);
+  const visibleIds = visibleColumnIds(orderedProperties.map((property) => property.id), hiddenPropertyIds);
+  const hiddenCount = orderedProperties.length - visibleIds.length;
+  const resetDisabled = disabled || columnOrderMatchesSchema(visibleColumnIds(schemaIds, hiddenPropertyIds), visibleIds);
+
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 border-b px-3 py-2.5">
+        <div>
+          <h3 className="text-xs font-semibold">Columns</h3>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">Note title always stays visible.</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button type="button" size="xs" variant="ghost" disabled={disabled || hiddenCount === 0} onClick={onShowAll}>
+            Show all
+          </Button>
+          <Button type="button" size="xs" variant="ghost" disabled={resetDisabled} onClick={onReset}>
+            Reset order
+          </Button>
+        </div>
+      </div>
+      <div className="max-h-72 overflow-y-auto p-1" role="group" aria-label="Visible columns">
+        {orderedProperties.map((property) => {
+          const checkboxId = `column-${property.id}`;
+          const visible = !hiddenPropertyIds.has(property.id);
+          const visibleIndex = visibleIds.indexOf(property.id);
+          const moveUpDisabled = disabled || !visible || visibleIndex <= 0;
+          const moveDownDisabled = disabled || !visible || visibleIndex < 0 || visibleIndex >= visibleIds.length - 1;
+          return (
+            <div key={property.id} className="flex h-8 items-center gap-1 rounded-md px-2 text-xs hover:bg-muted">
+              <Checkbox
+                id={checkboxId}
+                checked={visible}
+                disabled={disabled}
+                onCheckedChange={(checked) => onToggle(property.id, checked === true)}
+              />
+              <label htmlFor={checkboxId} className="min-w-0 flex-1 cursor-pointer truncate">{property.name}</label>
+              <span className="shrink-0 text-[10px] text-muted-foreground">{propertyTypeLabel(property.type)}</span>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label={`Move ${property.name} up`}
+                title={`Move ${property.name} up`}
+                disabled={moveUpDisabled}
+                onClick={() => onMove(property.id, -1)}
+              >
+                ↑
+              </Button>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label={`Move ${property.name} down`}
+                title={`Move ${property.name} down`}
+                disabled={moveDownDisabled}
+                onClick={() => onMove(property.id, 1)}
+              >
+                ↓
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+      {hiddenCount > 0 ? (
+        <p className="border-t px-3 py-2 text-[11px] text-muted-foreground" role="status">
+          {hiddenCount} of {orderedProperties.length} hidden. Hidden columns keep their position here.
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 interface DatabasesViewProps {
@@ -464,8 +565,10 @@ export function DatabasesView({
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const [filters, setFilters] = useState<DatabaseFilter[]>([]);
   const [hiddenPropertyIds, setHiddenPropertyIds] = useState<Set<string>>(() => new Set());
+  const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [savedPresentation, setSavedPresentation] = useState<DatabaseView | null>(null);
   const [viewsLoading, setViewsLoading] = useState(true);
+  const [viewSaving, setViewSaving] = useState(false);
   const [newDatedEntry, setNewDatedEntry] = useState<{ date: string; title: string; noteId?: string; baseHash?: string } | null>(null);
   const mutationGeneration = useRef(0);
   const schemaGeneration = useRef(0);
@@ -521,8 +624,10 @@ export function DatabasesView({
     setGroupPropertyId(undefined);
     setFilters([]);
     setHiddenPropertyIds(new Set());
+    setColumnOrder([]);
     setSavedPresentation(null);
     setViewsLoading(true);
+    setViewSaving(false);
     setNewDatedEntry(null);
   }, [selected?.id]);
 
@@ -589,20 +694,25 @@ export function DatabasesView({
       tasks: taskProjection?.tasks ?? [],
     });
   }, [displayRows, savedPresentation, selected, taskProjection]);
-  const visibleProperties = useMemo(
-    () => selected === null ? [] : [
-      ...(savedPresentation?.visiblePropertyIds ?? []).flatMap((id) => selected.properties.find((property) => property.id === id) ?? []),
-      ...selected.properties.filter((property) => !savedPresentation?.visiblePropertyIds.includes(property.id)),
-    ].filter((property) => !hiddenPropertyIds.has(property.id)),
-    [hiddenPropertyIds, selected, savedPresentation],
+  const schemaPropertyIds = useMemo(() => selected?.properties.map((property) => property.id) ?? [], [selected]);
+  const effectiveColumnOrder = useMemo(
+    () => mergeColumnOrder(schemaPropertyIds, columnOrder),
+    [columnOrder, schemaPropertyIds],
   );
+  const visibleProperties = useMemo(() => {
+    if (selected === null) return [];
+    const propertyById = new Map(selected.properties.map((property) => [property.id, property]));
+    return effectiveColumnOrder.flatMap((id) => {
+      const property = propertyById.get(id);
+      return property !== undefined && !hiddenPropertyIds.has(id) ? [property] : [];
+    });
+  }, [effectiveColumnOrder, hiddenPropertyIds, selected]);
   const appliedFilterCount = selected === null
     ? 0
     : filters.filter((filter) => {
         const property = selected.properties.find((item) => item.id === filter.propertyId);
         return property !== undefined && isValidFilter(property, filter.operator, filter.value);
       }).length;
-  const hiddenPropertyCount = selected === null ? 0 : selected.properties.length - visibleProperties.length;
   const activeViewType = savedPresentation?.type ?? 'table';
   const viewSettings = activeViewType === 'calendar'
     ? savedPresentation?.settings?.startDatePropertyId !== undefined
@@ -664,6 +774,7 @@ export function DatabasesView({
     setSorts(configuration.sorts ?? [configuration.sort]);
     setFilters(configuration.filters);
     setHiddenPropertyIds(new Set(selected.properties.filter((property) => !configuration.visiblePropertyIds.includes(property.id)).map((property) => property.id)));
+    setColumnOrder(mergeColumnOrder(selected.properties.map((property) => property.id), configuration.visiblePropertyIds));
     setEditing(null); setAddOpen(false); setCandidateId(null); setCandidatePropertyId(null); setConfirmedAdd(false);
     setSaving(false); setActionError(null); setActionNotice(null); setActionIssues([]); setStale(false); setNewDatedEntry(null);
   }
@@ -725,6 +836,17 @@ export function DatabasesView({
       else next.add(propertyId);
       return next;
     });
+  }
+
+  function moveColumn(propertyId: string, delta: -1 | 1): void {
+    setColumnOrder((current) => {
+      const order = mergeColumnOrder(schemaPropertyIds, current);
+      return moveVisibleColumn(order, hiddenPropertyIds, propertyId, delta) ?? current;
+    });
+  }
+
+  function resetColumnOrderState(): void {
+    setColumnOrder(resetColumnOrder(schemaPropertyIds));
   }
 
   function dismissSchemaEditor(): void {
@@ -1230,7 +1352,7 @@ export function DatabasesView({
                   </div>
                 </header>
 
-                <SavedViewControls key={`${vaultKey}:${selected.id}`} database={selected} vaultKey={vaultKey} configuration={viewConfiguration} onApply={applySavedView} onReady={() => setViewsLoading(false)} busy={saving || schemaSaving || newDatedEntry !== null} hasNoteDraft={editing !== null || candidateId !== null} />
+                <SavedViewControls key={`${vaultKey}:${selected.id}`} database={selected} vaultKey={vaultKey} configuration={viewConfiguration} onApply={applySavedView} onReady={() => setViewsLoading(false)} busy={saving || schemaSaving || newDatedEntry !== null} hasNoteDraft={editing !== null || candidateId !== null} saving={viewSaving} setSaving={setViewSaving} />
                 {viewConfiguration.type === 'kanban' || viewConfiguration.type === 'calendar' ? <div className="my-3 flex flex-wrap items-center gap-2 text-xs">
                   <span>{viewConfiguration.type === 'kanban' ? 'Group by Select property' : 'Start date property'}</span>
                   <Select
@@ -1569,42 +1691,16 @@ export function DatabasesView({
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent align="start" aria-label="Columns" className="w-64 p-0">
-                          <div className="flex items-start justify-between gap-3 border-b px-3 py-2.5">
-                            <div>
-                              <h3 className="text-xs font-semibold">Columns</h3>
-                              <p className="mt-0.5 text-[11px] text-muted-foreground">Note title always stays visible.</p>
-                            </div>
-                            <Button
-                              type="button"
-                              size="xs"
-                              variant="ghost"
-                              disabled={hiddenPropertyCount === 0}
-                              onClick={() => setHiddenPropertyIds(new Set())}
-                            >
-                              Show all
-                            </Button>
-                          </div>
-                          <div className="max-h-72 overflow-y-auto p-1" role="group" aria-label="Visible columns">
-                            {selected.properties.map((property) => {
-                              const checkboxId = `column-${property.id}`;
-                              return (
-                                <div key={property.id} className="flex h-8 items-center gap-2 rounded-md px-2 text-xs hover:bg-muted">
-                                  <Checkbox
-                                    id={checkboxId}
-                                    checked={!hiddenPropertyIds.has(property.id)}
-                                    onCheckedChange={(checked) => toggleVisibleProperty(property.id, checked === true)}
-                                  />
-                                  <label htmlFor={checkboxId} className="min-w-0 flex-1 cursor-pointer truncate">{property.name}</label>
-                                  <span className="shrink-0 text-[10px] text-muted-foreground">{propertyTypeLabel(property.type)}</span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {hiddenPropertyCount > 0 ? (
-                            <p className="border-t px-3 py-2 text-[11px] text-muted-foreground" role="status">
-                              {hiddenPropertyCount} of {selected.properties.length} hidden.
-                            </p>
-                          ) : null}
+                          <ColumnOrderControls
+                            properties={selected.properties}
+                            order={effectiveColumnOrder}
+                            hiddenPropertyIds={hiddenPropertyIds}
+                            disabled={saving || stale || viewsLoading || viewSaving}
+                            onToggle={toggleVisibleProperty}
+                            onMove={moveColumn}
+                            onShowAll={() => setHiddenPropertyIds(new Set())}
+                            onReset={resetColumnOrderState}
+                          />
                         </PopoverContent>
                       </Popover>
 

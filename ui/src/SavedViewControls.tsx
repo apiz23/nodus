@@ -34,7 +34,7 @@ export function SavedViewOrderControls({ views, disabled, onMove }: {
   </div>;
 }
 
-export function SavedViewControls({ database, vaultKey, configuration, onApply, onReady, busy, hasNoteDraft }: {
+export function SavedViewControls({ database, vaultKey, configuration, onApply, onReady, busy, hasNoteDraft, saving, setSaving }: {
   database: UiDatabase;
   vaultKey: string;
   configuration: ViewConfiguration;
@@ -42,12 +42,13 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
   onReady: () => void;
   busy: boolean;
   hasNoteDraft: boolean;
+  saving: boolean;
+  setSaving: (saving: boolean) => void;
 }) {
   const [views, setViews] = useState<UiDatabaseView[]>([]);
   const [order, setOrder] = useState<UiDatabaseViewOrder | null>(null);
   const [active, setActive] = useState<UiDatabaseView | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [stale, setStale] = useState(false);

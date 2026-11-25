@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Property } from '../src/database/schema.js';
-import { DatabaseSelectorItem, formatPropertyValue, PropertyControl } from '../ui/src/DatabasesView.js';
+import { ColumnOrderControls, DatabaseSelectorItem, formatPropertyValue, PropertyControl } from '../ui/src/DatabasesView.js';
 import { RelationSchemaFields } from '../ui/src/RelationSchemaFields.js';
 import { DatabaseAutomations } from '../ui/src/DatabaseAutomations.js';
 import type { UiDatabase } from '../src/ui-server/dto.js';
@@ -58,6 +58,79 @@ describe('database property controls and display', () => {
 
   it('renders absent values as an em dash instead of inventing stored data', () => {
     expect(formatPropertyValue({ id: 't', name: 'Summary', type: 'text' }, undefined)).toBe('—');
+  });
+
+  it('renders ordered column controls with hidden, boundary and reset states', () => {
+    const properties: Property[] = [
+      { id: OPTION_A, name: 'Status', type: 'select', options: [] },
+      { id: OPTION_B, name: 'Due', type: 'date' },
+      { id: '33333333-3333-4333-8333-333333333333', name: 'Estimate', type: 'number' },
+    ];
+    const markup = renderToStaticMarkup(createElement(ColumnOrderControls, {
+      properties,
+      order: [OPTION_B, OPTION_A, properties[2]!.id],
+      hiddenPropertyIds: new Set([OPTION_B]),
+      disabled: false,
+      onToggle: () => undefined,
+      onMove: () => undefined,
+      onShowAll: () => undefined,
+      onReset: () => undefined,
+    }));
+
+    expect(markup).toContain('role="group"');
+    expect(markup).toContain('aria-label="Visible columns"');
+    expect(markup).toContain('Note title always stays visible.');
+    expect(markup).toContain('aria-label="Move Status down"');
+    expect(markup).toContain('aria-label="Move Estimate up"');
+    expect(markup).toMatch(/aria-label="Move Due up"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Move Due down"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Move Status up"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Move Estimate down"[^>]*disabled=""/);
+    expect(markup).toContain('Reset order');
+    expect(markup).toContain('Show all');
+    expect(markup).toContain('1 of 3 hidden');
+  });
+
+  it('disables Reset order when only hidden column positions differ from schema order', () => {
+    const hiddenId = 'hidden-estimate';
+    const properties: Property[] = [
+      { id: OPTION_A, name: 'Status', type: 'select', options: [] },
+      { id: hiddenId, name: 'Estimate', type: 'number' },
+      { id: OPTION_B, name: 'Due', type: 'date' },
+    ];
+    const markup = renderToStaticMarkup(createElement(ColumnOrderControls, {
+      properties,
+      order: [OPTION_A, OPTION_B, hiddenId],
+      hiddenPropertyIds: new Set([hiddenId]),
+      disabled: false,
+      onToggle: () => undefined,
+      onMove: () => undefined,
+      onShowAll: () => undefined,
+      onReset: () => undefined,
+    }));
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Reset order<\/button>/);
+  });
+
+  it('disables column order controls while the view is busy', () => {
+    const properties: Property[] = [
+      { id: OPTION_A, name: 'Status', type: 'select', options: [] },
+      { id: OPTION_B, name: 'Due', type: 'date' },
+    ];
+    const markup = renderToStaticMarkup(createElement(ColumnOrderControls, {
+      properties,
+      order: [OPTION_B, OPTION_A],
+      hiddenPropertyIds: new Set(),
+      disabled: true,
+      onToggle: () => undefined,
+      onMove: () => undefined,
+      onShowAll: () => undefined,
+      onReset: () => undefined,
+    }));
+    expect(markup).toMatch(/aria-label="Move Due down"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Move Status up"[^>]*disabled=""/);
+    expect(markup).toMatch(/Reset order/);
+    expect(markup).toMatch(/Reset order[\s\S]*?disabled=""/);
+    expect(markup).toMatch(/Show all[\s\S]*?disabled=""/);
   });
 
   it('renders same-named database selector items with stable IDs in visible and accessible labels', () => {
