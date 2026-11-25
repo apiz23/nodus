@@ -45,6 +45,7 @@ describe('graph sidebar expansion', () => {
 describe('templates sidebar expansion', () => {
   it('renders the shared sidebar toggle in the templates header', () => {
     const html = render(createElement(TemplatesView, {
+      vaultPath: '/vault',
       databases: [],
       onApplied: () => {},
       sidebarCollapsed: false,

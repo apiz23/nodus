@@ -415,12 +415,13 @@ export const api = {
     return request<{ databases: UiDatabase[] }>('/api/databases');
   },
 
-  templates(): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string | null }> {
-    return request('/api/templates');
+  templates(vaultPath?: string, signal?: AbortSignal): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string | null }> {
+    const query = vaultPath === undefined ? '' : `?${new URLSearchParams({ vaultPath })}`;
+    return request(`/api/templates${query}`, { signal });
   },
 
-  saveTemplates(templates: import('../../src/database/templates.js').NodusTemplate[], baseHash: string | null): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string }> {
-    return request('/api/templates', { method: 'PUT', body: jsonBody({ templates, baseHash }) });
+  saveTemplates(templates: import('../../src/database/templates.js').NodusTemplate[], baseHash: string | null, vaultPath: string, signal?: AbortSignal): Promise<{ templates: import('../../src/database/templates.js').NodusTemplate[]; hash: string }> {
+    return request('/api/templates', { method: 'PUT', signal, body: jsonBody({ templates, baseHash, vaultPath }) });
   },
 
   templateAction(id: string, action: 'preview' | 'apply', variables: Record<string, unknown> = {}): Promise<unknown> {
@@ -445,11 +446,12 @@ export const api = {
     });
   },
 
-  databaseRows(id: string, expectedSchemaHash?: string): Promise<UiDatabaseRowsResponse> {
+  databaseRows(id: string, expectedSchemaHash?: string, vaultPath?: string, signal?: AbortSignal): Promise<UiDatabaseRowsResponse> {
     const params = new URLSearchParams();
     if (expectedSchemaHash !== undefined) params.set('schemaHash', expectedSchemaHash);
+    if (vaultPath !== undefined) params.set('vaultPath', vaultPath);
     const query = params.size > 0 ? `?${params.toString()}` : '';
-    return request<UiDatabaseRowsResponse>(`/api/databases/${encodeURIComponent(id)}/rows${query}`);
+    return request<UiDatabaseRowsResponse>(`/api/databases/${encodeURIComponent(id)}/rows${query}`, { signal });
   },
 
   databaseAutomations(databaseId: string): Promise<UiDatabaseAutomationsResponse> {
@@ -464,8 +466,9 @@ export const api = {
     return request(`/api/automations/history?databaseId=${encodeURIComponent(databaseId)}`);
   },
 
-  databaseViews(databaseId: string): Promise<UiDatabaseViewsResponse> {
-    return request(`/api/databases/${encodeURIComponent(databaseId)}/views`);
+  databaseViews(databaseId: string, vaultPath?: string, signal?: AbortSignal): Promise<UiDatabaseViewsResponse> {
+    const query = vaultPath === undefined ? '' : `?${new URLSearchParams({ vaultPath })}`;
+    return request(`/api/databases/${encodeURIComponent(databaseId)}/views${query}`, { signal });
   },
 
   databaseView(databaseId: string, viewId: string): Promise<{ view: UiDatabaseView }> {

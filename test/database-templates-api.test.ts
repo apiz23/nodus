@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,9 @@ import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createBackup, restoreBackup } from '../src/storage/backup/backup.js';
 import { exportVault } from '../src/storage/portable/export.js';
 import { applyImport, planImport } from '../src/storage/portable/import.js';
+import { createNote } from '../src/domain/note.js';
+import { projectManagementTemplates } from '../src/database/project-templates.js';
+import { serializeDatabaseView } from '../src/database/database-view.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import type { DatabaseTemplate, NoteTemplate } from '../src/database/templates.js';
 
@@ -31,11 +34,43 @@ async function json<T>(base: string, path: string, method = 'GET', body?: unknow
 }
 
 describe('template management API', () => {
+  it('rejects stale capture reads and catalog writes after switching between empty vaults', async () => {
+    await withApi(async (base, vault) => {
+      const other = join(vault.root, '..', 'other');
+      await mkdir(other);
+      await vault.createDatabase({ id: DB, name: 'Source database', properties: [] });
+      const vaultPath = vault.root;
+      const query = new URLSearchParams({ vaultPath });
+      expect((await json(base, `/api/databases/${DB}/views?${query}`)).status).toBe(200);
+      expect((await json(base, `/api/databases/${DB}/rows?${query}`)).status).toBe(200);
+
+      const switched = await json<{ vault: { path: string } }>(base, '/api/vault/open', 'POST', { path: other });
+      expect(switched.status).toBe(200);
+      for (const path of ['/api/templates', `/api/databases/${DB}/views`, `/api/databases/${DB}/rows`]) {
+        expect(await json(base, `${path}?${query}`)).toMatchObject({
+          status: 409, body: { error: { code: 'STALE_VAULT' } },
+        });
+      }
+      const templates = projectManagementTemplates(NOW);
+      expect(await json(base, '/api/templates', 'PUT', { templates, baseHash: null, vaultPath })).toMatchObject({
+        status: 409, body: { error: { code: 'STALE_VAULT' } },
+      });
+      expect((await json(base, '/api/templates', 'PUT', { templates, baseHash: null })).status).toBe(400);
+      expect((await json(base, '/api/templates')).body).toEqual({ templates: [], hash: null });
+      expect(await vault.readTemplates()).toEqual({ templates: [], hash: null });
+      const activePath = switched.body.vault.path;
+      expect((await json(base, '/api/templates', 'PUT', { templates, baseHash: null, vaultPath: activePath })).status).toBe(200);
+      expect(await json(base, '/api/templates', 'PUT', { templates: [], baseHash: null, vaultPath: activePath })).toMatchObject({
+        status: 409, body: { error: { code: 'STALE_WRITE' } },
+      });
+    });
+  });
+
   it('previews and applies note templates through the safe note path allocator', async () => {
     await withApi(async (base, vault) => {
       const now = NOW;
       const template: NoteTemplate = { id: TID, type: 'note', name: 'Daily', title: 'Daily {{day}}', body: '# Notes for {{day}}', tags: ['daily'], aliases: [], frontmatter: {}, variables: [{ name: 'day', type: 'date', required: true }], createdAt: now, updatedAt: now };
-      const saved = await json<{ hash: string }>(base, '/api/templates', 'PUT', { templates: [template], baseHash: null });
+      const saved = await json<{ hash: string }>(base, '/api/templates', 'PUT', { templates: [template], baseHash: null, vaultPath: vault.root });
       expect(saved.status).toBe(200);
       const invalid = await json<{ error: { code: string } }>(base, `/api/templates/${TID}/preview`, 'POST', { variables: { day: 'soon' } });
       expect(invalid.status).toBe(422);
@@ -56,7 +91,7 @@ describe('template management API', () => {
       const database = { id: DB, name: 'Tasks', properties: [{ id: PROP, name: 'Priority', type: 'number' as const }] };
       const view = { id: '77777777-7777-4777-8777-777777777777', databaseId: DB, name: 'All tasks', sort: { propertyId: 'title' as const, direction: 'asc' as const }, filters: [], visiblePropertyIds: [PROP] };
       const template: DatabaseTemplate = { id: TID, type: 'database', name: 'Task starter', database, views: [view], starterRows: [{ title: 'Example task', values: { [PROP]: 2 } }], createdAt: NOW, updatedAt: NOW };
-      const saved = await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null });
+      const saved = await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null, vaultPath: vault.root });
       expect(saved.status).toBe(200);
       const preview = await json(base, `/api/templates/${TID}/preview`, 'POST', {});
       expect(preview.status).toBe(200);
@@ -70,7 +105,7 @@ describe('template management API', () => {
       expect(await vault.listNotes()).toHaveLength(1);
       expect(await vault.listDatabaseViews(applied.body.databaseId)).toHaveLength(1);
       const invalid = { ...template, id: '44444444-4444-4444-8444-444444444444', starterRows: [{ title: 'Bad', values: { [PROP]: 'high' } }] };
-      const invalidSave = await json<{ error: { code: string } }>(base, '/api/templates', 'PUT', { templates: [invalid], baseHash: (saved.body as { hash: string }).hash });
+      const invalidSave = await json<{ error: { code: string } }>(base, '/api/templates', 'PUT', { templates: [invalid], baseHash: (saved.body as { hash: string }).hash, vaultPath: vault.root });
       expect(invalidSave.status).toBe(422);
     });
   });
@@ -105,11 +140,75 @@ describe('template management API', () => {
     });
   });
 
+  it('preserves project templates, saved views and linked work items across both archive paths', async () => {
+    await withApi(async (base, source) => {
+      const [projects, workItems] = projectManagementTemplates(NOW);
+      if (!projects || !workItems) throw new Error('Both starter templates are required');
+      expect(workItems.database.properties.every(({ type }) => type !== 'relation')).toBe(true);
+      expect(workItems.views.every((view) => JSON.parse(serializeDatabaseView(view)).version < 4)).toBe(true);
+      const saved = await json(base, '/api/templates', 'PUT', { templates: [projects, workItems], baseHash: null, vaultPath: source.root });
+      expect(saved.status).toBe(200);
+      const apply = async (id: string) => {
+        const result = await json<{ databaseId: string }>(base, `/api/templates/${id}/apply`, 'POST', {});
+        expect(result.status).toBe(201);
+        return result.body.databaseId;
+      };
+      const projectDb = await apply(projects.id);
+      const workDb = await apply(workItems.id);
+      expect(projectDb).not.toBe(projects.database.id);
+      expect(workDb).not.toBe(workItems.database.id);
+      const schema = await source.readDatabaseWithHash(workDb);
+      const relationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const linked = { ...schema.database, properties: [...schema.database.properties, {
+        id: relationId, name: 'Project', type: 'relation' as const,
+        relation: { databaseId: projectDb, cardinality: 'one' as const },
+      }] };
+      expect((await json(base, `/api/databases/${workDb}`, 'PUT', { database: linked, baseHash: schema.hash })).status).toBe(200);
+
+      const project = createNote({ id: DB, title: 'Project', path: 'project.md', body: 'Project brief', now: NOW });
+      const item = createNote({ id: PROP, title: 'Bug', path: 'bug.md', body: 'Steps to reproduce', now: NOW });
+      const addRecord = async (note: typeof project, databaseId: string, values: Record<string, unknown>) => {
+        await source.createNote({ ...note, extraFrontmatter: {
+          nodus_data: { format: 'nodus-note-properties', version: 1, databases: { [databaseId]: values } },
+        } });
+      };
+      await addRecord(project, projectDb, {});
+      const type = workItems.database.properties.find(({ name }) => name === 'Type');
+      const bug = type?.options?.find(({ name }) => name === 'Bug');
+      if (!type || !bug) throw new Error('Bug type is required');
+      const values = { [relationId]: project.id, [type.id]: bug.id };
+      await addRecord(item, workDb, values);
+
+      for (const kind of ['backup', 'portable'] as const) {
+        const archive = join(source.root, '..', kind);
+        const target = await FileSystemVault.open(join(source.root, '..', `${kind}-target`));
+        if (kind === 'backup') {
+          await createBackup(source, archive);
+          await restoreBackup(archive, target.root);
+        } else {
+          await exportVault(source, archive);
+          const plan = await planImport(archive);
+          expect(plan.portableManifest?.formats.databaseView).toBe(3);
+          await applyImport(target, plan);
+        }
+        expect((await target.readTemplates()).templates).toEqual((await source.readTemplates()).templates);
+        expect(await target.readDatabase(workDb)).toEqual(linked);
+        expect((await target.listDatabaseViews(workDb)).map(({ view }) => view)).toEqual(
+          (await source.listDatabaseViews(workDb)).map(({ view }) => view),
+        );
+        const restoredItem = await target.readNote(item.id);
+        expect(restoredItem.body).toBe(item.body);
+        expect(restoredItem.extraFrontmatter).toMatchObject({ nodus_data: { databases: { [workDb]: values } } });
+        expect((await target.readNote(project.id)).body).toBe(project.body);
+      }
+    });
+  });
+
   it('rolls back a failed database template apply so an explicit retry creates one complete database', async () => {
     await withApi(async (base, vault) => {
       const database = { id: DB, name: 'Tasks', properties: [{ id: PROP, name: 'Priority', type: 'number' as const }] };
       const template: DatabaseTemplate = { id: TID, type: 'database', name: 'Task starter', database, views: [], starterRows: [{ title: 'Example task', values: { [PROP]: 2 } }], createdAt: NOW, updatedAt: NOW };
-      expect((await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null })).status).toBe(200);
+      expect((await json(base, '/api/templates', 'PUT', { templates: [template], baseHash: null, vaultPath: vault.root })).status).toBe(200);
 
       const prototype = FileSystemVault.prototype as unknown as {
         publishTemplateTransactionFile(this: FileSystemVault, staged: string, target: string, relativePath: string): Promise<void>;
