@@ -181,6 +181,22 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-label="A different title (actual-file.md)"');
   });
 
+  it('virtualizes large trees while retaining full sibling and selection semantics', () => {
+    const largeNotes = Array.from({ length: 5050 }, (_, index) => note(
+      `large-${index + 1}`,
+      `Page ${String(index + 1).padStart(5, '0')}`,
+      `notes/page-${String(index + 1).padStart(5, '0')}.md`,
+    ));
+    const markup = renderSidebar('notes', { notes: largeNotes, selectedId: largeNotes.at(-1)!.id });
+    const renderedItems = markup.match(/role="treeitem"/g) ?? [];
+
+    expect(renderedItems.length).toBeLessThan(64);
+    expect(markup).toContain('role="tree" aria-label="Pages"');
+    expect(markup).toContain('aria-level="1"');
+    expect(markup).toContain('aria-posinset="5050" aria-setsize="5050"');
+    expect(markup).toContain('aria-selected="true"');
+  });
+
   it('shows the empty state when only the hidden default notes namespace remains', () => {
     const markup = renderSidebar('notes', { notes: [], folders: ['notes'], selectedId: null });
     expect(markup).toContain('No pages yet');
