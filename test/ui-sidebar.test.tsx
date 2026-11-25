@@ -49,10 +49,11 @@ function renderSidebar(
     collapsed = false,
     open = false,
     folderError = null,
+    folderNavigation,
     searchError = null,
     sectionOrder = DEFAULT_WORKSPACE_PREFERENCES.sidebar.order,
     hiddenSections = [],
-  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; searchError?: string | null; sectionOrder?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; hiddenSections?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][] } = {},
+  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; folderNavigation?: { path: string | null; sequence: number }; searchError?: string | null; sectionOrder?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; hiddenSections?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][] } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(
@@ -80,6 +81,8 @@ function renderSidebar(
         notes,
         folders,
         folderError,
+        folderNavigation,
+        onFolderNavigationHandled: () => {},
         results: [],
         selectedId,
         loading: false,
@@ -181,6 +184,22 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-label="A different title (actual-file.md)"');
   });
 
+  it('virtualizes large trees while retaining full sibling and selection semantics', () => {
+    const largeNotes = Array.from({ length: 5050 }, (_, index) => note(
+      `large-${index + 1}`,
+      `Page ${String(index + 1).padStart(5, '0')}`,
+      `notes/page-${String(index + 1).padStart(5, '0')}.md`,
+    ));
+    const markup = renderSidebar('notes', { notes: largeNotes, selectedId: largeNotes.at(-1)!.id });
+    const renderedItems = markup.match(/role="treeitem"/g) ?? [];
+
+    expect(renderedItems.length).toBeLessThan(64);
+    expect(markup).toContain('role="tree" aria-label="Pages"');
+    expect(markup).toContain('aria-level="1"');
+    expect(markup).toContain('aria-posinset="5050" aria-setsize="5050"');
+    expect(markup).toContain('aria-selected="true"');
+  });
+
   it('shows the empty state when only the hidden default notes namespace remains', () => {
     const markup = renderSidebar('notes', { notes: [], folders: ['notes'], selectedId: null });
     expect(markup).toContain('No pages yet');
@@ -236,5 +255,45 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-label="Settings"');
     expect(markup).toContain('Storage health: 0 issues');
     expect(markup).not.toContain('Not connected');
+  });
+});
+
+describe('breadcrumb folder navigation in the sidebar', () => {
+  const folders = ['notes/Projects', 'notes/Projects/Sub', 'notes/Other'];
+  const notes = [
+    note('id-alpha', 'Alpha note', 'notes/Projects/Sub/alpha.md'),
+    note('id-beta', 'Beta note', 'notes/beta.md'),
+  ];
+
+  it('selects and expands the destination folder without filtering the tree', () => {
+    const markup = renderSidebar('notes', {
+      notes,
+      folders,
+      selectedId: 'id-alpha',
+      folderNavigation: { path: 'Projects/Sub', sequence: 1 },
+    });
+
+    const projects = markup.match(/<button[^>]*aria-label="Projects, 1 page"[^>]*>/)?.[0];
+    const sub = markup.match(/<button[^>]*aria-label="Sub, 1 page"[^>]*>/)?.[0];
+    expect(projects).toContain('aria-expanded="true"');
+    expect(projects).not.toContain('aria-current="location"');
+    expect(sub).toContain('aria-expanded="true"');
+    expect(sub).toContain('aria-current="location"');
+
+    expect(markup).toContain('aria-label="Alpha note (alpha.md)"');
+    expect(markup).toContain('aria-label="Beta note (beta.md)"');
+    expect(markup).not.toContain('aria-label="notes,');
+  });
+
+  it('clears folder selection when All Notes navigation is requested', () => {
+    const markup = renderSidebar('notes', {
+      notes,
+      folders,
+      selectedId: 'id-alpha',
+      folderNavigation: { path: null, sequence: 1 },
+    });
+
+    expect(markup).not.toContain('aria-current="location"');
+    expect(markup).toContain('aria-label="Beta note (beta.md)"');
   });
 });

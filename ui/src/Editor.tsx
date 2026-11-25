@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime, wordCount } from './format';
 import type { SaveState } from './types';
 import { ConnectionsSheet } from './ConnectionsSheet';
+import { folderBreadcrumbSegments, toDisplayFolderPath } from './folderPaths';
 import { PageIconPicker } from './PageIconPicker';
 import { SidebarToggle } from './SidebarToggle';
 import { TagEditor } from './editor/TagEditor';
@@ -81,6 +82,8 @@ interface EditorProps {
   onRename: () => void;
   onDelete: () => void;
   onOpenNote: (id: string) => void;
+  onOpenAllNotes: () => void;
+  onOpenFolder: (path: string) => void;
   tagMutationBusy: boolean;
   tagMutationDisabled: boolean;
   tagMutationDisabledReason?: string;
@@ -128,6 +131,8 @@ export function Editor({
   onRename,
   onDelete,
   onOpenNote,
+  onOpenAllNotes,
+  onOpenFolder,
   tagMutationBusy,
   tagMutationDisabled,
   tagMutationDisabledReason,
@@ -234,10 +239,8 @@ export function Editor({
   }
 
   const words = wordCount(body);
-  const pathParts = note.path.split('/').filter(Boolean);
-  if (pathParts[0] === 'notes') pathParts.shift();
-  const fileName = pathParts.pop() ?? '';
-  const folders = pathParts;
+  const fileName = note.path.split('/').filter(Boolean).at(-1) ?? '';
+  const folders = folderBreadcrumbSegments(note.path);
   const pageName = title.trim() === '' ? fileName.replace(/\.md$/, '') : title;
 
   return (
@@ -249,15 +252,33 @@ export function Editor({
           title={note.path}
           className="hidden min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-muted-foreground sm:flex"
         >
-          <span className="shrink-0">Notes</span>
-          {folders.map((segment, index) => (
-            <span key={`${index}-${segment}`} className="flex min-w-0 items-center gap-1">
-              <ChevronRight className="size-3 shrink-0 opacity-60" />
-              <span className="truncate">{segment}</span>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="h-auto shrink-0 p-0 text-[12px] font-normal text-muted-foreground hover:text-foreground"
+            aria-label="Open all notes"
+            onClick={onOpenAllNotes}
+          >
+            Notes
+          </Button>
+          {folders.map((folder) => (
+            <span key={folder.storagePath} className="flex min-w-0 items-center gap-1 overflow-hidden">
+              <ChevronRight className="size-3 shrink-0 opacity-60" aria-hidden="true" />
+              <Button
+                type="button"
+                variant="link"
+                size="xs"
+                className="h-auto min-w-0 shrink p-0 text-[12px] font-normal text-muted-foreground hover:text-foreground"
+                aria-label={`Open folder ${toDisplayFolderPath(folder.storagePath)}`}
+                onClick={() => onOpenFolder(folder.storagePath)}
+              >
+                <span className="truncate">{folder.label}</span>
+              </Button>
             </span>
           ))}
-          <span className="flex min-w-0 items-center gap-1">
-            <ChevronRight className="size-3 shrink-0 opacity-60" />
+          <span className="flex min-w-0 items-center gap-1" aria-current="page">
+            <ChevronRight className="size-3 shrink-0 opacity-60" aria-hidden="true" />
             <span className="truncate text-foreground/75">{pageName}</span>
           </span>
         </nav>

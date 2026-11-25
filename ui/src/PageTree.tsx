@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { AlertCircle, ChevronRight, Copy, FilePlus, FileText, Folder, FolderOpen, FolderPlus, MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { UiFolderImpact, UiNoteSummary, UiSearchResult } from '../../src/ui-server/dto';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import type { FolderNavigationCommand } from './breadcrumbNavigation';
+import { toDisplayFolderPath, toDisplayPath, withFolderAncestors } from './folderPaths';
 import { SearchResultContext } from './SearchResultContext';
 import { PageIcon } from './PageIcon';
 
@@ -30,6 +33,10 @@ interface FolderNode {
   notes: UiNoteSummary[];
 }
 
+type VisibleTreeRow =
+  | { kind: 'folder'; key: string; folder: FolderNode; depth: number; parentFolderPath: string | null; position: number; setSize: number; noteCount: number }
+  | { kind: 'note'; key: string; note: UiNoteSummary; depth: number; parentFolderPath: string | null; position: number; setSize: number };
+
 interface PageTreeProps {
   notes: UiNoteSummary[];
   results: UiSearchResult[];
@@ -40,6 +47,9 @@ interface PageTreeProps {
   selectedId: string | null;
   folders: string[];
   folderError: string | null;
+  treeInventoryPending?: boolean;
+  folderNavigation?: FolderNavigationCommand;
+  onFolderNavigationHandled: (sequence: number) => void;
   loading: boolean;
   searching: boolean;
   error: string | null;
@@ -59,8 +69,7 @@ interface PageTreeProps {
 }
 
 function addNote(root: FolderNode, note: UiNoteSummary): void {
-  const relative = note.path.startsWith('notes/') ? note.path.slice('notes/'.length) : note.path;
-  const parts = relative.split('/').filter(Boolean);
+  const parts = toDisplayPath(note.path).split('/').filter(Boolean);
   const file = parts.pop();
   if (file === undefined) return;
 
@@ -81,7 +90,7 @@ function addNote(root: FolderNode, note: UiNoteSummary): void {
 
 function addFolder(root: FolderNode, storagePath: string): void {
   if (storagePath === 'notes') return;
-  const displayPath = storagePath.startsWith('notes/') ? storagePath.slice('notes/'.length) : storagePath;
+  const displayPath = toDisplayFolderPath(storagePath);
   const parts = displayPath.split('/').filter(Boolean);
   let current = root;
   let display = '';
@@ -106,11 +115,35 @@ function folderPaths(root: FolderNode): string[] {
   return paths;
 }
 
-function countNotes(node: FolderNode): number {
-  return (
-    node.notes.length +
-    [...node.folders.values()].reduce((sum, folder) => sum + countNotes(folder), 0)
-  );
+function buildVisibleTreeRows(root: FolderNode, expanded: ReadonlySet<string>): VisibleTreeRow[] {
+  const noteCounts = new Map<FolderNode, number>();
+  const count = (node: FolderNode): number => {
+    let total = node.notes.length;
+    for (const folder of node.folders.values()) total += count(folder);
+    noteCounts.set(node, total);
+    return total;
+  };
+  count(root);
+
+  const rows: VisibleTreeRow[] = [];
+  const visit = (node: FolderNode, depth: number, parentFolderPath: string | null) => {
+    const folders = [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const notes = [...node.notes].sort((a, b) => a.title.localeCompare(b.title));
+    const setSize = folders.length + notes.length;
+    folders.forEach((folder, index) => {
+      rows.push({
+        kind: 'folder', key: `folder:${folder.path}`, folder, depth, parentFolderPath,
+        position: index + 1, setSize, noteCount: noteCounts.get(folder) ?? 0,
+      });
+      if (expanded.has(folder.path)) visit(folder, depth + 1, folder.path);
+    });
+    notes.forEach((note, index) => rows.push({
+      kind: 'note', key: `note:${note.id}`, note, depth, parentFolderPath,
+      position: folders.length + index + 1, setSize,
+    }));
+  };
+  visit(root, 0, null);
+  return rows;
 }
 
 function folderForNote(node: FolderNode, id: string): string | null {
@@ -138,6 +171,9 @@ export function PageTree({
   notes,
   folders,
   folderError,
+  treeInventoryPending = false,
+  folderNavigation,
+  onFolderNavigationHandled,
   results,
   query,
   filtersActive,
@@ -169,10 +205,20 @@ export function PageTree({
   }, [folders, notes]);
   const activeFolderPath = selectedId === null ? null : folderForNote(tree, selectedId);
 
+  const initialNavigationPath = folderNavigation?.path;
   const [expanded, setExpanded] = useState<Set<string>>(
-    () => readExpanded() ?? new Set(),
+    () => withFolderAncestors(readExpanded() ?? new Set(), initialNavigationPath ?? ''),
   );
-  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(activeFolderPath);
+  const visibleTreeRows = useMemo(() => buildVisibleTreeRows(tree, expanded), [tree, expanded]);
+  const treeRowIndices = useMemo(() => new Map(visibleTreeRows.map((row, index) => [row.key, index])), [visibleTreeRows]);
+  const [focusedTreeRowKey, setFocusedTreeRowKey] = useState<string | null>(null);
+  const [treeScrollMargin, setTreeScrollMargin] = useState(0);
+  const treeViewportRef = useRef<HTMLDivElement>(null);
+  const treeElementRef = useRef<HTMLDivElement>(null);
+  const treeRowElementsRef = useRef(new Map<string, HTMLButtonElement>());
+  const pendingTreeFocusKeyRef = useRef<string | null>(null);
+  const autoScrolledSelectionRef = useRef<string | null>(null);
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(initialNavigationPath === undefined ? activeFolderPath : initialNavigationPath);
   const [actionAnnouncement, setActionAnnouncement] = useState('');
   const [folderDialog, setFolderDialog] = useState<{ kind: 'create' | 'rename' | 'move'; folder: FolderNode | null } | null>(null);
   const [folderName, setFolderName] = useState('');
@@ -184,6 +230,28 @@ export function PageTree({
   const [deleteFolderError, setDeleteFolderError] = useState<string | null>(null);
   const [deleteFolderBusy, setDeleteFolderBusy] = useState(false);
   const initialized = useRef(false);
+  const selectedTreeRowKey = selectedId === null ? null : `note:${selectedId}`;
+  const activeTreeRowKey = focusedTreeRowKey !== null && treeRowIndices.has(focusedTreeRowKey)
+    ? focusedTreeRowKey
+    : selectedTreeRowKey !== null && treeRowIndices.has(selectedTreeRowKey)
+      ? selectedTreeRowKey
+      : visibleTreeRows[0]?.key ?? null;
+  const activeTreeRowIndex = activeTreeRowKey === null ? undefined : treeRowIndices.get(activeTreeRowKey);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: visibleTreeRows.length,
+    getScrollElement: () => treeViewportRef.current,
+    estimateSize: () => 28,
+    getItemKey: (index) => visibleTreeRows[index]?.key ?? index,
+    rangeExtractor: (range) => {
+      const indices = defaultRangeExtractor(range);
+      if (activeTreeRowIndex === undefined || indices.includes(activeTreeRowIndex)) return indices;
+      return [...indices, activeTreeRowIndex].sort((left, right) => left - right);
+    },
+    scrollMargin: treeScrollMargin,
+    overscan: 8,
+    initialRect: { width: 320, height: 640 },
+  });
+  const virtualTreeRows = virtualizer.getVirtualItems();
 
   useEffect(() => {
     if (initialized.current || notes.length === 0) return;
@@ -199,7 +267,16 @@ export function PageTree({
     if (activeFolderPath === null) return;
     const ancestors = activeFolderPath.split('/').map((_, index, parts) => parts.slice(0, index + 1).join('/'));
     setExpanded((current) => new Set([...current, ...ancestors]));
-  }, [activeFolderPath]);
+  }, [activeFolderPath, selectedId]);
+
+  // A pending breadcrumb takes precedence when a refresh changes the active note's folder.
+  useEffect(() => {
+    if (folderNavigation === undefined) return;
+    const { path } = folderNavigation;
+    setSelectedFolderPath(path);
+    if (path !== null) setExpanded((current) => withFolderAncestors(current, path));
+  }, [activeFolderPath, folderNavigation, selectedId]);
+
 
   useEffect(() => {
     try {
@@ -208,6 +285,71 @@ export function PageTree({
       // Storage may be unavailable; tree still works for this session.
     }
   }, [expanded]);
+
+  const isSearching = query.trim() !== '' || filtersActive;
+
+  useLayoutEffect(() => {
+    const viewport = treeViewportRef.current;
+    const treeElement = treeElementRef.current;
+    if (viewport === null || treeElement === null) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const treeRect = treeElement.getBoundingClientRect();
+    const nextMargin = Math.max(0, treeRect.top - viewportRect.top + viewport.scrollTop);
+    setTreeScrollMargin((current) => current === nextMargin ? current : nextMargin);
+  }, [error, folderError, isSearching, loading]);
+
+  useLayoutEffect(() => {
+    if (loading || isSearching || folderNavigation === undefined || selectedFolderPath !== folderNavigation.path) return;
+    if (folderNavigation.path !== null && !expanded.has(folderNavigation.path)) return;
+    const { path, sequence } = folderNavigation;
+    const key = path === null ? null : `folder:${path}`;
+    const index = key === null ? undefined : treeRowIndices.get(key);
+    if (key !== null && index === undefined && treeInventoryPending) return;
+    if (index !== undefined && treeElementRef.current === null) return;
+
+    const frame = requestAnimationFrame(() => {
+      if (key !== null && index !== undefined) {
+        // Update the tree's tab stop without moving focus away from the breadcrumb.
+        pendingTreeFocusKeyRef.current = null;
+        setFocusedTreeRowKey(key);
+        virtualizer.scrollToIndex(index, { align: 'center' });
+      } else if (path !== null) {
+        setSelectedFolderPath(null);
+        setActionAnnouncement(`Could not reveal folder ${path}.`);
+      }
+      onFolderNavigationHandled(sequence);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [expanded, folderNavigation, isSearching, loading, onFolderNavigationHandled, selectedFolderPath, treeRowIndices, treeInventoryPending, virtualizer]);
+
+  useLayoutEffect(() => {
+    const pendingKey = pendingTreeFocusKeyRef.current;
+    if (pendingKey === null) return;
+    const element = treeRowElementsRef.current.get(pendingKey);
+    if (element === undefined) return;
+    element.focus({ preventScroll: true });
+    pendingTreeFocusKeyRef.current = null;
+  }, [virtualTreeRows]);
+
+  useEffect(() => {
+    setFocusedTreeRowKey(null);
+  }, [selectedId]);
+
+  useLayoutEffect(() => {
+    if (folderNavigation?.path != null) {
+      autoScrolledSelectionRef.current = selectedId;
+      return;
+    }
+    if (selectedId === null) {
+      autoScrolledSelectionRef.current = null;
+      return;
+    }
+    if (autoScrolledSelectionRef.current === selectedId) return;
+    const index = treeRowIndices.get(`note:${selectedId}`);
+    if (index === undefined) return;
+    virtualizer.scrollToIndex(index, { align: 'auto' });
+    autoScrolledSelectionRef.current = selectedId;
+  }, [folderNavigation, selectedId, treeRowIndices, virtualizer]);
 
   const toggle = (path: string) => {
     setExpanded((current) => {
@@ -297,7 +439,18 @@ export function PageTree({
     } finally { setDeleteFolderBusy(false); }
   };
 
-  const isSearching = query.trim() !== '' || filtersActive;
+  const focusTreeRowAtIndex = (index: number) => {
+    const row = visibleTreeRows[index];
+    if (row === undefined) return;
+    setFocusedTreeRowKey(row.key);
+    pendingTreeFocusKeyRef.current = row.key;
+    virtualizer.scrollToIndex(index, { align: 'auto' });
+    const element = treeRowElementsRef.current.get(row.key);
+    if (element !== undefined) {
+      element.focus({ preventScroll: true });
+      pendingTreeFocusKeyRef.current = null;
+    }
+  };
 
   const handleSearchResultsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -321,37 +474,41 @@ export function PageTree({
 
   const handleTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
-    if (!(target instanceof HTMLElement) || target.getAttribute('role') !== 'treeitem') return;
-    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]')];
-    const index = items.indexOf(target);
+    if (!(target instanceof HTMLElement)) return;
+    const treeItem = target.closest<HTMLElement>('[role="treeitem"][data-tree-index]');
+    if (treeItem === null) return;
+    const index = Number(treeItem.dataset.treeIndex);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= visibleTreeRows.length) return;
+    const row = visibleTreeRows[index]!;
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       const next = event.key === 'ArrowDown' ? index + 1 : index - 1;
-      items[Math.min(Math.max(next, 0), items.length - 1)]?.focus();
+      focusTreeRowAtIndex(Math.min(Math.max(next, 0), visibleTreeRows.length - 1));
       return;
     }
     if (event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
-      items[event.key === 'Home' ? 0 : items.length - 1]?.focus();
+      focusTreeRowAtIndex(event.key === 'Home' ? 0 : visibleTreeRows.length - 1);
       return;
     }
     if (event.key === 'ArrowRight') {
-      if (target.getAttribute('aria-expanded') === 'false') {
+      if (row.kind === 'folder' && !expanded.has(row.folder.path)) {
         event.preventDefault();
-        target.click();
+        treeItem.click();
       }
       return;
     }
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      if (target.getAttribute('aria-expanded') === 'true') {
-        target.click();
+      if (row.kind === 'folder' && expanded.has(row.folder.path)) {
+        treeItem.click();
         return;
       }
-      const previousFolderRow = target.closest('[role="group"]')?.previousElementSibling;
-      const parent = previousFolderRow?.querySelector<HTMLElement>('[role="treeitem"]');
-      parent?.focus();
+      if (row.parentFolderPath !== null) {
+        const parentIndex = treeRowIndices.get(`folder:${row.parentFolderPath}`);
+        if (parentIndex !== undefined) focusTreeRowAtIndex(parentIndex);
+      }
     }
   };
 
@@ -369,7 +526,7 @@ export function PageTree({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3">
+      <div ref={treeViewportRef} className="min-h-0 flex-1 overflow-y-auto px-1 pb-3">
         {folderError === null ? null : <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">Folders could not be refreshed: {folderError}<Button type="button" variant="link" size="xs" onClick={onRetry}>Retry</Button></div>}
         {error === null ? null : (
           <div role="alert" className="mx-1 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
@@ -427,26 +584,48 @@ export function PageTree({
             </div>
           )
         ) : (
-          <div role="tree" aria-label="Pages" onKeyDown={handleTreeKeyDown}>
-            <TreeLevel
-              root={tree}
-              depth={0}
-              expanded={expanded}
-              selectedId={selectedId}
-              selectedFolderPath={selectedFolderPath}
-              onSelectFolder={setSelectedFolderPath}
-              onToggle={toggle}
-              onOpen={onOpen}
-              onCreateInFolder={onCreateInFolder}
-              onCreateSubfolder={beginFolderCreate}
-              onRenameFolder={(folder) => beginFolderEdit('rename', folder)}
-              onMoveFolder={(folder) => beginFolderEdit('move', folder)}
-              onDeleteFolder={(folder) => void beginFolderDelete(folder)}
-              navigationLocked={navigationLocked || folderBusy || deleteFolderBusy}
-              onRenameNote={onRenameNote}
-              onDeleteNote={onDeleteNote}
-              onActionAnnouncement={setActionAnnouncement}
-            />
+          <div ref={treeElementRef} role="tree" aria-label="Pages" onKeyDown={handleTreeKeyDown}>
+            <div role="none" className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualTreeRows.map((virtualRow) => {
+                const row = visibleTreeRows[virtualRow.index]!;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    role="none"
+                    className="absolute left-0 top-0 h-7 w-full"
+                    style={{ transform: `translateY(${virtualRow.start - treeScrollMargin}px)` }}
+                  >
+                    <TreeRowContent
+                      row={row}
+                      index={virtualRow.index}
+                      expanded={expanded}
+                      selectedId={selectedId}
+                      selectedFolderPath={selectedFolderPath}
+                      activeTreeRowKey={activeTreeRowKey}
+                      navigationLocked={navigationLocked || folderBusy || deleteFolderBusy}
+                      rowRef={(element) => {
+                        if (element === null) treeRowElementsRef.current.delete(row.key);
+                        else treeRowElementsRef.current.set(row.key, element);
+                      }}
+                      onFocus={() => setFocusedTreeRowKey(row.key)}
+                      onSelectFolder={setSelectedFolderPath}
+                      onToggle={toggle}
+                      onOpen={onOpen}
+                      onCreateInFolder={onCreateInFolder}
+                      onCreateSubfolder={beginFolderCreate}
+                      onRenameFolder={(folder) => beginFolderEdit('rename', folder)}
+                      onMoveFolder={(folder) => beginFolderEdit('move', folder)}
+                      onDeleteFolder={(folder) => void beginFolderDelete(folder)}
+                      onRenameNote={onRenameNote}
+                      onDeleteNote={onDeleteNote}
+                      onActionAnnouncement={setActionAnnouncement}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
         <span className="sr-only" aria-live="polite">{actionAnnouncement}</span>
@@ -502,12 +681,16 @@ export function PageTree({
   );
 }
 
-function TreeLevel({
-  root,
-  depth,
+function TreeRowContent({
+  row,
+  index,
   expanded,
   selectedId,
   selectedFolderPath,
+  activeTreeRowKey,
+  navigationLocked,
+  rowRef,
+  onFocus,
   onSelectFolder,
   onToggle,
   onOpen,
@@ -516,16 +699,19 @@ function TreeLevel({
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
-  navigationLocked,
   onRenameNote,
   onDeleteNote,
   onActionAnnouncement,
 }: {
-  root: FolderNode;
-  depth: number;
-  expanded: Set<string>;
+  row: VisibleTreeRow;
+  index: number;
+  expanded: ReadonlySet<string>;
   selectedId: string | null;
   selectedFolderPath: string | null;
+  activeTreeRowKey: string | null;
+  navigationLocked: boolean;
+  rowRef: (element: HTMLButtonElement | null) => void;
+  onFocus: () => void;
   onSelectFolder: (path: string) => void;
   onToggle: (path: string) => void;
   onOpen: (id: string) => void;
@@ -534,158 +720,109 @@ function TreeLevel({
   onRenameFolder: (folder: FolderNode) => void;
   onMoveFolder: (folder: FolderNode) => void;
   onDeleteFolder: (folder: FolderNode) => void;
-  navigationLocked: boolean;
   onRenameNote: (id: string) => void;
   onDeleteNote: (id: string) => void;
   onActionAnnouncement: (message: string) => void;
 }) {
-  const folders = [...root.folders.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const notes = [...root.notes].sort((a, b) => a.title.localeCompare(b.title));
+  const isActive = row.key === activeTreeRowKey;
+  const rowTabIndex = isActive ? 0 : -1;
 
-  return (
-    <>
-      {folders.map((folder) => {
-        const open = expanded.has(folder.path);
-        const noteCount = countNotes(folder);
-        return (
-          <div key={folder.path} role="none">
-            <div className="group flex min-w-0 items-center rounded-[4px]">
-              <Button
-                type="button"
-                variant="ghost"
-                role="treeitem"
-                aria-expanded={open}
-                aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
-                aria-level={depth + 1}
-                aria-label={`${folder.name}, ${noteCount} ${noteCount === 1 ? 'page' : 'pages'}`}
-                className={cn(
-                  'h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                  folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
-                )}
-                style={{ paddingLeft: `${6 + depth * 16}px` }}
-                onClick={() => { onSelectFolder(folder.path); onToggle(folder.path); }}
-                disabled={navigationLocked}
-              >
-                <ChevronRight
-                  className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
-                />
-                {open ? (
-                  <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                )}
-                <span className="truncate">{folder.name}</span>
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon-sm" className="size-7 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Actions for ${folder.name}`} title={`Actions for ${folder.name}`} disabled={navigationLocked} onClick={(event) => event.stopPropagation()}><MoreHorizontal /></Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent side="right" align="start" className="w-48">
-                  <DropdownMenuItem onSelect={() => onCreateInFolder(folder.storagePath)}><FilePlus />New note here</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => onCreateSubfolder(folder.storagePath)}><FolderPlus />New subfolder</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => onRenameFolder(folder)}><Pencil />Rename folder</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => onMoveFolder(folder)}><Folder />Move folder</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}><Trash2 />Delete folder</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            {open ? (
-              <div role="group" className="min-w-0 w-full">
-                <TreeLevel
-                  root={folder}
-                  depth={depth + 1}
-                  expanded={expanded}
-                  selectedId={selectedId}
-                  selectedFolderPath={selectedFolderPath}
-                  onSelectFolder={onSelectFolder}
-                  onToggle={onToggle}
-                  onOpen={onOpen}
-                  onCreateInFolder={onCreateInFolder}
-                  onCreateSubfolder={onCreateSubfolder}
-                  onRenameFolder={onRenameFolder}
-                  onMoveFolder={onMoveFolder}
-                  onDeleteFolder={onDeleteFolder}
-                  navigationLocked={navigationLocked}
-                  onRenameNote={onRenameNote}
-                  onDeleteNote={onDeleteNote}
-                  onActionAnnouncement={onActionAnnouncement}
-                />
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
+  if (row.kind === 'folder') {
+    const folder = row.folder;
+    const open = expanded.has(folder.path);
+    return <div className="group flex h-7 min-w-0 items-center rounded-[4px]">
+      <Button
+        ref={rowRef}
+        type="button"
+        variant="ghost"
+        role="treeitem"
+        data-tree-index={index}
+        aria-expanded={open}
+        aria-current={folder.path === selectedFolderPath ? 'location' : undefined}
+        aria-level={row.depth + 1}
+        aria-posinset={row.position}
+        aria-setsize={row.setSize}
+        aria-label={`${folder.name}, ${row.noteCount} ${row.noteCount === 1 ? 'page' : 'pages'}`}
+        tabIndex={rowTabIndex}
+        className={cn(
+          'h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+          folder.path === selectedFolderPath && 'bg-success/8 font-medium text-sidebar-foreground',
+        )}
+        style={{ paddingLeft: `${6 + row.depth * 16}px` }}
+        onFocus={onFocus}
+        onClick={() => { onSelectFolder(folder.path); onToggle(folder.path); }}
+        disabled={navigationLocked}
+      >
+        <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+        {open ? <FolderOpen className="size-4 shrink-0 text-muted-foreground" /> : <Folder className="size-4 shrink-0 text-muted-foreground" />}
+        <span className="truncate">{folder.name}</span>
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="ghost" size="icon-sm" tabIndex={rowTabIndex} className="size-7 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Actions for ${folder.name}`} title={`Actions for ${folder.name}`} disabled={navigationLocked} onClick={(event) => event.stopPropagation()}><MoreHorizontal /></Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" className="w-48">
+          <DropdownMenuItem onSelect={() => onCreateInFolder(folder.storagePath)}><FilePlus />New note here</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onCreateSubfolder(folder.storagePath)}><FolderPlus />New subfolder</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => onRenameFolder(folder)}><Pencil />Rename folder</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onMoveFolder(folder)}><Folder />Move folder</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}><Trash2 />Delete folder</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>;
+  }
 
-      {notes.map((note) => (
-        <div key={note.id} role="none" className="group flex min-w-0 items-center rounded-[4px]">
-          <Button
-            type="button"
-            variant="ghost"
-            role="treeitem"
-            aria-selected={note.id === selectedId}
-            aria-label={`${note.title} (${note.path.split('/').at(-1)})`}
-            aria-level={depth + 1}
-            className={cn(
-              'h-7 min-w-0 flex-1 shrink justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal',
-              'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-              note.id === selectedId
-                ? 'bg-success/12 font-medium text-sidebar-foreground'
-                : 'text-sidebar-foreground/85',
-            )}
-            style={{ paddingLeft: `${6 + depth * 16 + 18}px` }}
-            onClick={() => onOpen(note.id)}
-            title={`${note.title}\n${note.path}`}
-          >
-            <PageIcon icon={note.icon} className="size-4 shrink-0 text-[13px]" />
-            <span className="truncate">{note.path.split('/').at(-1)}</span>
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="size-7 shrink-0 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
-                aria-label={`Actions for ${note.title}`}
-                title={`Actions for ${note.title}`}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="start" className="w-48">
-              <DropdownMenuItem onSelect={() => onRenameNote(note.id)}>
-                <Pencil />
-                Rename path
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  if (typeof navigator === 'undefined' || navigator.clipboard?.writeText === undefined) {
-                    onActionAnnouncement('Clipboard access is unavailable.');
-                    return;
-                  }
-                  void navigator.clipboard.writeText(note.path).then(
-                    () => onActionAnnouncement(`Copied path for ${note.title}.`),
-                    () => onActionAnnouncement('Could not copy note path.'),
-                  );
-                }}
-              >
-                <Copy />
-                Copy relative path
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => onDeleteNote(note.id)}>
-                <Trash2 />
-                Delete note
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      ))}
-    </>
-  );
+  const note = row.note;
+  const filename = note.path.split('/').at(-1);
+  return <div className="group flex h-7 min-w-0 items-center rounded-[4px]">
+    <Button
+      ref={rowRef}
+      type="button"
+      variant="ghost"
+      role="treeitem"
+      data-tree-index={index}
+      aria-selected={note.id === selectedId}
+      aria-label={`${note.title} (${filename})`}
+      aria-level={row.depth + 1}
+      aria-posinset={row.position}
+      aria-setsize={row.setSize}
+      tabIndex={rowTabIndex}
+      className={cn(
+        'h-7 min-w-0 flex-1 shrink justify-start gap-1.5 rounded-[4px] pr-1 text-left text-[13px] font-normal',
+        'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        note.id === selectedId ? 'bg-success/12 font-medium text-sidebar-foreground' : 'text-sidebar-foreground/85',
+      )}
+      style={{ paddingLeft: `${6 + row.depth * 16 + 18}px` }}
+      onFocus={onFocus}
+      onClick={() => onOpen(note.id)}
+      title={`${note.title}\n${note.path}`}
+    >
+      <PageIcon icon={note.icon} className="size-4 shrink-0 text-[13px]" />
+      <span className="truncate">{filename}</span>
+    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="icon-sm" tabIndex={rowTabIndex} className="size-7 shrink-0 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Actions for ${note.title}`} title={`Actions for ${note.title}`} onClick={(event) => event.stopPropagation()}><MoreHorizontal /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="right" align="start" className="w-48">
+        <DropdownMenuItem onSelect={() => onRenameNote(note.id)}><Pencil />Rename path</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => {
+          if (typeof navigator === 'undefined' || navigator.clipboard?.writeText === undefined) {
+            onActionAnnouncement('Clipboard access is unavailable.');
+            return;
+          }
+          void navigator.clipboard.writeText(note.path).then(
+            () => onActionAnnouncement(`Copied path for ${note.title}.`),
+            () => onActionAnnouncement('Could not copy note path.'),
+          );
+        }}><Copy />Copy relative path</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={() => onDeleteNote(note.id)}><Trash2 />Delete note</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  </div>;
 }
 
 function SearchResultRow({
