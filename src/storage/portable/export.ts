@@ -9,7 +9,7 @@ import { DATABASE_FORMAT_VERSION } from '../../database/schema.js';
 import { DATABASE_VIEW_VERSION } from '../../database/database-view.js';
 import { DATABASE_VIEW_ORDER_VERSION } from '../../database/database-view-order.js';
 import { PROPERTY_CATALOG_VERSION } from '../../properties/catalog.js';
-import { TEMPLATE_VERSION } from '../../database/templates.js';
+import { TEMPLATE_VERSION, templateCatalogUsesColumnWidths } from '../../database/templates.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { createPortableManifest, PORTABLE_EXPORT_MANIFEST, PORTABLE_EXPORT_VERSION, serializePortableManifest, sha256, validatePortableExportContents, type PortableExportResource, type PortableResourceKind } from './manifest.js';
 
@@ -25,10 +25,12 @@ export async function exportVault(vault: VaultStorage, targetDir: string, option
   const resources: PortableExportResource[] = payloads.map((payload) => ({ kind: payload.kind, id: payload.id, path: payload.path, bytes: payload.bytes.byteLength, sha256: sha256(payload.bytes), ...(payload.ownerId === undefined ? {} : { ownerId: payload.ownerId }) }));
   const folders = requiredFolders(snapshot.folders, payloads.map((payload) => payload.path));
   const app = await readNodusAppInfo();
+  const containsV4 = snapshot.entries.some((entry) => entry.kind === 'database-view' && JSON.parse(entry.text).version === 4)
+    || snapshot.templateFiles.some((entry) => templateCatalogUsesColumnWidths(entry.text));
   const manifest = createPortableManifest({
     createdAt: options.now ?? new Date().toISOString(),
     snapshotConsistency: 'cooperating-nodus-writers',
-    formats: { note: NOTE_FORMAT_VERSION, database: DATABASE_FORMAT_VERSION, databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automation: 1, automationHistory: 1, templates: TEMPLATE_VERSION },
+    formats: { note: NOTE_FORMAT_VERSION, database: DATABASE_FORMAT_VERSION, databaseView: containsV4 ? DATABASE_VIEW_VERSION : 3, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automation: 1, automationHistory: 1, templates: TEMPLATE_VERSION },
     resources, folders, excluded: snapshot.excluded, ...(app === undefined ? {} : { app }),
   });
 

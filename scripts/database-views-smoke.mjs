@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtemp, mkdir, realpath, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,6 +138,11 @@ try {
   const formulaColumns = page.getByRole('group', { name: 'Visible columns' });
   assert.equal(await formulaColumns.getByRole('checkbox', { name: /Double estimate/ }).isChecked(), true);
   await page.keyboard.press('Escape');
+  await page.waitForFunction(() => {
+    const labels = [...document.querySelectorAll('[data-column-label]')];
+    return labels.some((label) => label.textContent === 'Double estimate') &&
+      labels.every((label) => getComputedStyle(label).whiteSpace === 'nowrap' && label.scrollWidth <= label.clientWidth + 1);
+  });
   const renderedFormulaTable = await page.getByRole('region', { name: 'Database table records' }).innerText();
   assert.match(renderedFormulaTable, /Double estimate/);
   assert.match(renderedFormulaTable, /Alpha card[\s\S]*\b6\b/);
@@ -190,6 +195,10 @@ try {
     return (await response.json()).view.view.id;
   }
   const tableId = await createView('My table', 'table');
+  await page.waitForFunction(() => {
+    const save = [...document.querySelectorAll('button')].find((button) => button.textContent === 'Save view');
+    return save instanceof HTMLButtonElement && save.disabled;
+  });
   const visibleColumnIds = async () => page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox').evaluateAll((items) => items.filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.id.replace('column-', '')));
   await page.getByRole('button', { name: /^Columns,/ }).click();
   const tableColumns = page.getByRole('group', { name: 'Visible columns' });
@@ -228,6 +237,31 @@ try {
   await readyTableGroup.press('Enter');
   assert.equal(await readyTableGroup.getAttribute('aria-expanded'), 'false');
   await readyTableGroup.press('Enter');
+  const statusResize = page.getByRole('separator', { name: 'Resize Status column', exact: true });
+  const statusHeader = page.getByRole('columnheader', { name: 'Status', exact: true });
+  const initialStatusWidth = (await statusHeader.boundingBox()).width;
+  await statusResize.press('ArrowRight');
+  const keyboardWidth = Math.round(initialStatusWidth) + 16;
+  assert.equal(await statusResize.getAttribute('aria-valuenow'), String(keyboardWidth));
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), keyboardWidth);
+  await statusResize.scrollIntoViewIfNeeded();
+  const resizeBox = await statusResize.boundingBox();
+  const pointerX = resizeBox.x + resizeBox.width / 2;
+  const pointerY = resizeBox.y + resizeBox.height / 2;
+  await page.mouse.move(pointerX, pointerY);
+  await page.mouse.down();
+  await page.mouse.move(pointerX + 40, pointerY, { steps: 4 });
+  await page.mouse.up();
+  const savedStatusWidth = keyboardWidth + 40;
+  assert.equal(await statusResize.getAttribute('aria-valuenow'), String(savedStatusWidth));
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), savedStatusWidth);
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  const statusVisibility = tableColumns.getByRole('checkbox', { name: 'Status', exact: true });
+  await statusVisibility.uncheck();
+  assert.equal(await statusResize.count(), 0);
+  await statusVisibility.check();
+  await page.keyboard.press('Escape');
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), savedStatusWidth);
   const tableSaveRoute = `**/api/databases/${DB}/views/${tableId}`;
   let releaseTableSave, enterTableSave;
   const tableSaveGate = new Promise((resolveGate) => { releaseTableSave = resolveGate; });
@@ -246,6 +280,9 @@ try {
     assert.equal(await page.getByRole('button', { name: 'Reset order', exact: true }).isDisabled(), true);
     assert.equal(await tableColumns.getByRole('checkbox', { name: /Estimate/ }).isDisabled(), true);
     assert.deepEqual(await visibleColumnIds(), expectedTableColumnOrder);
+    assert.equal(await statusResize.getAttribute('aria-disabled'), 'true');
+    assert.equal(await page.getByRole('button', { name: 'Reset widths', exact: true }).isDisabled(), true);
+    assert.equal(await tableColumns.getByRole('button', { name: /^Reset Status width from/ }).isDisabled(), true);
   } finally {
     releaseTableSave();
   }
@@ -270,6 +307,24 @@ try {
   assert.equal(tableFile.sort.direction, 'desc');
   assert.equal(tableFile.filters[0].value, READY);
   assert.equal(tableFile.settings.groupPropertyId, STATUS);
+  assert.equal(tableFile.version, 4);
+  assert.deepEqual(tableFile.settings.columnWidths, { [STATUS]: savedStatusWidth });
+  const tablePath = join(vault, 'database-views', DB, `${tableId}.json`);
+  const beforeInvalidWidth = await readFile(tablePath);
+  const tableEndpoint = `/api/databases/${DB}/views/${tableId}`;
+  const { views: savedViews } = await request(`/api/databases/${DB}/views`);
+  const savedTable = savedViews.find(({ view }) => view.id === tableId);
+  const invalidWidth = await fetch(`${base}${tableEndpoint}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      baseHash: savedTable.contentHash,
+      view: { ...savedTable.view, settings: { ...savedTable.view.settings, columnWidths: { [STATUS]: -10 } } },
+    }),
+  });
+  assert.equal(invalidWidth.status, 400);
+  assert.equal((await invalidWidth.json()).error.code, 'INVALID_INPUT');
+  assert.deepEqual(await readFile(tablePath), beforeInvalidWidth);
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), savedStatusWidth);
   assert.equal(await page.getByRole('button', { name: 'Ready', exact: true }).getAttribute('aria-expanded'), 'true');
 
   const listId = await createView('My list', 'list');
@@ -296,6 +351,8 @@ try {
   const listFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${listId}.json`), 'utf8'));
   assert.equal(listFile.version, 3);
   assert.equal(listFile.type, 'list');
+  assert.equal(listFile.settings.columnWidths, undefined);
+  assert.equal(await statusResize.count(), 0);
   assert.equal(listFile.settings.groupPropertyId, STATUS);
   assert.equal(listFile.visiblePropertyIds.includes(NUMBER), false);
   assert.deepEqual(listFile.visiblePropertyIds, expectedListColumnOrder, 'Saved list column order did not persist');
@@ -305,12 +362,81 @@ try {
     await page.getByRole('option', { name: new RegExp(name) }).click();
     await page.waitForTimeout(200);
   };
+  const otherTableId = await createView('Other table', 'table');
+  const longHeader = page.getByRole('columnheader', { name: 'Double estimate', exact: true });
+  const longLabel = longHeader.locator('[data-column-label]');
+  const longResize = longHeader.getByRole('separator');
+  await longResize.press('Home');
+  assert.equal(Math.round((await longHeader.boundingBox()).width), 80);
+  assert.deepEqual(await longLabel.evaluate((label) => ({
+    clipped: label.scrollWidth > label.clientWidth,
+    whiteSpace: getComputedStyle(label).whiteSpace,
+    overflow: getComputedStyle(label).textOverflow,
+    fullName: label.getAttribute('title'),
+  })), { clipped: true, whiteSpace: 'nowrap', overflow: 'ellipsis', fullName: 'Double estimate' });
+  await longResize.press('Delete');
+  assert.equal(await longLabel.evaluate((label) => label.scrollWidth <= label.clientWidth + 1), true);
+  await statusResize.press('End');
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 640);
+  await statusResize.press('Home');
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 80);
+  const dueResize = page.getByRole('separator', { name: 'Resize Due column', exact: true });
+  await dueResize.press('Home');
+  await dueResize.press('Delete');
+  assert.doesNotMatch(await dueResize.getAttribute('aria-keyshortcuts') ?? '', /Delete/);
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 80);
+  await dueResize.press('Home');
+  await dueResize.dblclick();
+  assert.doesNotMatch(await dueResize.getAttribute('aria-keyshortcuts') ?? '', /Delete/);
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 80);
+  await dueResize.press('Home');
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  const dueVisibility = tableColumns.getByRole('checkbox', { name: 'Due', exact: true });
+  await dueVisibility.uncheck();
+  assert.equal(await dueResize.count(), 0);
+  const resetDue = tableColumns.getByRole('button', { name: 'Reset Due width from 80 pixels', exact: true });
+  await resetDue.press('Enter');
+  assert.equal(await resetDue.count(), 0);
+  assert.equal(await dueVisibility.evaluate((element) => element === document.activeElement), true);
+  assert.equal(await dueVisibility.isChecked(), false);
+  await dueVisibility.check();
+  await page.keyboard.press('Escape');
+  await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+  await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
+  const otherTableFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${otherTableId}.json`), 'utf8'));
+  assert.deepEqual(otherTableFile.settings.columnWidths, { [STATUS]: 80 });
   await switchSavedView('My table');
   await page.getByRole('button', { name: /^Columns,/ }).click();
   assert.deepEqual(await visibleColumnIds(), expectedTableColumnOrder, 'Table column order changed when switching views');
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), savedStatusWidth);
+  await page.getByRole('button', { name: 'Reset widths', exact: true }).click();
+  assert.deepEqual(await visibleColumnIds(), expectedTableColumnOrder, 'Reset widths changed order or visibility');
   await page.keyboard.press('Escape');
+  await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+  await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
+  const resetTableFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${tableId}.json`), 'utf8'));
+  assert.equal(resetTableFile.version, 3);
+  assert.equal(resetTableFile.settings.columnWidths, undefined);
+  await switchSavedView('Other table');
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 80);
+  // Simulate a view carried over from a schema with an extra property.
+  const removedProperty = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const otherTablePath = join(vault, 'database-views', DB, `${otherTableId}.json`);
+  await writeFile(otherTablePath, JSON.stringify({
+    ...otherTableFile,
+    settings: { ...otherTableFile.settings, columnWidths: { [STATUS]: 80, [removedProperty]: 240 } },
+  }));
+  await page.reload();
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByText('Widths for missing properties are ignored. Save this view to remove those widths.').waitFor();
+  assert.equal(Math.round((await statusHeader.boundingBox()).width), 80);
+  await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+  await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
+  const cleanedWidths = JSON.parse(await readFile(otherTablePath, 'utf8'));
+  assert.deepEqual(cleanedWidths, otherTableFile, 'Removing a stale width changed another view preference');
   await switchSavedView('My list');
   await page.getByRole('button', { name: /^Columns,/ }).click();
+  assert.equal(await page.getByRole('button', { name: 'Reset widths', exact: true }).count(), 0);
   assert.deepEqual(await visibleColumnIds(), expectedListColumnOrder, 'List column order changed when switching views');
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: alpha.title, exact: true }).click();
@@ -354,7 +480,7 @@ try {
     await moveView('My gallery', 'up');
   }
   assert.deepEqual(await orderNames(), expectedOrder);
-  const idsByName = { 'My table': tableId, 'My list': listId, 'My gallery': galleryId };
+  const idsByName = { 'My table': tableId, 'My list': listId, 'Other table': otherTableId, 'My gallery': galleryId };
   const orderFile = JSON.parse(await readFile(join(vault, '.nodus-orders', 'database-views', `${DB}.json`), 'utf8'));
   assert.deepEqual(orderFile.viewIds, expectedOrder.map((name) => idsByName[name]));
   const storedOrder = (await request(`/api/databases/${DB}/views/order`)).order;
@@ -734,6 +860,34 @@ try {
   assert.equal(await page.getByRole('textbox', { name: 'Note title', exact: true }).count(), 0);
   assert.equal((await request('/api/notes')).notes.length, beforeDeletion - 1, 'Unavailable navigation created a note');
   assert.equal((await request(`/api/notes/${alpha.id}`)).note.contentHash, sourceBefore.contentHash);
+  const wideDb = '98989898-9898-4989-8989-989898989898';
+  const wideName = 'W'.repeat(100);
+  await request('/api/databases', 'POST', { database: {
+    id: wideDb, name: 'Wide header fixture', properties: [{ id: NUMBER, name: wideName, type: 'number' }],
+  } });
+  await page.reload();
+  await page.getByRole('button', { name: 'Databases', exact: true }).click();
+  await page.getByRole('button', { name: /Wide header fixture/ }).click();
+  const wideHeader = page.getByRole('columnheader', { name: wideName, exact: true });
+  const wideHandle = wideHeader.getByRole('separator');
+  await wideHandle.waitFor();
+  await page.waitForFunction((name) => {
+    const header = document.querySelector(`th[aria-label="${name}"]`);
+    return Math.round(header?.getBoundingClientRect().width ?? 0) === 640;
+  }, wideName);
+  assert(await wideHeader.locator('[data-column-label]').evaluate((label) => label.scrollWidth > 640),
+    'The wide fixture must exceed the default width cap');
+  assert.equal(await wideHandle.getAttribute('aria-valuenow'), '640');
+  assert.equal(await wideHandle.getAttribute('aria-valuetext'), '640 pixels');
+  await wideHandle.press('ArrowRight');
+  assert.equal(Math.round((await wideHeader.boundingBox()).width), 640);
+  await wideHandle.scrollIntoViewIfNeeded();
+  const wideDivider = await wideHandle.boundingBox();
+  await page.mouse.move(wideDivider.x + wideDivider.width / 2, wideDivider.y + wideDivider.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(wideDivider.x + wideDivider.width / 2 + 24, wideDivider.y + wideDivider.height / 2, { steps: 4 });
+  await page.mouse.up();
+  assert.equal(Math.round((await wideHeader.boundingBox()).width), 640);
   assert(failures.some(([method, path, status]) => method === 'GET' && path === '/api/tasks' && status === 500), 'Injected task failure was not observed');
   const nonTaskFailures = (items) => items.filter(([, path]) => path !== '/api/tasks');
   assert.deepEqual(nonTaskFailures(failures), nonTaskFailures(expectedFailures));

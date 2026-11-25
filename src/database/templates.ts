@@ -122,7 +122,7 @@ function parseTemplateView(value: unknown): DatabaseView {
   if (!Array.isArray(value.visiblePropertyIds)) throw invalid('Database template visiblePropertyIds must be an array.');
   if (value.settings !== undefined) {
     if (!object(value.settings)) throw invalid('Database template view settings must be an object.');
-    exact(value.settings, ['groupPropertyId', 'datePropertyId', 'startDatePropertyId', 'endDatePropertyId'], 'database template view settings');
+    exact(value.settings, ['groupPropertyId', 'datePropertyId', 'startDatePropertyId', 'endDatePropertyId', 'columnWidths'], 'database template view settings');
   }
   return parseDatabaseView(serializeDatabaseView(value as DatabaseView));
 }
@@ -147,3 +147,8 @@ function nestedInvalid(error: unknown, context: string): NodusError {
   return invalid(`${context}: ${message(error)}`);
 }
 function invalid(message: string) { return new NodusError('INVALID_FIELD', message); }
+
+export function templateCatalogUsesColumnWidths(text: string): boolean {
+  return parseTemplates(text).some((template) => template.type === 'database' &&
+    template.views.some((view) => view.settings?.columnWidths !== undefined));
+}

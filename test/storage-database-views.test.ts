@@ -24,6 +24,7 @@ const calendarDb: DatabaseDefinition = { id: DB, name: 'Reading', properties: [
   { id: START, name: 'Start', type: 'date' }, { id: END, name: 'End', type: 'date' }, { id: PROP, name: 'Status', type: 'select', options: [{ id: OPTION, name: 'Ready' }] },
 ] };
 const view: DatabaseView = { id: VIEW, databaseId: DB, name: 'Ready to read', sort: { propertyId: PROP, direction: 'asc' }, filters: [{ id: 'f12000f2-065d-4ccb-8b5a-37a22b724dc8', propertyId: PROP, operator: 'is', value: OPTION }], visiblePropertyIds: [PROP] };
+const widthView: DatabaseView = { ...view, type: 'table', settings: { columnWidths: { [PROP]: 288 } }, sorts: [view.sort] };
 const rangeView: DatabaseView = { ...view, type: 'calendar', settings: { startDatePropertyId: START, endDatePropertyId: END }, sorts: [view.sort] };
 
 describe('database view format', () => {
@@ -31,9 +32,45 @@ describe('database view format', () => {
     expect(parseDatabaseView(serializeDatabaseView(view))).toEqual(view);
     const raw = JSON.parse(serializeDatabaseView(view)) as Record<string, unknown>;
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, future: true }))).toThrow(/Unknown key/);
-    expect(() => parseDatabaseView(JSON.stringify({ ...raw, version: 4 }))).toThrow(/newer than supported/);
+    expect(() => parseDatabaseView(JSON.stringify({ ...raw, version: 5 }))).toThrow(/newer than supported/);
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, sort: { propertyId: 'title', direction: 'asc', label: 'Title' } }))).toThrow(/Unknown key/);
     expect(() => parseDatabaseView(JSON.stringify({ ...raw, filters: [{ ...view.filters[0], value: {} }] }))).toThrow(/value must be/);
+  });
+
+  it('validates v4 widths by stable property ID and preserves orphan diagnostics', () => {
+    const encoded = serializeDatabaseView(widthView);
+    const raw = JSON.parse(encoded);
+    expect(raw.version).toBe(4);
+    expect(parseDatabaseView(encoded)).toEqual(widthView);
+    for (const columnWidths of [null, [], {}, { title: 288 }, { [PROP]: 79 }, { [PROP]: 641 }, { [PROP]: 100.5 }, { [PROP]: '100' }]) {
+      expect(() => parseDatabaseView(JSON.stringify({ ...raw, settings: { columnWidths } }))).toThrow(/columnWidths|Column width/);
+    }
+    expect(() => parseDatabaseView(JSON.stringify({ ...raw, version: 3 }))).toThrow(/Unknown key/);
+    expect(() => parseDatabaseView(JSON.stringify({ ...raw, type: 'list' }))).toThrow(/Unknown key/);
+    expect(diagnoseDatabaseView({ ...widthView, settings: { columnWidths: { [START]: 288 } } }, db))
+      .toMatchObject([{ code: 'MISSING_PROPERTY', propertyId: START }]);
+    expect(JSON.parse(serializeDatabaseView({ ...widthView, settings: {} })).version).toBe(3);
+  });
+
+  it('serializes width UUIDs in a stable order', () => {
+    const encoded = serializeDatabaseView({
+      ...widthView, settings: { columnWidths: { [START]: 640, [PROP]: 80 } },
+    });
+    expect(Object.keys(JSON.parse(encoded).settings.columnWidths)).toEqual([PROP, START]);
+    expect(serializeDatabaseView(parseDatabaseView(encoded))).toBe(encoded);
+  });
+
+  it('round-trips grouped v4 settings with descending width UUIDs byte-for-byte', () => {
+    const encoded = serializeDatabaseView({
+      ...widthView,
+      settings: {
+        columnWidths: { [START]: 640, [PROP]: 80 },
+        groupPropertyId: PROP,
+      },
+    });
+    const parsed = parseDatabaseView(encoded);
+    expect(parsed.settings).toEqual({ groupPropertyId: PROP, columnWidths: { [PROP]: 80, [START]: 640 } });
+    expect(serializeDatabaseView(parsed)).toBe(encoded);
   });
 
   it('reads legacy v1 without rewriting and strictly validates typed v2 settings and references', () => {
@@ -140,6 +177,22 @@ describe('saved-view storage and portability', () => {
     });
   });
 
+  it('rejects invalid width updates without changing the saved file', async () => {
+    await withTempDir(async (dir) => {
+      const vault = await FileSystemVault.open(dir);
+      await vault.createDatabase(db);
+      await vault.createDatabaseView(widthView);
+      const [saved] = await vault.listDatabaseViews(DB);
+      const path = join(dir, databaseViewPath(DB, VIEW));
+      const before = await readFile(path);
+      await expect(vault.replaceDatabaseView(
+        { ...widthView, settings: { columnWidths: { [PROP]: 0 } } },
+        { expectedHash: saved!.hash },
+      )).rejects.toThrow(/Column width/);
+      expect(await readFile(path)).toEqual(before);
+    });
+  });
+
   it('keeps views when a database is deleted and exposes orphan diagnostics', async () => {
     await withTempDir(async (dir) => {
       const vault = await FileSystemVault.open(join(dir, 'vault'));
@@ -152,30 +205,101 @@ describe('saved-view storage and portability', () => {
     });
   });
 
-  it('round-trips through export/import and backup/restore as JSON view files', async () => {
+  it.each([
+    { savedView: view, viewVersion: 1, manifestVersion: 3 },
+    { savedView: { ...view, type: 'table' as const, settings: {} }, viewVersion: 2, manifestVersion: 3 },
+    { savedView: { ...widthView, settings: {} }, viewVersion: 3, manifestVersion: 3 },
+    { savedView: widthView, viewVersion: 4, manifestVersion: 4 },
+  ])(
+    'round-trips v$viewVersion through export/import and backup/restore',
+    async ({ savedView, viewVersion, manifestVersion }) => {
+      await withTempDir(async (dir) => {
+        const source = await FileSystemVault.open(join(dir, 'source'));
+        await source.createDatabase(db);
+        await source.createDatabaseView(savedView);
+        const path = databaseViewPath(DB, VIEW);
+        const original = await readFile(join(source.root, path));
+        expect(JSON.parse(original.toString()).version).toBe(viewVersion);
+        const exportDir = join(dir, 'export');
+        expect(await exportVault(source, exportDir)).toMatchObject({ databases: 1, databaseViews: 1 });
+        expect(await readFile(join(exportDir, path))).toEqual(original);
+        expect(JSON.parse(await readFile(join(exportDir, 'nodus-export.json'), 'utf8')).formats.databaseView).toBe(manifestVersion);
+        const imported = await FileSystemVault.open(join(dir, 'imported'));
+        const plan = await planImport(exportDir);
+        expect(plan.databaseViews).toEqual([savedView]);
+        expect(await applyImport(imported, plan)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });
+        expect(await readFile(join(imported.root, path))).toEqual(original);
+
+        const backupDir = join(dir, 'backup');
+        expect(await createBackup(source, backupDir)).toMatchObject({ databaseViews: 1 });
+        const validated = await validateBackup(backupDir);
+        expect(validated.manifest.version).toBe(7);
+        expect(validated.manifest.formats?.databaseView).toBe(manifestVersion);
+        expect(validated.databaseViews).toEqual([savedView]);
+        const restored = await FileSystemVault.open(join(dir, 'restored'));
+        expect(await restoreBackup(backupDir, restored.root)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });
+        expect(await readFile(join(restored.root, path))).toEqual(original);
+      });
+    },
+  );
+
+  it('advertises v4 when widths are present only in a database template', async () => {
+    await withTempDir(async (dir) => {
+      const source = await FileSystemVault.open(join(dir, 'template-source'));
+      const timestamp = '2026-11-24T00:00:00.000Z';
+      await source.writeTemplates([{
+        id: VIEW2, type: 'database', name: 'Reading template', database: db,
+        views: [widthView], starterRows: [], createdAt: timestamp, updatedAt: timestamp,
+      }], null);
+      const exportDir = join(dir, 'template-export');
+      await exportVault(source, exportDir);
+      expect((await planImport(exportDir)).portableManifest?.formats.databaseView).toBe(4);
+      const backupDir = join(dir, 'template-backup');
+      await createBackup(source, backupDir);
+      expect((await validateBackup(backupDir)).manifest.formats?.databaseView).toBe(4);
+    });
+  });
+
+  const legacyCheckout = process.env.NODUS_V3_CHECKOUT;
+  it.skipIf(!legacyCheckout)('opens a reset vault and its rebuilt archives with the v3 reader', async () => {
+    if (!legacyCheckout) throw new Error('Set NODUS_V3_CHECKOUT to the pre-M2 worktree');
+    const legacyVault: typeof import('../src/storage/fs/vault.js') =
+      await import(join(legacyCheckout, 'src/storage/fs/vault.ts'));
+    const legacyBackup: typeof import('../src/storage/backup/backup.js') =
+      await import(join(legacyCheckout, 'src/storage/backup/backup.ts'));
+    const legacyPortable: typeof import('../src/storage/portable/import.js') =
+      await import(join(legacyCheckout, 'src/storage/portable/import.ts'));
     await withTempDir(async (dir) => {
       const source = await FileSystemVault.open(join(dir, 'source'));
       await source.createDatabase(db);
-      await source.createDatabaseView(view);
-      const path = databaseViewPath(DB, VIEW);
-      const original = await readFile(join(source.root, path));
-      const exportDir = join(dir, 'export');
-      expect(await exportVault(source, exportDir)).toMatchObject({ databases: 1, databaseViews: 1 });
-      expect(await readFile(join(exportDir, path))).toEqual(original);
-      const imported = await FileSystemVault.open(join(dir, 'imported'));
-      const plan = await planImport(exportDir);
-      expect(plan.databaseViews).toEqual([view]);
-      expect(await applyImport(imported, plan)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });
-      expect(await readFile(join(imported.root, path))).toEqual(original);
-
-      const backupDir = join(dir, 'backup');
-      expect(await createBackup(source, backupDir)).toMatchObject({ databaseViews: 1 });
-      const validated = await validateBackup(backupDir);
-      expect(validated.manifest.version).toBe(7);
-      expect(validated.databaseViews).toEqual([view]);
-      const restored = await FileSystemVault.open(join(dir, 'restored'));
-      expect(await restoreBackup(backupDir, restored.root)).toEqual({ notes: 0, databases: 1, databaseViews: 1 });
-      expect(await readFile(join(restored.root, path))).toEqual(original);
+      await source.createDatabaseView(widthView);
+      const oldSource = await legacyVault.FileSystemVault.open(source.root);
+      await expect(oldSource.listDatabaseViews(DB)).rejects.toMatchObject({ code: 'UNSUPPORTED_VERSION' });
+      const reset = { ...widthView, settings: {} };
+      const [saved] = await source.listDatabaseViews(DB);
+      await source.replaceDatabaseView(reset, { expectedHash: saved!.hash });
+      const timestamp = '2026-11-24T00:00:00.000Z';
+      const template = {
+        id: VIEW2, type: 'database' as const, name: 'Reading template', database: db,
+        views: [widthView], starterRows: [], createdAt: timestamp, updatedAt: timestamp,
+      };
+      await source.writeTemplates([template], null);
+      const catalog = await source.readTemplates();
+      await source.writeTemplates([{ ...template, views: [reset] }], catalog.hash);
+      expect(await oldSource.listDatabaseViews(DB)).toMatchObject([{ view: reset }]);
+      for (const kind of ['backup', 'portable'] as const) {
+        const archive = join(dir, kind);
+        const target = await legacyVault.FileSystemVault.open(join(dir, `${kind}-target`));
+        if (kind === 'backup') {
+          await createBackup(source, archive);
+          await legacyBackup.restoreBackup(archive, target.root);
+        } else {
+          await exportVault(source, archive);
+          await legacyPortable.applyImport(target, await legacyPortable.planImport(archive));
+        }
+        expect(await target.listDatabaseViews(DB)).toMatchObject([{ view: reset }]);
+        expect(await target.readTemplates()).toMatchObject({ templates: [{ views: [reset] }] });
+      }
     });
   });
 
