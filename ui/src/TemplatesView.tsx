@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { projectManagementTemplates } from '../../src/database/project-templates';
 import { api } from './api';
 import { SidebarToggle } from './SidebarToggle';
 import type { UiDatabase } from '../../src/ui-server/dto';
@@ -18,6 +19,7 @@ export function TemplatesView({ databases, onApplied, sidebarCollapsed, onToggle
   const [hash, setHash] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [catalogReady, setCatalogReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -30,13 +32,20 @@ export function TemplatesView({ databases, onApplied, sidebarCollapsed, onToggle
   const [preview, setPreview] = useState<unknown>(null);
   const [includeStarterRows, setIncludeStarterRows] = useState(false);
 
-  const refresh = async () => {
-    setLoading(true); setError(null);
-    try { const result = await api.templates(); setTemplates(result.templates); setHash(result.hash); }
-    catch (failure) { setError(message(failure)); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void api.templates().then((result) => {
+      if (cancelled) return;
+      setTemplates(result.templates);
+      setHash(result.hash);
+      setCatalogReady(true);
+    }).catch((failure: unknown) => {
+      if (!cancelled) setError(message(failure));
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
   const active = templates.find((template) => template.id === selected) ?? null;
   useEffect(() => {
     if (active?.type !== 'note') return;
@@ -59,6 +68,16 @@ export function TemplatesView({ databases, onApplied, sidebarCollapsed, onToggle
     }
     catch (failure) { setError(message(failure)); }
     finally { setSaving(false); }
+  };
+  const projectTemplates = projectManagementTemplates(new Date().toISOString())
+    .filter((preset) => !templates.some((template) => template.id === preset.id));
+  const addProjectTemplates = () => {
+    const first = projectTemplates[0];
+    if (!first) return;
+    setSelected(first.id);
+    setPreview(null);
+    setTemplates((current) => [...current, ...projectTemplates.filter((preset) => !current.some((template) => template.id === preset.id))]);
+    setNotice('Project templates added. Save the template library before applying them.');
   };
   const addNote = () => {
     const now = new Date().toISOString();
@@ -112,13 +131,24 @@ export function TemplatesView({ databases, onApplied, sidebarCollapsed, onToggle
       <div><p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Reusable structures</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Templates</h1><p className="mt-1 max-w-xl text-sm text-muted-foreground">Create notes and databases from saved structures. Every apply action creates a new item after preview.</p></div>
       <div className="flex flex-wrap items-center gap-3"><SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} /><Button variant="outline" disabled={loading} onClick={addNote}><FilePlus2 />Note template</Button><label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeStarterRows} onCheckedChange={(checked) => setIncludeStarterRows(checked === true)} />Include current rows</label><select aria-label="Create database template" disabled={loading} className="h-9 max-w-56 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50" value="" onChange={(event) => { if (event.target.value) void addDatabase(event.target.value); }}><option value="">From database…</option>{databases.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
     </header>
+    <section aria-labelledby="project-template-heading" className="rounded-md border p-4 text-sm">
+      <h2 id="project-template-heading" className="font-semibold">Project management</h2>
+      <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted-foreground">
+        <li>Add the starter templates and select Save. Select Projects, then use Preview and Create from template. Give each copy a distinct database name if you set up more than one pair.</li>
+        <li>Repeat for Work Items. In Databases, open Work Items and choose Edit schema. Add a Relation named Project, select your Projects database, choose One record, then save the schema.</li>
+        <li>Use Columns → Project → Save view to show the relation in each saved view. Create notes first, then use Add note to add them to each database. Set Type to Task or Bug, and put project briefs or bug reproduction steps in the note body.</li>
+      </ol>
+      <Button className="mt-3" variant="outline" disabled={!catalogReady || loading || saving || projectTemplates.length === 0} onClick={addProjectTemplates}>
+        Add project templates
+      </Button>
+    </section>
     {error ? <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</div> : null}
     {notice ? <div role="status" className="rounded-md border border-border bg-muted/40 p-3 text-sm">{notice}</div> : null}
     {loading ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading templates…</div> : templates.length === 0 ? <section className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-medium">No templates yet</h2><p className="mt-1 text-sm text-muted-foreground">Start with a note template or capture a database with its saved views and rows.</p><Button className="mt-4" onClick={addNote}><FilePlus2 />Create note template</Button></section> : <div className="grid min-h-0 flex-1 gap-5 md:grid-cols-[260px_minmax(0,1fr)]">
       <nav aria-label="Template list" className="flex flex-col gap-1 border-r border-border pr-3">{templates.map((item) => <button key={item.id} onClick={() => { setSelected(item.id); setPreview(null); }} className={`rounded-md px-3 py-2 text-left ${selected === item.id ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'}`}><span className="block truncate text-sm font-medium">{item.name}</span><Badge variant="secondary" className="mt-1">{item.type === 'note' ? 'Note' : 'Database'}</Badge></button>)}</nav>
       <section className="min-w-0 rounded-lg border border-border bg-card p-5">
         {!active ? <p className="text-sm text-muted-foreground">Choose a template to edit, preview, or apply.</p> : <>
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><Badge variant="outline">{active.type === 'note' ? 'Note template' : 'Database template'}</Badge><p className="mt-2 text-sm text-muted-foreground">{active.type === 'note' ? 'Markdown body, title, tags, aliases, and frontmatter.' : `${active.database.properties.length} properties · ${active.views.length} views · ${active.starterRows.length} starter rows`}</p></div><div className="flex gap-2"><Button variant="outline" disabled={saving} onClick={() => void save(templates)}><Save />Save</Button><Button variant="ghost" aria-label="Delete template" onClick={() => void remove()}><Trash2 /></Button></div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><Badge variant="outline">{active.type === 'note' ? 'Note template' : 'Database template'}</Badge><p className="mt-2 text-sm text-muted-foreground">{active.type === 'note' ? 'Markdown body, title, tags, aliases, and frontmatter.' : `${active.database.properties.length} properties · ${active.views.length} views · ${active.starterRows.length} starter rows`}</p></div><div className="flex gap-2"><Button variant="outline" aria-label="Save template library" disabled={saving} onClick={() => void save(templates)}><Save />Save</Button><Button variant="ghost" aria-label="Delete template" onClick={() => void remove()}><Trash2 /></Button></div></div>
           <label className="mt-4 grid max-w-lg gap-1 text-sm">Template name<Input value={active.name} onChange={(event) => rename(event.target.value)} /></label>
           {active.type === 'note' ? <div className="mt-5 grid gap-3"><label className="grid gap-1 text-sm">New note title<Input value={active.title} onChange={(event) => update({ title: event.target.value })} /></label><label className="grid gap-1 text-sm">Markdown body<Textarea className="min-h-48 font-mono text-sm" value={active.body} onChange={(event) => update({ body: event.target.value })} /></label><label className="grid gap-1 text-sm">Tags<Input value={tagsText} onChange={(event) => { setTagsText(event.target.value); setPreview(null); }} placeholder="Comma-separated" /></label><label className="grid gap-1 text-sm">Aliases<Input value={aliasesText} onChange={(event) => { setAliasesText(event.target.value); setPreview(null); }} placeholder="Comma-separated" /></label><label className="grid gap-1 text-sm">Icon<Input value={iconText} maxLength={8} onChange={(event) => { setIconText(event.target.value); setPreview(null); }} placeholder="Optional emoji" /></label><label className="grid gap-1 text-sm">Custom frontmatter (JSON)<Textarea className="min-h-20 font-mono text-xs" value={frontmatterText} onChange={(event) => { setFrontmatterText(event.target.value); setPreview(null); }} /></label><label className="grid gap-1 text-sm">Variable definitions (JSON)<Textarea className="min-h-20 font-mono text-xs" value={variableDefinitions} onChange={(event) => { setVariableDefinitions(event.target.value); setPreview(null); }} /></label><p className="text-xs text-muted-foreground">Variables use <code>{'{{name}}'}</code> syntax. Define text, date, or number variables above.</p><label className="grid gap-1 text-sm">Variable values (JSON)<Textarea className="min-h-16 font-mono text-xs" value={variableText} onChange={(event) => setVariableText(event.target.value)} /></label></div> : <div className="mt-5 rounded-md bg-muted/40 p-4 text-sm"><p className="font-medium">{active.database.name}</p><p className="mt-1 text-muted-foreground">Schema, saved views, and starter rows are captured from the source database.</p></div>}
           {preview !== null ? <pre className="mt-4 max-h-56 overflow-auto rounded-md border bg-muted/30 p-3 text-xs">{JSON.stringify(preview, null, 2)}</pre> : null}

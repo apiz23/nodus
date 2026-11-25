@@ -7,6 +7,9 @@ import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createBackup, restoreBackup } from '../src/storage/backup/backup.js';
 import { exportVault } from '../src/storage/portable/export.js';
 import { applyImport, planImport } from '../src/storage/portable/import.js';
+import { createNote } from '../src/domain/note.js';
+import { projectManagementTemplates } from '../src/database/project-templates.js';
+import { serializeDatabaseView } from '../src/database/database-view.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import type { DatabaseTemplate, NoteTemplate } from '../src/database/templates.js';
 
@@ -102,6 +105,70 @@ describe('template management API', () => {
       expect(await vault.listDatabaseViews(applied.body.databaseId)).toMatchObject([{
         view: { databaseId: applied.body.databaseId, settings: { columnWidths: { [PROP]: 288 } } },
       }]);
+    });
+  });
+
+  it('preserves project templates, saved views and linked work items across both archive paths', async () => {
+    await withApi(async (base, source) => {
+      const [projects, workItems] = projectManagementTemplates(NOW);
+      if (!projects || !workItems) throw new Error('Both starter templates are required');
+      expect(workItems.database.properties.every(({ type }) => type !== 'relation')).toBe(true);
+      expect(workItems.views.every((view) => JSON.parse(serializeDatabaseView(view)).version < 4)).toBe(true);
+      const saved = await json(base, '/api/templates', 'PUT', { templates: [projects, workItems], baseHash: null });
+      expect(saved.status).toBe(200);
+      const apply = async (id: string) => {
+        const result = await json<{ databaseId: string }>(base, `/api/templates/${id}/apply`, 'POST', {});
+        expect(result.status).toBe(201);
+        return result.body.databaseId;
+      };
+      const projectDb = await apply(projects.id);
+      const workDb = await apply(workItems.id);
+      expect(projectDb).not.toBe(projects.database.id);
+      expect(workDb).not.toBe(workItems.database.id);
+      const schema = await source.readDatabaseWithHash(workDb);
+      const relationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const linked = { ...schema.database, properties: [...schema.database.properties, {
+        id: relationId, name: 'Project', type: 'relation' as const,
+        relation: { databaseId: projectDb, cardinality: 'one' as const },
+      }] };
+      expect((await json(base, `/api/databases/${workDb}`, 'PUT', { database: linked, baseHash: schema.hash })).status).toBe(200);
+
+      const project = createNote({ id: DB, title: 'Project', path: 'project.md', body: 'Project brief', now: NOW });
+      const item = createNote({ id: PROP, title: 'Bug', path: 'bug.md', body: 'Steps to reproduce', now: NOW });
+      const addRecord = async (note: typeof project, databaseId: string, values: Record<string, unknown>) => {
+        await source.createNote({ ...note, extraFrontmatter: {
+          nodus_data: { format: 'nodus-note-properties', version: 1, databases: { [databaseId]: values } },
+        } });
+      };
+      await addRecord(project, projectDb, {});
+      const type = workItems.database.properties.find(({ name }) => name === 'Type');
+      const bug = type?.options?.find(({ name }) => name === 'Bug');
+      if (!type || !bug) throw new Error('Bug type is required');
+      const values = { [relationId]: project.id, [type.id]: bug.id };
+      await addRecord(item, workDb, values);
+
+      for (const kind of ['backup', 'portable'] as const) {
+        const archive = join(source.root, '..', kind);
+        const target = await FileSystemVault.open(join(source.root, '..', `${kind}-target`));
+        if (kind === 'backup') {
+          await createBackup(source, archive);
+          await restoreBackup(archive, target.root);
+        } else {
+          await exportVault(source, archive);
+          const plan = await planImport(archive);
+          expect(plan.portableManifest?.formats.databaseView).toBe(3);
+          await applyImport(target, plan);
+        }
+        expect((await target.readTemplates()).templates).toEqual((await source.readTemplates()).templates);
+        expect(await target.readDatabase(workDb)).toEqual(linked);
+        expect((await target.listDatabaseViews(workDb)).map(({ view }) => view)).toEqual(
+          (await source.listDatabaseViews(workDb)).map(({ view }) => view),
+        );
+        const restoredItem = await target.readNote(item.id);
+        expect(restoredItem.body).toBe(item.body);
+        expect(restoredItem.extraFrontmatter).toMatchObject({ nodus_data: { databases: { [workDb]: values } } });
+        expect((await target.readNote(project.id)).body).toBe(project.body);
+      }
     });
   });
 

@@ -1604,7 +1604,7 @@ export function DatabasesView({
 
                 {selected.properties.length === 0 ? (
                   <div className="mx-1 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-3 text-xs text-muted-foreground">
-                    <span>This schema has no properties yet. Existing membership is still shown, but notes cannot be added or edited.</span>
+                    <span>This schema has no properties yet. You can still add notes as records.</span>
                     <Button type="button" size="sm" variant="outline" onClick={() => openSchemaEditor(false)} disabled={schemaSaving}>
                       Add a property
                     </Button>
