@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { DATABASE_VIEW_VERSION } from '../../database/database-view.js';
 import { StorageError } from '../errors.js';
 import { IMPORT_MAX_FILESYSTEM_ENTRIES, IMPORT_MAX_MANIFEST_BYTES, IMPORT_MAX_PATH_DEPTH, IMPORT_MAX_RESOURCE_BYTES, validateImportResourceLimits, readBoundedImportFile } from './limits.js';
 
@@ -35,7 +36,7 @@ export interface PortableExportManifest {
 
 const SUPPORTED_FEATURES = new Set<string>();
 const HASH = /^[0-9a-f]{64}$/;
-const SUPPORTED_FORMATS: Record<string, number> = { note: 1, database: 3, databaseView: 3, databaseViewOrder: 1, propertyCatalog: 1, automation: 1, automationHistory: 1, templates: 1 };
+const SUPPORTED_FORMATS: Record<string, number> = { note: 1, database: 3, databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: 1, propertyCatalog: 1, automation: 1, automationHistory: 1, templates: 1 };
 
 export function sha256(bytes: Uint8Array): string { return createHash('sha256').update(bytes).digest('hex'); }
 

@@ -68,7 +68,7 @@ export function SavedViewControls({ database, vaultKey, configuration, onApply, 
   const preferenceKey = JSON.stringify(['nodus.savedView', vaultKey, database.id]);
   const disabled = busy || saving || loading;
   const writeDisabled = disabled || hasNoteDraft;
-  const normalized = (view: ViewConfiguration) => JSON.stringify({ type: view.type ?? 'table', settings: view.settings ?? {}, sort: view.sort, sorts: view.sorts, filters: view.filters, visiblePropertyIds: view.visiblePropertyIds });
+  const normalized = (view: ViewConfiguration) => JSON.stringify({ type: view.type ?? 'table', settings: view.settings ?? {}, sort: view.sort, sorts: view.sorts ?? [view.sort], filters: view.filters, visiblePropertyIds: view.visiblePropertyIds });
   const dirty = normalized(active?.view ?? defaultView(database)) !== normalized(configuration);
 
   function apply(saved: UiDatabaseView | null) {

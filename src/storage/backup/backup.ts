@@ -6,7 +6,7 @@ import { DATABASE_FORMAT_VERSION, parseDatabase } from '../../database/schema.js
 import { DATABASE_VIEW_VERSION, parseDatabaseView, type DatabaseView } from '../../database/database-view.js';
 import { DATABASE_VIEW_ORDER_VERSION, parseDatabaseViewOrder } from '../../database/database-view-order.js';
 import { parseAutomationHistory, parseAutomations, validateAutomationReferences } from '../../database/automations.js';
-import { parseTemplates } from '../../database/templates.js';
+import { parseTemplates, templateCatalogUsesColumnWidths } from '../../database/templates.js';
 import type { Note } from '../../domain/note.js';
 import { NOTE_FORMAT_VERSION } from '../../domain/note.js';
 import { isUuidV4 } from '../../domain/ids.js';
@@ -200,12 +200,14 @@ export async function createBackup(
     }
 
     const app = await readAppInfo();
+    const containsV4 = entries.some((entry) => entry.kind === 'database-view' && JSON.parse(entry.text).version === 4)
+      || templateFiles.some((entry) => templateCatalogUsesColumnWidths(entry.text));
     const manifest: BackupManifest = {
       format: BACKUP_FORMAT,
       version: BACKUP_VERSION,
       createdAt: options.now ?? new Date().toISOString(),
       ...(app === undefined ? {} : { app }),
-      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: DATABASE_VIEW_VERSION, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automations: 1, templates: 1 },
+      formats: { note: NOTE_FORMAT_VERSION, database: Math.max(1, ...entries.filter((entry) => entry.kind === 'database').map((entry) => JSON.parse(entry.text).version as number)), databaseView: containsV4 ? DATABASE_VIEW_VERSION : 3, databaseViewOrder: DATABASE_VIEW_ORDER_VERSION, backup: BACKUP_VERSION, propertyCatalog: PROPERTY_CATALOG_VERSION, automations: 1, templates: 1 },
       counts: { notes, databases, databaseViews, databaseViewOrders: databaseViewOrderCount, attachments, propertyCatalog: propertyCatalog === null ? 0 : 1, automationFiles: automationFileCount, templateFiles: templateFileCount },
       ...(catalogMetadata === undefined ? {} : { propertyCatalog: catalogMetadata }),
       files,

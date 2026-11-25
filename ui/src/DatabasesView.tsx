@@ -5,7 +5,7 @@ import { isDerivedProperty } from '../../src/database/schema';
 import type { RelationReference } from '../../src/database/relations';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertCircle, ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, ChevronRight, Code2, Columns3, Database, ListFilter, Pencil, Plus, RefreshCw, X } from 'lucide-react';
+import { AlertCircle, ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, ChevronRight, Code2, Columns3, Database, ListFilter, Pencil, Plus, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -74,7 +74,7 @@ import {
 } from './database-table';
 import { ApiError, api } from './api';
 import { SidebarToggle } from './SidebarToggle';
-import { diagnoseDatabaseView, type DatabaseView } from '../../src/database/database-view';
+import { diagnoseDatabaseView, MAX_COLUMN_WIDTH, type DatabaseView } from '../../src/database/database-view';
 import { SavedViewControls } from './SavedViewControls';
 import { KanbanView, CalendarView, ListView, GalleryView } from './DatabaseLayouts';
 import { defaultView, groupDatabaseRows, isDateOnly, type ViewConfiguration } from './database-view-layout';
@@ -85,6 +85,7 @@ import {
   resetColumnOrder,
   visibleColumnIds,
 } from './database-column-order';
+import { ColumnResizeHandle } from './database/ColumnResizeHandle';
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
 import { DatabaseAutomations } from './DatabaseAutomations';
@@ -111,6 +112,7 @@ export function ColumnOrderControls({
   onMove,
   onShowAll,
   onReset,
+  widthControls,
 }: {
   properties: readonly Property[];
   order: readonly string[];
@@ -120,6 +122,10 @@ export function ColumnOrderControls({
   onMove: (propertyId: string, delta: -1 | 1) => void;
   onShowAll: () => void;
   onReset: () => void;
+  widthControls?: {
+    widths: Readonly<Partial<Record<string, number>>>;
+    onReset: (propertyId: string) => void;
+  };
 }) {
   const schemaIds = properties.map((property) => property.id);
   const propertyById = new Map(properties.map((property) => [property.id, property]));
@@ -148,19 +154,39 @@ export function ColumnOrderControls({
         {orderedProperties.map((property) => {
           const checkboxId = `column-${property.id}`;
           const visible = !hiddenPropertyIds.has(property.id);
+          const width = widthControls?.widths[property.id];
           const visibleIndex = visibleIds.indexOf(property.id);
           const moveUpDisabled = disabled || !visible || visibleIndex <= 0;
           const moveDownDisabled = disabled || !visible || visibleIndex < 0 || visibleIndex >= visibleIds.length - 1;
           return (
-            <div key={property.id} className="flex h-8 items-center gap-1 rounded-md px-2 text-xs hover:bg-muted">
+            <div key={property.id} className="flex min-h-8 items-center gap-1 rounded-md px-2 py-1 text-xs hover:bg-muted">
               <Checkbox
                 id={checkboxId}
                 checked={visible}
                 disabled={disabled}
                 onCheckedChange={(checked) => onToggle(property.id, checked === true)}
               />
-              <label htmlFor={checkboxId} className="min-w-0 flex-1 cursor-pointer truncate">{property.name}</label>
-              <span className="shrink-0 text-[10px] text-muted-foreground">{propertyTypeLabel(property.type)}</span>
+              <label htmlFor={checkboxId} className="min-w-0 flex-1 cursor-pointer break-words">{property.name}</label>
+              {widthControls && width !== undefined ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="shrink-0 tabular-nums"
+                  aria-label={`Reset ${property.name} width from ${width} pixels`}
+                  title={`Reset ${property.name} width`}
+                  disabled={disabled}
+                  onClick={() => {
+                    document.getElementById(checkboxId)?.focus();
+                    widthControls.onReset(property.id);
+                  }}
+                >
+                  <RotateCcw data-icon="inline-start" />
+                  {width} px
+                </Button>
+              ) : (
+                <span className="shrink-0 text-[10px] text-muted-foreground">{propertyTypeLabel(property.type)}</span>
+              )}
               <Button
                 type="button"
                 size="icon-xs"
@@ -565,6 +591,7 @@ export function DatabasesView({
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const [filters, setFilters] = useState<DatabaseFilter[]>([]);
   const [hiddenPropertyIds, setHiddenPropertyIds] = useState<Set<string>>(() => new Set());
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [savedPresentation, setSavedPresentation] = useState<DatabaseView | null>(null);
   const [viewsLoading, setViewsLoading] = useState(true);
@@ -625,6 +652,7 @@ export function DatabasesView({
     setFilters([]);
     setHiddenPropertyIds(new Set());
     setColumnOrder([]);
+    setColumnWidths({});
     setSavedPresentation(null);
     setViewsLoading(true);
     setViewSaving(false);
@@ -721,8 +749,21 @@ export function DatabasesView({
     : activeViewType === 'kanban'
       ? { groupPropertyId: groupPropertyId ?? savedPresentation?.settings?.groupPropertyId }
       : groupPropertyId === undefined ? {} : { groupPropertyId };
+  const columnsDisabled = saving || stale || viewsLoading || viewSaving;
+  const currentColumnWidths = Object.fromEntries(
+    Object.entries(columnWidths).filter(([id]) => schemaPropertyIds.includes(id)),
+  );
+  const hasColumnWidths = Object.keys(currentColumnWidths).length > 0;
+  const hasStaleColumnWidths = Object.keys(columnWidths).length !== Object.keys(currentColumnWidths).length;
+  const [headerWidths, setHeaderWidths] = useState<Record<string, number>>({});
+  const tableColumns = visibleProperties.map((property) => ({
+    property,
+    width: columnWidths[property.id] ?? Math.max(defaultPropertyWidth(property), headerWidths[property.id] ?? 0),
+  }));
+  const tableMinimum = tableColumns.reduce((total, column) => total + column.width, 200);
   const viewConfiguration: ViewConfiguration = {
-    type: activeViewType, settings: viewSettings,
+    type: activeViewType,
+    settings: activeViewType === 'table' && hasColumnWidths ? { ...viewSettings, columnWidths: currentColumnWidths } : viewSettings,
     sort: sorts[0] ?? { propertyId: sortField, direction: sortDirection },
     sorts,
     filters: filters as DatabaseView['filters'],
@@ -751,6 +792,38 @@ export function DatabasesView({
     return result;
   }, [collapsedGroupIds, displayRows, groupProperty, tableGroups]);
   const tableViewportRef = useRef<HTMLDivElement>(null);
+  const showTable = activeViewType === 'table' && currentRowData !== null && rowsError === null &&
+    viewIssues.length === 0 && (displayRows.length > 0 || visibleProperties.length > 0);
+  useLayoutEffect(() => {
+    const labels = tableViewportRef.current?.querySelectorAll<HTMLElement>('[data-column-label]');
+    if (!showTable || !labels?.length) return;
+    const range = document.createRange();
+
+    function measureLabels() {
+      const widths: Record<string, number> = {};
+      labels?.forEach((label) => {
+        const id = label.getAttribute('data-column-label');
+        const header = label.closest('th');
+        if (id === null || header === null) return;
+        const { paddingLeft, paddingRight } = getComputedStyle(header);
+        range.selectNodeContents(label);
+        widths[id] = Math.min(MAX_COLUMN_WIDTH, Math.ceil(range.getBoundingClientRect().width + parseFloat(paddingLeft) + parseFloat(paddingRight)) + 1);
+      });
+      setHeaderWidths((current) => Object.keys(current).length === Object.keys(widths).length &&
+        Object.entries(widths).every(([id, width]) => current[id] === width) ? current : widths);
+    }
+
+    measureLabels();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measureLabels);
+    labels.forEach((label) => observer.observe(label));
+    document.fonts.addEventListener('loadingdone', measureLabels);
+    return () => {
+      observer.disconnect();
+      document.fonts.removeEventListener('loadingdone', measureLabels);
+    };
+  }, [showTable, visibleProperties]);
+
   const tableVirtualizer = useVirtualizer<HTMLDivElement, HTMLTableRowElement>({
     count: tableItems.length,
     getScrollElement: () => tableViewportRef.current,
@@ -774,6 +847,7 @@ export function DatabasesView({
     setSorts(configuration.sorts ?? [configuration.sort]);
     setFilters(configuration.filters);
     setHiddenPropertyIds(new Set(selected.properties.filter((property) => !configuration.visiblePropertyIds.includes(property.id)).map((property) => property.id)));
+    setColumnWidths(configuration.settings?.columnWidths ?? {});
     setColumnOrder(mergeColumnOrder(selected.properties.map((property) => property.id), configuration.visiblePropertyIds));
     setEditing(null); setAddOpen(false); setCandidateId(null); setCandidatePropertyId(null); setConfirmedAdd(false);
     setSaving(false); setActionError(null); setActionNotice(null); setActionIssues([]); setStale(false); setNewDatedEntry(null);
@@ -842,6 +916,19 @@ export function DatabasesView({
     setColumnOrder((current) => {
       const order = mergeColumnOrder(schemaPropertyIds, current);
       return moveVisibleColumn(order, hiddenPropertyIds, propertyId, delta) ?? current;
+    });
+  }
+
+  function resizeColumn(propertyId: string, width: number): void {
+    setColumnWidths((previous) => previous[propertyId] === width ? previous : { ...previous, [propertyId]: width });
+  }
+
+  function resetColumnWidth(propertyId: string): void {
+    setColumnWidths((previous) => {
+      if (!Object.hasOwn(previous, propertyId)) return previous;
+      const next = { ...previous };
+      delete next[propertyId];
+      return next;
     });
   }
 
@@ -1046,7 +1133,7 @@ export function DatabasesView({
 
   function renderRelatedValue(row: UiDatabaseRow, property: Property) {
     return <div className="flex flex-col gap-1"><RelationValue references={row.relations?.[property.id]} onOpen={openLayoutNote} />
-      {!isDerivedProperty(property) ? <Button size="xs" variant="outline" disabled={saving || editing !== null || hasBlockingRowIssues(row, property)} aria-label={`Edit ${property.name} for ${row.title}`} onClick={() => beginEditing(row.noteId, property, row.values[property.id])}>Edit relations</Button> : <span className="text-xs text-muted-foreground">Reverse · read-only</span>}
+      {!isDerivedProperty(property) ? <Button size="xs" variant="outline" className={cn(activeViewType === 'table' && 'h-auto min-h-6 py-1 whitespace-normal')} disabled={saving || editing !== null || hasBlockingRowIssues(row, property)} aria-label={`Edit ${property.name} for ${row.title}`} onClick={() => beginEditing(row.noteId, property, row.values[property.id])}>Edit relations</Button> : <span className="text-xs text-muted-foreground">Reverse · read-only</span>}
     </div>;
   }
 
@@ -1408,6 +1495,11 @@ export function DatabasesView({
                     </SelectContent>
                   </Select>
                 </div> : null}
+                {hasStaleColumnWidths && activeViewType === 'table' ? (
+                  <p role="status" className="my-3 text-xs text-muted-foreground">
+                    Widths for missing properties are ignored. Save this view to remove those widths.
+                  </p>
+                ) : null}
                 {viewIssues.length ? <div role="alert" className="my-3 text-xs text-destructive"><p>This view has stale references. Its saved file is preserved. Repair the settings or explicitly reset them before using the view.</p><ul>{viewIssues.map((issue, index) => <li key={index}>{issue.message}</li>)}</ul></div> : null}
 
                 {currentDiagnostics.length > 0 ? (
@@ -1690,17 +1782,25 @@ export function DatabasesView({
                             <span className="text-muted-foreground">{visibleProperties.length}/{selected.properties.length}</span>
                           </Button>
                         </PopoverTrigger>
-                        <PopoverContent align="start" aria-label="Columns" className="w-64 p-0">
+                        <PopoverContent align="start" aria-label="Columns" className={cn('max-w-[calc(100vw-2rem)] p-0', activeViewType === 'table' ? 'w-72' : 'w-64')}>
                           <ColumnOrderControls
                             properties={selected.properties}
                             order={effectiveColumnOrder}
                             hiddenPropertyIds={hiddenPropertyIds}
-                            disabled={saving || stale || viewsLoading || viewSaving}
+                            disabled={columnsDisabled}
                             onToggle={toggleVisibleProperty}
                             onMove={moveColumn}
                             onShowAll={() => setHiddenPropertyIds(new Set())}
                             onReset={resetColumnOrderState}
+                            widthControls={activeViewType === 'table' ? { widths: columnWidths, onReset: resetColumnWidth } : undefined}
                           />
+                          {activeViewType === 'table' ? (
+                            <div className="border-t px-3 py-2">
+                              <Button type="button" size="xs" variant="ghost" disabled={columnsDisabled || !hasColumnWidths} onClick={() => setColumnWidths({})}>
+                                Reset widths
+                              </Button>
+                            </div>
+                          ) : null}
                         </PopoverContent>
                       </Popover>
 
@@ -1754,18 +1854,35 @@ export function DatabasesView({
                   }} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null || rowsLoading} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
                 ) : viewConfiguration.type === 'gallery' ? (
                   <GalleryView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
-                ) : displayRows.length ? (
+                ) : displayRows.length > 0 || visibleProperties.length > 0 ? (
                   <>
                     <p className="mx-1 mt-4 text-[11px] text-muted-foreground xl:hidden">Scroll sideways to see every property column.</p>
                     <div ref={tableViewportRef} role="region" aria-label="Database table records" tabIndex={0} className="mx-1 my-4 max-h-[70vh] overflow-y-auto rounded-md border">
-                      <Table aria-rowcount={displayRows.length + tableGroups.length + 1} className="w-full min-w-[52rem] table-fixed">
+                      <Table aria-rowcount={displayRows.length + tableGroups.length + 1} className="w-full min-w-[52rem] table-fixed"
+                        style={{ minWidth: `max(52rem, ${tableMinimum}px)` }}>
                         <TableCaption className="sr-only">
                           {selected.name} rows. {displayRows.length} of {currentRowData.rows.length} shown.
                         </TableCaption>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-[24%] whitespace-normal">Note</TableHead>
-                            {visibleProperties.map((property) => <TableHead key={property.id} className={cn('whitespace-normal break-words', propertyColumnClass(property))}>{property.name}</TableHead>)}
+                            <TableHead className="whitespace-nowrap">Note</TableHead>
+                            {tableColumns.map(({ property, width }) => (
+                              <TableHead key={property.id} scope="col" aria-label={property.name}
+                                className="relative pr-5"
+                                style={{ width }}
+                              >
+                                <span className="block truncate" title={property.name} data-column-label={property.id}>{property.name}</span>
+                                <ColumnResizeHandle
+                                  key={`${selected.id}:${savedPresentation?.id ?? 'draft'}`}
+                                  name={property.name}
+                                  width={columnWidths[property.id]}
+                                  layoutWidth={width}
+                                  disabled={columnsDisabled}
+                                  onResize={(width) => resizeColumn(property.id, width)}
+                                  onReset={() => resetColumnWidth(property.id)}
+                                />
+                              </TableHead>
+                            ))}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1777,7 +1894,7 @@ export function DatabasesView({
                             </TableRow>;
                             const row = item.row;
                             return <TableRow key={item.key} data-index={virtualItem.index} aria-rowindex={item.position + 2} ref={tableVirtualizer.measureElement}>
-                              <TableHead scope="row" className="h-auto w-[24%] p-2 align-top font-normal whitespace-normal">
+                              <TableHead scope="row" className="h-auto p-2 align-top font-normal whitespace-normal">
                                 <Button type="button" variant="link" size="sm" className="h-auto max-w-full justify-start truncate p-0 font-medium" title={row.title} onClick={() => openLayoutNote(row.noteId)}>{row.title}</Button>
                                 <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.path}</span>
                                 {row.issues.length > 0 ? <Badge variant="destructive" className="mt-1">Needs attention</Badge> : null}
@@ -1786,11 +1903,11 @@ export function DatabasesView({
                                 const isEditing = editing?.source === 'row' && editing.noteId === row.noteId && editing.propertyId === property.id;
                                 const displayValue = formatRowPropertyValue(row, property);
                                 return (
-                                  <TableCell key={property.id} className="min-w-0 align-top whitespace-normal">
+                                  <TableCell key={property.id} className="min-w-0 break-words align-top whitespace-normal">
                                     {isEditing && editing ? (
                                       <div className="flex min-w-0 flex-col gap-2">
                                         <PropertyControl relationOptions={currentRowData?.relationCandidates?.[property.relation?.databaseId ?? '']} relationReferences={row.relations?.[property.id]} targetDatabaseName={databases.find((database) => database.id === property.relation?.databaseId)?.name} targetAvailable={databases.some((database) => database.id === property.relation?.databaseId)} databaseId={selected.id} property={property} value={editing.draft} label={`${property.name} for ${row.title}`} onChange={(draft) => setEditing({ ...editing, draft })} />
-                                        <div className="flex gap-1">
+                                        <div className="flex flex-wrap gap-1">
                                           <Button type="button" size="xs" disabled={saving || stale} onClick={() => void submitEdit()}>{saving ? 'Saving…' : 'Save'}</Button>
                                           <Button type="button" size="xs" variant="ghost" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button>
                                         </div>
@@ -1803,10 +1920,16 @@ export function DatabasesView({
                                         className="group/edit flex h-auto min-h-7 w-full items-center justify-between gap-1.5 px-1.5 py-1 text-left font-normal whitespace-normal"
                                         disabled={hasBlockingRowIssues(row, property) || saving || viewsLoading}
                                         aria-label={`Edit ${property.name} for ${row.title}`}
+                                        aria-description={displayValue}
                                         title={hasBlockingRowIssues(row, property) ? 'Resolve structured-data diagnostics before editing this note' : `Edit ${property.name}`}
                                         onClick={() => beginEditing(row.noteId, property, row.values[property.id])}
                                       >
-                                        <span className={cn('min-w-0 text-xs', property.type === 'date' || property.type === 'number' ? 'whitespace-nowrap' : 'break-words', row.values[property.id] === undefined && 'text-muted-foreground')}>{displayValue}</span>
+                                        <span
+                                          className={cn('min-w-0 text-xs', property.type === 'date' || property.type === 'number'
+                                            ? 'truncate'
+                                            : 'break-words', row.values[property.id] === undefined && 'text-muted-foreground')}
+                                          title={displayValue}
+                                        >{displayValue}</span>
                                         <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/edit:opacity-70 group-focus-visible/edit:opacity-70 max-sm:opacity-60" aria-hidden="true" />
                                       </Button>
                                     )}
@@ -1820,7 +1943,9 @@ export function DatabasesView({
                       </Table>
                     </div>
                   </>
-                ) : (
+                ) : null}
+
+                {activeViewType === 'table' && viewIssues.length === 0 && rowsError === null && currentRowData !== null && displayRows.length === 0 ? (
                   <div className="mx-1 my-4 flex min-h-28 flex-col items-center justify-center rounded-md border border-dashed px-4 py-5 text-center">
                     <h3 className="text-sm font-medium">{currentRowData.rows.length > 0 ? 'No rows match these filters' : notes.length === 0 ? 'No notes in this vault yet' : 'No notes in this database yet'}</h3>
                     <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-muted-foreground">
@@ -1838,7 +1963,7 @@ export function DatabasesView({
                       </Button>
                     ) : null}
                   </div>
-                )}
+                ) : null}
 
                 {rowsLoading && currentRowData !== null ? <p className="mx-1 mb-3 text-xs text-muted-foreground" role="status">Refreshing rows…</p> : null}
                 <Dialog open={newDatedEntry !== null} onOpenChange={(open) => { if (!open && !saving) setNewDatedEntry(null); }}><DialogContent showCloseButton={!saving} onCloseAutoFocus={(event) => { event.preventDefault(); if (datedTriggerRef.current?.isConnected) datedTriggerRef.current.focus(); }} onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }} onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}>
@@ -2070,17 +2195,17 @@ export function DatabaseSelectorItem({
   );
 }
 
-function propertyColumnClass(property: Property): string {
+function defaultPropertyWidth(property: Property): number {
   switch (property.type) {
-    case 'text': return 'w-[22%]';
+    case 'text': return 184;
     case 'select':
     case 'multi-select':
-    case 'relation': return 'w-[15%]';
-    case 'date':
+    case 'relation': return 125;
+    case 'date': return 136;
     case 'rollup':
-    case 'formula': return 'w-[13%]';
-    case 'number': return 'w-[11%]';
-    case 'checkbox': return 'w-[10%]';
+    case 'formula': return 108;
+    case 'number': return 104;
+    case 'checkbox': return 84;
   }
 }
 

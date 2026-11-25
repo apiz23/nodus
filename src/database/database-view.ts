@@ -4,11 +4,14 @@ import { isDateOnly } from '../temporal/date.js';
 import type { DatabaseDefinition, Property } from './schema.js';
 
 export const DATABASE_VIEW_FORMAT = 'nodus-database-view';
-export const DATABASE_VIEW_VERSION = 3;
+export const DATABASE_VIEW_VERSION = 4;
+export const MIN_COLUMN_WIDTH = 80;
+export const MAX_COLUMN_WIDTH = 640;
 
 export type DatabaseViewType = 'table' | 'list' | 'kanban' | 'calendar' | 'gallery';
 export interface DatabaseViewSettings {
   groupPropertyId?: string;
+  columnWidths?: Record<string, number>;
   /** Legacy Calendar setting; interpreted as a one-day start date. */
   datePropertyId?: string;
   /** Calendar range start. New Calendar configurations use this field. */
@@ -50,6 +53,7 @@ export function parseDatabaseView(json: string): DatabaseView {
     const allowedSettings = raw.type === 'kanban' ? ['groupPropertyId'] : raw.type === 'calendar'
       ? raw.version >= 3 ? ['datePropertyId', 'startDatePropertyId', 'endDatePropertyId'] : ['datePropertyId']
       : raw.version >= 3 ? ['groupPropertyId'] : [];
+    if (raw.type === 'table' && raw.version >= 4) allowedSettings.push('columnWidths');
     exactKeys(raw.settings, allowedSettings, 'settings');
     const settings: DatabaseViewSettings = {};
     if (raw.type === 'calendar' && raw.version >= 3 && 'groupPropertyId' in raw.settings) throw invalid('Calendar settings cannot include groupPropertyId');
@@ -66,6 +70,7 @@ export function parseDatabaseView(json: string): DatabaseView {
     if ('datePropertyId' in raw.settings) settings.datePropertyId = uuid(raw.settings.datePropertyId, 'settings.datePropertyId');
     if ('startDatePropertyId' in raw.settings) settings.startDatePropertyId = uuid(raw.settings.startDatePropertyId, 'settings.startDatePropertyId');
     if ('endDatePropertyId' in raw.settings) settings.endDatePropertyId = uuid(raw.settings.endDatePropertyId, 'settings.endDatePropertyId');
+    if ('columnWidths' in raw.settings) settings.columnWidths = parseColumnWidths(raw.settings.columnWidths);
     presentation = { type: raw.type, settings };
   }
   const id = uuid(raw.id, 'view id');
@@ -103,12 +108,20 @@ export function parseDatabaseView(json: string): DatabaseView {
 export function serializeDatabaseView(view: DatabaseView): string {
   const hasTableGrouping = (view.type === 'table' || view.type === 'list') && view.settings?.groupPropertyId !== undefined;
   const hasCalendarRange = view.type === 'calendar' && (view.settings?.startDatePropertyId !== undefined || view.settings?.endDatePropertyId !== undefined);
-  const version = view.type === 'list' || view.type === 'gallery' || hasTableGrouping || hasCalendarRange || view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty') ? DATABASE_VIEW_VERSION : view.type === undefined && view.settings === undefined ? 1 : 2;
+  const needsV3 = view.type === 'list' || view.type === 'gallery' || hasTableGrouping || hasCalendarRange ||
+    view.sorts !== undefined || view.filters.some((filter) => filter.operator === 'is-empty' || filter.operator === 'is-not-empty');
+  const version = view.settings?.columnWidths !== undefined ? 4
+    : needsV3 ? 3
+    : view.type === undefined && view.settings === undefined ? 1 : 2;
   const normalized = version >= 3 ? { ...view, type: view.type ?? 'table', settings: view.settings ?? {}, sorts: view.sorts ?? [view.sort] } : view;
+  const { columnWidths, ...otherSettings } = normalized.settings ?? {};
+  // The v4 parser emits columnWidths after the other settings.
+  const settings = columnWidths === undefined ? normalized.settings
+    : { ...otherSettings, columnWidths: parseColumnWidths(columnWidths) };
   const json = `${JSON.stringify({
     format: DATABASE_VIEW_FORMAT, version, id: normalized.id, databaseId: normalized.databaseId, name: normalized.name,
     ...(normalized.type === undefined ? {} : { type: normalized.type }),
-    ...(normalized.settings === undefined ? {} : { settings: normalized.settings }),
+    ...(settings === undefined ? {} : { settings }),
     sort: normalized.sort, ...(normalized.sorts === undefined ? {} : { sorts: normalized.sorts }),
     filters: normalized.filters, visiblePropertyIds: normalized.visiblePropertyIds,
   }, null, 2)}\n`;
@@ -139,7 +152,7 @@ export function diagnoseDatabaseView(view: DatabaseView, database?: DatabaseDefi
     const property = byId.get(groupId);
     if (property && property.type !== 'select' && property.type !== 'checkbox' && property.type !== 'formula') issues.push({ code: 'INVALID_REFERENCE', propertyId: groupId, message: `Grouping requires a Select, Checkbox, or Formula property; saved view was preserved.` });
   }
-  const refs = new Set([...view.visiblePropertyIds, ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...(view.sorts ?? []).filter((sort) => sort.propertyId !== 'title').map((sort) => sort.propertyId), ...view.filters.map((filter) => filter.propertyId)]);
+  const refs = new Set([...view.visiblePropertyIds, ...Object.keys(view.settings?.columnWidths ?? {}), ...(view.sort.propertyId === 'title' ? [] : [view.sort.propertyId]), ...(view.sorts ?? []).filter((sort) => sort.propertyId !== 'title').map((sort) => sort.propertyId), ...view.filters.map((filter) => filter.propertyId)]);
   for (const id of refs) if (!byId.has(id)) issues.push({ code: 'MISSING_PROPERTY', propertyId: id, message: `Property "${id}" is missing; saved view was preserved.` });
   for (const filter of view.filters) {
     const property = byId.get(filter.propertyId);
@@ -174,6 +187,21 @@ function filterFits(property: Property, operator: ViewFilterOperator, value: unk
   if (matches(['equals', 'before', 'after'], 'date')) return typeof value === 'string' && validDate(value);
   if (matches(['is'], 'select') || matches(['includes'], 'multi-select')) return typeof value === 'string';
   return false;
+}
+function parseColumnWidths(value: unknown): Record<string, number> {
+  if (!record(value)) throw invalid('settings.columnWidths must be an object');
+  const ids = Object.keys(value).sort();
+  if (ids.length === 0) throw invalid('settings.columnWidths must include at least one property');
+  const widths: Record<string, number> = {};
+  for (const id of ids) {
+    uuid(id, 'settings.columnWidths property ID');
+    const width: unknown = value[id];
+    if (typeof width !== 'number' || !Number.isInteger(width) || width < MIN_COLUMN_WIDTH || width > MAX_COLUMN_WIDTH) {
+      throw invalid(`Column width must be an integer from ${MIN_COLUMN_WIDTH} to ${MAX_COLUMN_WIDTH} pixels`);
+    }
+    widths[id] = width;
+  }
+  return widths;
 }
 function parseSorts(value: unknown): ViewSort[] {
   if (!Array.isArray(value) || value.length === 0) throw invalid('sorts must be a non-empty array');

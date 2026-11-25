@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
+import { createBackup, restoreBackup } from '../src/storage/backup/backup.js';
+import { exportVault } from '../src/storage/portable/export.js';
+import { applyImport, planImport } from '../src/storage/portable/import.js';
 import { createLocalApiMiddleware } from '../src/ui-server/api.js';
 import type { DatabaseTemplate, NoteTemplate } from '../src/database/templates.js';
 
@@ -69,6 +72,36 @@ describe('template management API', () => {
       const invalid = { ...template, id: '44444444-4444-4444-8444-444444444444', starterRows: [{ title: 'Bad', values: { [PROP]: 'high' } }] };
       const invalidSave = await json<{ error: { code: string } }>(base, '/api/templates', 'PUT', { templates: [invalid], baseHash: (saved.body as { hash: string }).hash });
       expect(invalidSave.status).toBe(422);
+    });
+  });
+
+  it.each(['backup', 'portable'] as const)('applies widths from a template restored through %s', async (kind) => {
+    await withApi(async (base, vault) => {
+      const source = await FileSystemVault.open(join(vault.root, '..', 'source'));
+      const archive = join(vault.root, '..', 'archive');
+      const template: DatabaseTemplate = {
+        id: TID, type: 'database', name: 'With widths',
+        database: { id: DB, name: 'Width table', properties: [{ id: PROP, name: 'Estimate', type: 'number' }] },
+        views: [{
+          id: '77777777-7777-4777-8777-777777777777', databaseId: DB, name: 'Table',
+          type: 'table', settings: { columnWidths: { [PROP]: 288 } },
+          sort: { propertyId: 'title', direction: 'asc' }, filters: [], visiblePropertyIds: [PROP],
+        }],
+        starterRows: [], createdAt: NOW, updatedAt: NOW,
+      };
+      await source.writeTemplates([template], null);
+      if (kind === 'backup') {
+        await createBackup(source, archive);
+        await restoreBackup(archive, vault.root);
+      } else {
+        await exportVault(source, archive);
+        await applyImport(vault, await planImport(archive));
+      }
+      const applied = await json<{ databaseId: string }>(base, `/api/templates/${TID}/apply`, 'POST', {});
+      expect(applied.status).toBe(201);
+      expect(await vault.listDatabaseViews(applied.body.databaseId)).toMatchObject([{
+        view: { databaseId: applied.body.databaseId, settings: { columnWidths: { [PROP]: 288 } } },
+      }]);
     });
   });
 
