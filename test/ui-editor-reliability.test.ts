@@ -1090,4 +1090,110 @@ describe('phase 32B navigation recovery and palette wiring', () => {
     await open(a.id);
     expect(props('test-palette').canManageNote).toBe(true);
   });
+
+  it('navigates from a folder breadcrumb and acknowledges the transient command', async () => {
+    await mount();
+    await open(a.id);
+    props('test-sidebar').onQueryChange('project');
+    props('test-sidebar').onFiltersChange([{ type: 'tag', operator: 'contains', value: 'project' }], 'or');
+    await flush();
+
+    props('test-editor').onOpenFolder('notes/Projects/Sub');
+    await flush();
+
+    expect(props('test-sidebar')).toMatchObject({
+      view: 'notes',
+      query: '',
+      filters: [],
+      filterLogic: 'and',
+    });
+    const command = props('test-sidebar').folderNavigation;
+    expect(command).toMatchObject({ path: 'Projects/Sub' });
+
+    props('test-sidebar').onFolderNavigationHandled(command.sequence);
+    await flush();
+    expect(props('test-sidebar').folderNavigation).toBeUndefined();
+  });
+
+  it('keeps command sequences monotonic and cancels a pending command when a note opens', async () => {
+    await mount();
+    await open(a.id);
+    props('test-editor').onOpenFolder('notes/Projects');
+    await flush();
+    const first = props('test-sidebar').folderNavigation;
+    expect(first).toMatchObject({ path: 'Projects' });
+
+    props('test-sidebar').onFolderNavigationHandled(first.sequence);
+    await flush();
+    expect(props('test-sidebar').folderNavigation).toBeUndefined();
+
+    props('test-editor').onOpenFolder('notes/Projects/Sub');
+    await flush();
+    const second = props('test-sidebar').folderNavigation;
+    expect(second).toMatchObject({ path: 'Projects/Sub' });
+    expect(second.sequence).toBeGreaterThan(first.sequence);
+
+    await open(b.id);
+    expect(props('test-sidebar').folderNavigation).toBeUndefined();
+    expect(props('test-sidebar').selectedId).toBe(b.id);
+  });
+
+  it('returns All Notes with cleared search, metadata filters, and a null folder command', async () => {
+    await mount();
+    await open(a.id);
+    props('test-sidebar').onQueryChange('draft');
+    props('test-sidebar').onFiltersChange([{ type: 'tag', operator: 'contains', value: 'draft' }], 'or');
+    await flush();
+
+    props('test-editor').onOpenAllNotes();
+    await flush();
+
+    expect(props('test-sidebar')).toMatchObject({
+      query: '',
+      filters: [],
+      filterLogic: 'and',
+      folderNavigation: { path: null },
+    });
+  });
+
+  it('leaves focus mode when a folder breadcrumb reveals the sidebar', async () => {
+    await mount();
+    await open(a.id);
+    props('test-palette').onToggleFocusMode();
+    await flush();
+    expect(findFocusBar()).toBeDefined();
+
+    props('test-editor').onOpenFolder('notes/Projects');
+    await flush();
+
+    expect(findFocusBar()).toBeUndefined();
+    expect(props('test-sidebar').folderNavigation).toMatchObject({ path: 'Projects' });
+  });
+
+  it('opens the mobile drawer without changing the collapsed preference', async () => {
+    (globalThis as unknown as {
+      window: {
+        matchMedia: () => {
+          matches: boolean;
+          addEventListener: () => void;
+          removeEventListener: () => void;
+        };
+      };
+    }).window.matchMedia = () => ({
+      matches: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    await mount();
+    await open(a.id);
+    props('test-palette').onToggleSidebar();
+    await flush();
+    expect(props('test-sidebar').collapsed).toBe(true);
+
+    props('test-editor').onOpenFolder('notes/Projects');
+    await flush();
+
+    expect(props('test-sidebar').open).toBe(true);
+    expect(props('test-sidebar').collapsed).toBe(true);
+  });
 });

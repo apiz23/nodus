@@ -38,6 +38,7 @@ import { NoteFiltersPopover } from './NoteFiltersPopover';
 import { SearchLibraryPopover } from './SearchLibraryPopover';
 import { parseSearchQuery } from '../../src/search/query.js';
 import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters.js';
+import type { FolderNavigationCommand } from './breadcrumbNavigation';
 import { PageTree } from './PageTree';
 import { detectPlatform, shortcutById, shortcutLabel } from './shortcuts';
 import type { View } from './types';
@@ -106,6 +107,9 @@ interface SidebarProps {
   notes: UiNoteSummary[];
   folders: string[];
   folderError: string | null;
+  treeInventoryPending?: boolean;
+  folderNavigation?: FolderNavigationCommand;
+  onFolderNavigationHandled: (sequence: number) => void;
   results: UiSearchResult[];
   selectedId: string | null;
   loading: boolean;
@@ -171,6 +175,9 @@ export function Sidebar({
   notes,
   folders,
   folderError,
+  treeInventoryPending,
+  folderNavigation,
+  onFolderNavigationHandled,
   results,
   selectedId,
   loading,
@@ -472,6 +479,9 @@ export function Sidebar({
             notes={notes}
             folders={folders}
             folderError={folderError}
+            treeInventoryPending={treeInventoryPending}
+            folderNavigation={folderNavigation}
+            onFolderNavigationHandled={onFolderNavigationHandled}
             results={results}
             query={query}
             filtersActive={filters.length > 0}

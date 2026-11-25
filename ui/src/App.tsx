@@ -19,6 +19,12 @@ import type { NoteFilter, NoteFilterLogic } from '../../src/search/note-filters'
 import { api, ApiError } from './api';
 import { CommandPalette } from './CommandPalette';
 import { FocusModeBar } from './FocusModeBar';
+import {
+  breadcrumbNavigationPatch,
+  planBreadcrumbReveal,
+  reduceFolderNavigation,
+  type FolderNavigationCommand,
+} from './breadcrumbNavigation';
 import { RecentNotesDialog } from './RecentNotesDialog';
 import { ShortcutReferenceDialog } from './ShortcutReferenceDialog';
 import { DatabasesView } from './DatabasesView';
@@ -111,6 +117,7 @@ export default function App() {
   const [notes, setNotes] = useState<UiNoteSummary[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [pendingTreeRefreshes, setPendingTreeRefreshes] = useState(0);
   const [notesLoading, setNotesLoading] = useState(true);
   const [notesError, setNotesError] = useState<string | null>(null);
 
@@ -123,6 +130,8 @@ export default function App() {
   const [searchRevision, setSearchRevision] = useState(0);
   const [noteFilters, setNoteFilters] = useState<NoteFilter[]>([]);
   const [filterLogic, setFilterLogic] = useState<NoteFilterLogic>('and');
+  const [folderNavigation, setFolderNavigation] = useState<FolderNavigationCommand | undefined>(undefined);
+  const folderNavigationSequenceRef = useRef(0);
   const filterVaultRef = useRef<string | null>(null);
 
   const [activeNote, setActiveNote] = useState<UiNote | null>(null);
@@ -424,7 +433,9 @@ export default function App() {
   }
 
   async function refreshNotes(quiet = false): Promise<void> {
-    void refreshFolders();
+    setPendingTreeRefreshes((count) => count + 2);
+    const finishRefresh = () => setPendingTreeRefreshes((count) => count - 1);
+    void refreshFolders().finally(finishRefresh);
     const request = vaultRequestRef.current;
     if (!quiet) setNotesLoading(true);
     setNotesError(null);
@@ -440,6 +451,7 @@ export default function App() {
     } catch (error) {
       if (request === vaultRequestRef.current) setNotesError(messageOf(error));
     } finally {
+      finishRefresh();
       if (!quiet && request === vaultRequestRef.current) setNotesLoading(false);
     }
   }
@@ -595,6 +607,27 @@ export default function App() {
     setView('settings');
   }
 
+  /** Breadcrumb navigation returns to All Notes, never to a free-text search. */
+  function navigateFromBreadcrumb(storagePath: string | null): void {
+    folderNavigationSequenceRef.current += 1;
+    const patch = breadcrumbNavigationPatch(storagePath, folderNavigationSequenceRef.current);
+    const command: FolderNavigationCommand = { path: patch.folderPath, sequence: patch.sequence };
+    const reveal = planBreadcrumbReveal(desktop, focusMode, patch.folderPath !== null);
+    if (reveal.exitFocus) setFocusMode(false);
+    setView('notes');
+    setQuery(patch.query);
+    setNoteFilters(patch.noteFilters);
+    setFilterLogic(patch.filterLogic);
+    setFolderNavigation((current) => reduceFolderNavigation(current, { type: 'navigate', command }));
+    if (reveal.reveal === 'expand-sidebar') setSidebarCollapsed(false);
+    else if (reveal.reveal === 'open-drawer') setSidebarOpen(true);
+  }
+
+  /** Consume a breadcrumb command so it cannot override later note selection. */
+  function handleFolderNavigation(sequence: number): void {
+    setFolderNavigation((current) => reduceFolderNavigation(current, { type: 'acknowledge', sequence }));
+  }
+
   /** Palette entry for the sidebar search panels: reveal the sidebar first. */
   function openSearchPanelFromCommand(panel: 'filters' | 'library'): void {
     if (focusMode) setFocusMode(false);
@@ -709,6 +742,7 @@ export default function App() {
     draftRevisionRef.current += 1;
     setTaskNavigation((current) => targetLine === undefined ? null : { noteId: id, line: targetLine, sequence: (current?.sequence ?? 0) + 1 });
     setView('notes');
+    setFolderNavigation((current) => reduceFolderNavigation(current, { type: 'note-opened' }));
     setSelectedNoteId(id);
     setNoteLoading(true);
     setEditorError(null);
@@ -1822,6 +1856,9 @@ export default function App() {
           notes={notes}
           folders={folders}
           folderError={folderError}
+          treeInventoryPending={pendingTreeRefreshes > 0}
+          folderNavigation={folderNavigation}
+          onFolderNavigationHandled={handleFolderNavigation}
           results={searchResults}
           selectedId={selectedNoteId}
           loading={notesLoading}
@@ -2001,6 +2038,8 @@ export default function App() {
               if (activeNote !== null) void requestDeleteForNote(activeNote.id);
             }}
             onOpenNote={(id) => void openNoteById(id)}
+            onOpenAllNotes={() => navigateFromBreadcrumb(null)}
+            onOpenFolder={(path) => navigateFromBreadcrumb(path)}
             onAddTag={(tag) => mutateActiveNoteTags({ type: 'add', tag })}
             onRemoveTag={(tag) => mutateActiveNoteTags({ type: 'remove', tag })}
             vaultIdentity={status?.vault.path ?? ''}
