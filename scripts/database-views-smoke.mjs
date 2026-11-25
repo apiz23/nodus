@@ -190,10 +190,29 @@ try {
     return (await response.json()).view.view.id;
   }
   const tableId = await createView('My table', 'table');
-  await page.getByRole('button', { name: 'Sort descending', exact: true }).click();
+  const visibleColumnIds = async () => page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox').evaluateAll((items) => items.filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.id.replace('column-', '')));
   await page.getByRole('button', { name: /^Columns,/ }).click();
-  await page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox', { name: /Estimate/ }).uncheck();
+  const tableColumns = page.getByRole('group', { name: 'Visible columns' });
+  const schemaColumnOrder = await tableColumns.getByRole('checkbox').evaluateAll((items) => items.map((item) => item.id));
+  await page.getByRole('button', { name: 'Move Status down', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  assert.notDeepEqual(await tableColumns.getByRole('checkbox').evaluateAll((items) => items.map((item) => item.id)), schemaColumnOrder);
+  await controls.getByText('View settings have unsaved changes.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Reset order', exact: true }).click();
+  assert.deepEqual(await tableColumns.getByRole('checkbox').evaluateAll((items) => items.map((item) => item.id)), schemaColumnOrder);
+  await page.getByRole('button', { name: 'Move Status down', exact: true }).press('Enter');
+  await tableColumns.getByRole('checkbox', { name: /Estimate/ }).uncheck();
+  assert.equal(await page.getByRole('button', { name: 'Move Estimate down', exact: true }).isDisabled(), true, 'Hidden columns cannot be moved');
+  await page.getByRole('button', { name: 'Reset order', exact: true }).click();
+  assert.equal(await tableColumns.getByRole('checkbox', { name: /Estimate/ }).isChecked(), false, 'Reset order changed visibility');
+  assert.deepEqual(await tableColumns.getByRole('checkbox').evaluateAll((items) => items.map((item) => item.id)), schemaColumnOrder);
+  await page.getByRole('button', { name: 'Move Status down', exact: true }).press('Enter');
+  const expectedTableColumnOrder = await visibleColumnIds();
   await page.keyboard.press('Escape');
+  const tableHeaderNames = await page.locator('thead th').allInnerTexts();
+  assert(tableHeaderNames.indexOf('Due') < tableHeaderNames.indexOf('Status'), 'Table did not render the moved column order');
+  assert.equal(tableHeaderNames.includes('Estimate'), false, 'Hidden column remained rendered');
+  await page.getByRole('button', { name: 'Sort descending', exact: true }).click();
   await page.getByRole('button', { name: /^Filter rows/ }).click();
   await page.getByRole('button', { name: 'Add filter', exact: true }).click();
   await page.getByRole('combobox', { name: 'Filter 1 property', exact: true }).click();
@@ -209,15 +228,45 @@ try {
   await readyTableGroup.press('Enter');
   assert.equal(await readyTableGroup.getAttribute('aria-expanded'), 'false');
   await readyTableGroup.press('Enter');
-  await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+  const tableSaveRoute = `**/api/databases/${DB}/views/${tableId}`;
+  let releaseTableSave, enterTableSave;
+  const tableSaveGate = new Promise((resolveGate) => { releaseTableSave = resolveGate; });
+  const tableSaveEntered = new Promise((resolveEntered) => { enterTableSave = resolveEntered; });
+  await page.route(tableSaveRoute, async (route) => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    enterTableSave();
+    await tableSaveGate;
+    await route.continue();
+  });
+  try {
+    await controls.getByRole('button', { name: 'Save view', exact: true }).click();
+    await tableSaveEntered;
+    await page.getByRole('button', { name: /^Columns,/ }).click();
+    assert.equal(await page.getByRole('button', { name: 'Move Status up', exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Reset order', exact: true }).isDisabled(), true);
+    assert.equal(await tableColumns.getByRole('checkbox', { name: /Estimate/ }).isDisabled(), true);
+    assert.deepEqual(await visibleColumnIds(), expectedTableColumnOrder);
+  } finally {
+    releaseTableSave();
+  }
   await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const move = document.querySelector('button[aria-label="Move Status up"]');
+    return move instanceof HTMLButtonElement && !move.disabled;
+  });
+  await page.keyboard.press('Escape');
+  await page.unroute(tableSaveRoute);
   await page.reload();
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
   await page.getByRole('button', { name: 'Sort ascending', exact: true }).waitFor();
   assert.match(await selector.innerText(), /My table/);
   assert.equal(await page.getByRole('table').getByRole('button', { name: beta.title, exact: true }).count(), 0);
   assert.equal(await page.getByRole('columnheader', { name: 'Estimate', exact: true }).count(), 0);
+  const reloadedTableHeaderNames = await page.locator('thead th').allInnerTexts();
+  assert(reloadedTableHeaderNames.indexOf('Due') < reloadedTableHeaderNames.indexOf('Status'), 'Saved table did not restore column order');
+  assert.equal(reloadedTableHeaderNames.includes('Estimate'), false, 'Saved hidden column remained rendered');
   const tableFile = JSON.parse(await readFile(join(vault, 'database-views', DB, `${tableId}.json`), 'utf8'));
+  assert.deepEqual(tableFile.visiblePropertyIds, expectedTableColumnOrder, 'Saved table column order did not persist');
   assert.equal(tableFile.sort.direction, 'desc');
   assert.equal(tableFile.filters[0].value, READY);
   assert.equal(tableFile.settings.groupPropertyId, STATUS);
@@ -237,7 +286,10 @@ try {
   await readyListGroup.press('Enter');
   await list.getByRole('article', { name: alpha.title }).waitFor();
   await page.getByRole('button', { name: /^Columns,/ }).click();
-  await page.getByRole('group', { name: 'Visible columns' }).getByRole('checkbox', { name: /Estimate/ }).uncheck();
+  const listColumns = page.getByRole('group', { name: 'Visible columns' });
+  await page.getByRole('button', { name: 'Move Due down', exact: true }).press('Enter');
+  await listColumns.getByRole('checkbox', { name: /Estimate/ }).uncheck();
+  const expectedListColumnOrder = await visibleColumnIds();
   await page.keyboard.press('Escape');
   await controls.getByRole('button', { name: 'Save view', exact: true }).click();
   await controls.getByText('View saved to this vault.', { exact: true }).waitFor();
@@ -246,6 +298,21 @@ try {
   assert.equal(listFile.type, 'list');
   assert.equal(listFile.settings.groupPropertyId, STATUS);
   assert.equal(listFile.visiblePropertyIds.includes(NUMBER), false);
+  assert.deepEqual(listFile.visiblePropertyIds, expectedListColumnOrder, 'Saved list column order did not persist');
+
+  const switchSavedView = async (name) => {
+    await controls.getByRole('combobox', { name: 'View', exact: true }).click();
+    await page.getByRole('option', { name: new RegExp(name) }).click();
+    await page.waitForTimeout(200);
+  };
+  await switchSavedView('My table');
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  assert.deepEqual(await visibleColumnIds(), expectedTableColumnOrder, 'Table column order changed when switching views');
+  await page.keyboard.press('Escape');
+  await switchSavedView('My list');
+  await page.getByRole('button', { name: /^Columns,/ }).click();
+  assert.deepEqual(await visibleColumnIds(), expectedListColumnOrder, 'List column order changed when switching views');
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: alpha.title, exact: true }).click();
   await page.getByRole('textbox', { name: 'Note title', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Databases', exact: true }).click();
