@@ -262,3 +262,74 @@ describe('folder navigation command lifecycle', () => {
     expect(reduceFolderNavigation(undefined, { type: 'note-opened' })).toBeUndefined();
   });
 });
+
+describe('compact breadcrumb presentation', () => {
+  const longNote: UiNote = {
+    ...note,
+    title: 'Alpha',
+    path: 'notes/Programs/2026/Research & Design/Sub/Alpha.md',
+  };
+
+  function breadcrumbNav(markup: string): string {
+    return markup.match(/<nav[^>]*aria-label="Breadcrumb"[\s\S]*?<\/nav>/)?.[0] ?? '';
+  }
+
+  it('renders exactly one breadcrumb navigation that is visible at every width', () => {
+    const markup = render(false, longNote);
+    expect(markup.match(/aria-label="Breadcrumb"/g)).toHaveLength(1);
+    const nav = breadcrumbNav(markup).match(/<nav[^>]*>/)?.[0] ?? '';
+    const classes = (nav.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/);
+    expect(classes).toContain('flex');
+    expect(classes).not.toContain('hidden');
+    expect(classes).not.toContain('sm:flex');
+    expect(classes).toContain('overflow-x-auto');
+    expect(classes).toContain('overscroll-x-contain');
+    expect(classes).toContain('min-w-0');
+    expect(classes).toContain('flex-nowrap');
+  });
+
+  it('keeps every ancestor reachable as a labelled button and marks the current page', () => {
+    const markup = render(false, longNote);
+    for (const label of [
+      'Open folder Programs',
+      'Open folder Programs/2026',
+      'Open folder Programs/2026/Research & Design',
+      'Open folder Programs/2026/Research & Design/Sub',
+    ]) {
+      // React escapes the ampersand in the rendered attribute.
+      expect(markup).toContain(`aria-label="${label.replaceAll('&', '&amp;')}"`);
+    }
+    const current = markup.match(/<span[^>]*aria-current="page"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+    expect(current).toBeDefined();
+    expect(current).toContain('Alpha');
+    expect(current).not.toContain('<button');
+  });
+
+  it('bounds long breadcrumbs with truncation and scrolling instead of overflowing the editor', () => {
+    const nav = breadcrumbNav(render(false, longNote));
+    expect(nav).toContain('max-w-[9rem]');
+    expect(nav).toContain('max-w-[45vw]');
+    expect(nav).toContain('truncate');
+  });
+
+  it('keeps the same single breadcrumb at comfortable and full editor widths', () => {
+    const comfortable = breadcrumbNav(render(false, longNote));
+    const full = breadcrumbNav(render(true, longNote));
+    expect(comfortable).not.toBe('');
+    expect(full).toBe(comfortable);
+  });
+
+  it('plans a drawer reveal for mobile folder navigation and keeps focus mode semantics', () => {
+    expect(planBreadcrumbReveal(true, false, true)).toEqual({ exitFocus: false, reveal: 'expand-sidebar' });
+    expect(planBreadcrumbReveal(true, true, true)).toEqual({ exitFocus: true, reveal: 'expand-sidebar' });
+    expect(planBreadcrumbReveal(false, false, true)).toEqual({ exitFocus: false, reveal: 'open-drawer' });
+    expect(planBreadcrumbReveal(false, true, true)).toEqual({ exitFocus: true, reveal: 'open-drawer' });
+    expect(planBreadcrumbReveal(false, false, false)).toEqual({ exitFocus: false, reveal: 'none' });
+  });
+
+  it('drops a pending command when navigation moves on to a note', () => {
+    const pending = { path: 'Programs/2026', sequence: 9 };
+    expect(reduceFolderNavigation(pending, { type: 'note-opened' })).toBeUndefined();
+    expect(reduceFolderNavigation(pending, { type: 'navigate', command: { path: null, sequence: 10 } })).toEqual({ path: null, sequence: 10 });
+  });
+});

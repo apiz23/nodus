@@ -250,26 +250,26 @@ export function Editor({
         <nav
           aria-label="Breadcrumb"
           title={note.path}
-          className="hidden min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-muted-foreground sm:flex"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto overscroll-x-contain text-[11px] text-muted-foreground [scrollbar-width:none] sm:gap-1 sm:text-[12px] [&::-webkit-scrollbar]:hidden"
         >
           <Button
             type="button"
             variant="link"
             size="xs"
-            className="h-auto shrink-0 p-0 text-[12px] font-normal text-muted-foreground hover:text-foreground"
+            className="h-auto shrink-0 p-0 py-0.5 text-[11px] font-normal text-muted-foreground hover:text-foreground sm:py-0 sm:text-[12px]"
             aria-label="Open all notes"
             onClick={onOpenAllNotes}
           >
             Notes
           </Button>
           {folders.map((folder) => (
-            <span key={folder.storagePath} className="flex min-w-0 items-center gap-1 overflow-hidden">
+            <span key={folder.storagePath} className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1">
               <ChevronRight className="size-3 shrink-0 opacity-60" aria-hidden="true" />
               <Button
                 type="button"
                 variant="link"
                 size="xs"
-                className="h-auto min-w-0 shrink p-0 text-[12px] font-normal text-muted-foreground hover:text-foreground"
+                className="h-auto min-w-0 max-w-[9rem] shrink p-0 py-0.5 text-[11px] font-normal text-muted-foreground hover:text-foreground sm:max-w-[12rem] sm:py-0 sm:text-[12px]"
                 aria-label={`Open folder ${toDisplayFolderPath(folder.storagePath)}`}
                 onClick={() => onOpenFolder(folder.storagePath)}
               >
@@ -277,9 +277,9 @@ export function Editor({
               </Button>
             </span>
           ))}
-          <span className="flex min-w-0 items-center gap-1" aria-current="page">
+          <span className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1" aria-current="page">
             <ChevronRight className="size-3 shrink-0 opacity-60" aria-hidden="true" />
-            <span className="truncate text-foreground/75">{pageName}</span>
+            <span className="max-w-[45vw] truncate text-foreground/75 sm:max-w-[18rem]">{pageName}</span>
           </span>
         </nav>
         <div className="hidden sm:block sm:min-w-0 sm:flex-1" aria-hidden="true" />

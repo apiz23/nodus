@@ -230,7 +230,39 @@ try {
   assert.equal(await tree.locator('[aria-current="location"]').count(), 0);
   assert.equal(await breadcrumb.evaluate((button) => button === document.activeElement), true);
 
-  console.log(JSON.stringify({ summaries: 5050, mounted, responseToFirstRowMs: Math.round(initialMs), keyboardEndMs: Math.round(endMs) }));
+  // Mobile: the same single breadcrumb stays visible and drives the sidebar drawer.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => window.matchMedia('(min-width: 768px)').matches === false);
+  await page.waitForTimeout(150);
+  const breadcrumbNav = page.getByRole('navigation', { name: 'Breadcrumb' });
+  assert.equal(await breadcrumbNav.count(), 1, 'Expected exactly one breadcrumb navigation');
+  assert.equal(await breadcrumbNav.isVisible(), true, 'Compact breadcrumb should be visible below sm');
+  const currentPage = breadcrumbNav.locator('[aria-current="page"]');
+  await currentPage.waitFor();
+  assert.equal(await currentPage.isVisible(), true);
+  assert.equal((await currentPage.textContent()).trim(), 'Sibling');
+  const titleField = page.getByRole('textbox', { name: 'Note title', exact: true });
+  const titleBeforeDrawer = await titleField.inputValue();
+
+  await projectsBreadcrumb.focus();
+  await page.keyboard.press('Enter');
+  const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
+  await drawer.waitFor();
+  assert.equal(await drawer.isVisible(), true, 'Ancestor navigation should open the mobile sidebar drawer');
+  await drawer.getByRole('treeitem', { name: 'ZZ Projects, 0 pages', exact: true })
+    .and(drawer.locator('[aria-current="location"]')).waitFor();
+  assert.equal(await titleField.inputValue(), titleBeforeDrawer, 'Opening the drawer must not change the open note');
+  assert.equal(await breadcrumbNav.isVisible(), true);
+
+  await page.keyboard.press('Escape');
+  await drawer.waitFor({ state: 'hidden' });
+  assert.equal(await breadcrumbNav.isVisible(), true, 'Breadcrumb remains visible after the drawer closes');
+
+  await page.getByRole('button', { name: 'Open all notes', exact: true }).click();
+  assert.equal(await page.getByRole('dialog', { name: 'Workspace navigation' }).count(), 0);
+  assert.equal(await search.inputValue(), '');
+
+  console.log(JSON.stringify({ summaries: 5050, mounted, responseToFirstRowMs: Math.round(initialMs), keyboardEndMs: Math.round(endMs), mobileBreadcrumbDrawer: true }));
 } finally {
   await browser?.close();
   if (started) await stopVite(started);
