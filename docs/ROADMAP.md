@@ -2,8 +2,8 @@
 
 **Status:** Living document — single source of truth for project history, current state, and proposed work.
 
-**Last updated:** 2026-11-16
-**Audited local baseline:** `main` at `c819c0a4ffd1fc6638c7beac59f6e67e08e5d426`; live `origin/main` at `c5bf78b41fa4bcd05ca93f99155d8e586e1a33ff`, checked 2026-11-16. Local and remote ancestry remain divergent pending verified reconciliation.
+**Last updated:** 2026-11-26
+**Audited local baseline:** `main` at `6e676c883884b3795fdc3a6aec656e3ef99cffbf`, equal to `origin/main`, verified 2026-11-26 after the PR #34 squash merge. The earlier local/remote divergence is resolved; unrelated Phase 19 work and the salvaged canonical working tree remain preserved on their dedicated branches.
 **Repository:** `apiz23/nodus` (`origin`)
 **Roadmap owner:** project maintainer
 
@@ -48,6 +48,7 @@ Every coding agent working on Nodus must complete these steps before, during, an
    - [Long-term product direction](#long-term-product-direction)
 2. [Current State at a Glance](#2-current-state-at-a-glance)
    - [Current Forward Sequence (verified 2026-11-05)](#current-forward-sequence-verified-2026-11-05)
+   - [MVP Stage Delivery (verified 2026-11-26)](#mvp-stage-delivery-verified-2026-11-26)
 3. [Completed and Historical Milestones](#3-completed-and-historical-milestones)
    - [3.1 Milestone Summary](#31-milestone-summary)
    - [Phase 1 — Application Foundation and Domain Model](#phase-1--application-foundation-and-domain-model)
@@ -156,15 +157,18 @@ The [product vision](product-vision.md) describes flexible workspace and databas
 | Wiki links, backlinks, graph | **Implemented, with explicit repair and rename-safe title links** | `src/links/`, `ui/src/BacklinksPanel.tsx`, `ui/src/DiscoveryView.tsx`, `ui/src/GraphView.tsx` |
 | Database schemas | **Implemented, versions 1–3** | `src/database/schema.ts` |
 | Database rows | **Implemented as derived projections from `nodus_data`** | `src/database/note-properties.ts` |
-| Saved views | **Implemented, versions 1–3; table/list/kanban/calendar/gallery** | `src/database/database-view.ts`, `ui/src/DatabaseLayouts.tsx` |
+| Saved views | **Implemented, versions 1–4; table/list/kanban/calendar/gallery** | `src/database/database-view.ts`, `ui/src/DatabaseLayouts.tsx`, `ui/src/database-column-order.ts`, `ui/src/database/ColumnResizeHandle.tsx` |
 | Relations and rollups | **Implemented** | `src/database/relations.ts`, `src/database/relation-contract.ts` |
 | Formula engine | **Implemented** | `src/database/formula-*.ts`, `ui/src/database/FormulaEditor*.tsx` |
 | Database automations | **Implemented with documented limits** | `src/database/automations.ts`, `ui/src/DatabaseAutomations.tsx`, `docs/database-automations.md` |
 | Note and database templates | **Implemented with documented limits** | `src/database/templates.ts`, `ui/src/TemplatesView.tsx`, `docs/templates.md` |
 | Command palette, shortcuts, recent notes | **Implemented with documented limits** | `ui/src/CommandPalette.tsx`, `ui/src/shortcuts.ts`, `ui/src/recentNavigation.ts`, `docs/shortcuts.md` |
+| Breadcrumb and folder navigation | **Implemented (Stage 1, PR #30)** | `ui/src/PageTree.tsx`, `ui/src/breadcrumbNavigation.ts`, `ui/src/folderPaths.ts`, `scripts/breadcrumb-pagetree-smoke.mjs` |
+| Project management templates | **Implemented as reusable templates (Stage 3, PR #33); no separate project store** | `src/database/project-templates.ts`, `ui/src/TemplatesView.tsx`, `scripts/project-management-smoke.mjs` |
+| Work Item calendar | **Implemented (Stage 4, PR #34); Date property + Calendar saved view in Work Items** | `ui/src/DatabaseLayouts.tsx`, `src/database/project-templates.ts`, `test/database-templates-api.test.ts` |
 | Relay/sync | **Experimental and unwired** | `src/relay/`, `src/sync/`, `docs/phase3/` |
 | Local UI API | **Implemented, loopback-only with origin and path allow-lists** | `src/ui-server/api.ts`, `ui/vite.config.ts` |
-| Test suite | **122 files / 1,241 executed tests** (Phase 27 feature baseline; 2026-11-03) | `test/` |
+| Test suite | **156 files / 1,751 tests collected** (2026-11-25); full parallel runs currently show timeout flakiness, and the executor-lock suite needs a native build | `test/` |
 | CI pipeline | **Not present** | no `.github/` workflow |
 | Performance guarantees | **Not enforced in CI; measurements are historical** | `docs/structured-data-performance.md`, benchmarks |
 
@@ -202,6 +206,30 @@ The prior proposal list in Section 4 is retained for historical context and is s
 **Phase 30 numbering clarification:** The current official Phase 30 is Conflict Resolution. The earlier current-forward row naming Plugin Architecture is superseded by the owner-approved 2026-11-06 decision. Plugin Architecture is an independent P0–P8 workstream and does not replace an official phase. The earlier Conflict Resolution proposal in Section 4 remains historical context; current implementation, limitations, and verification are recorded in the Phase 30 section below.
 
 Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**. It is not the current Phase 28 calendar work and should be resolved before enabling automatic note or folder moves from organization suggestions.
+
+### MVP Stage Delivery (verified 2026-11-26)
+
+MVP stages are delivery slices of the local-first MVP. They are separate from the numbered phase history, which remains the record of how the product was built. **Merged and locally verified is not the same as release acceptance**; no release sign-off has been granted.
+
+| Stage | Delivered scope | Status | Evidence |
+|---|---|---|---|
+| 1 | PageTree virtualization for large hierarchies; breadcrumb navigation; folder-aware navigation; sidebar integration; mobile breadcrumb and workspace drawer; selected-note preservation while the drawer navigates; keyboard and Escape behavior | **COMPLETE — merged and locally verified** | PR #30, squash commit `1d70f31`; `ui/src/PageTree.tsx`, `ui/src/breadcrumbNavigation.ts`, `ui/src/folderPaths.ts`, `scripts/breadcrumb-pagetree-smoke.mjs` |
+| 2 M1 | Per-view column ordering with move/reset controls and saved-view persistence | **COMPLETE — merged and locally verified** | PR #31 `0564c02`; `ui/src/database-column-order.ts`, `test/database-column-order.test.ts` |
+| 2 M2 | Per-view column-width persistence in the saved-view format (v4) | **COMPLETE — merged and locally verified** | PR #32 `c1a8d2f`; `ui/src/database/ColumnResizeHandle.tsx`, `test/storage-database-views.test.ts` |
+| 3 | Reusable Projects and Work Items database templates; Task and Bug work-item types; To do / In progress / Done status; Low / Normal / High priority; optional Project relation; All Work Items table, Status board, and filtered Bugs view | **COMPLETE — merged and locally verified** | PR #33 `62afa5c`; `src/database/project-templates.ts`, `scripts/project-management-smoke.mjs` |
+| 4 | Work Item Calendar: Date property and Calendar saved view in the Work Items template; month/Today navigation; dated creation; date editing; Undated items; narrow-screen horizontal scrolling; template regression assertion | **COMPLETE — merged and locally verified** | PR #34 `6e676c8` (squash); `ui/src/DatabaseLayouts.tsx`, `src/database/project-templates.ts`, `test/database-templates-api.test.ts`, `scripts/project-management-smoke.mjs` |
+
+**Stage boundaries and limitations**
+
+- Stage 2 covers only the two database-usability milestones above; no other database work is implied.
+- Stage 3 is a bounded MVP. Project links are made manually through the schema editor. There are no assignees, dependencies, scheduling, notifications, or WIP limits. Markdown checklist tasks (Phase 27) remain a separate, derived workflow and are not merged into Work Items.
+- Stage 4 (Calendar) reuses the existing Date property and calendar view. Its creation flow keeps the existing two-write behaviour: a failed date assignment retains the created note and can be retried while the dialog remains open (M1). After a reload, recovery is manual. Low-priority follow-ups L2–L7 (date-label year, scroll-region focus ring, table-overflow override, timezone-hardcoded smoke, non-idempotent create on lost response, `<100` year handling) remain open and are not implementation authorisation.
+- Stage 1 breadcrumbs are actionable on desktop. Below the sidebar breakpoint they open the workspace drawer without changing the open note. Very long paths scroll horizontally instead of overflowing the editor.
+- PR #29 (PageTree virtualization) remains **OPEN** at `61c028e` and was **not merged**. Its implementation and sidebar test are contained in PR #30, so it is **SUPERSEDED**; closing it requires an explicit owner decision.
+
+**Verification recorded for this reconciliation (2026-11-26):** merged `main` at `6e676c8` passed root and UI TypeScript checks, 13 focused suites (calendar, temporal, views, templates, databases, column order, sidebar, editor) with 153 passed and 1 skipped, the Work Items calendar and database-view browser smokes, and the production build. The full suite is not green under full parallel load on this machine (timeout flakiness reproduced on pre-merge baselines), and `storage-executor-lock` requires `npm run test:executor-lock` to build its native module first.
+
+**Next recommended milestone (PROPOSED — not authorised):** QA/CI integration. The repository still has no CI workflow, so acceptance depends on manual isolated runs. Proposed scope: a GitHub Actions baseline (Node 24, install, root/UI TypeScript, production build); deterministic test-runner settings and documented reproducible commands; a non-browser unit/database gate; an isolated native executor-lock job; and cached Playwright jobs for the Work Items calendar, database-view and navigation smokes (pull-request or nightly cadence). Required checks should be enabled only after they are stable. Phase 19 remains separate and is not part of this milestone. Implementation begins only after owner approval.
 
 ### Phase 27 — Task Management
 
@@ -483,7 +511,7 @@ Legacy Phase 19 move-safe path-link maintenance remains **PENDING INTEGRATION**.
 **Known limitations**
 
 - No drag-and-drop for notes or folders; moves use dialogs/path rename.
-- Breadcrumb is display-only.
+- Breadcrumb was display-only when Phase 4 shipped; Stage 1 (PR #30, 2026-11-25) made it actionable with folder navigation and a mobile drawer. See [MVP Stage Delivery](#mvp-stage-delivery-verified-2026-11-26).
 - Graph is limited to 200 nodes and derived from confirmed links only.
 - Folder deletion is permanent; there is no trash.
 
@@ -1258,7 +1286,7 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ### Phase 17G — Knowledge Graph and Relationship Exploration
 
-**Numbering note:** the task brief calls this Phase 17. This roadmap reserves Phase 17 for **Tasks and Project Management** (still planned), so the delivered graph work is recorded as **17G** to avoid renumbering future milestones.
+**Numbering note:** the task brief calls this Phase 17. This roadmap reserves Phase 17 for **Tasks and Project Management** (Stage 3 delivered the MVP subset; advanced scope remains proposed), so the delivered graph work is recorded as **17G** to avoid renumbering future milestones.
 
 **Objective:** Extend the existing wiki-link graph into a reliable, filterable relationship explorer with outgoing links, unresolved-target exploration, isolated-note discovery, stable IDs, and bounded performance.
 
@@ -1320,7 +1348,7 @@ The CodeMirror editor now exposes a debounced heading outline with nested naviga
 
 ### Phase 18L — Link Integrity and Repair
 
-**Numbering note:** the roadmap reserves Phase 18 for **Tasks and Project Management** (still planned). This delivered work is recorded as **18L** to avoid renumbering future milestones.
+**Numbering note:** the roadmap reserves Phase 18 for **Tasks and Project Management** (Stage 3 delivered the MVP subset; advanced scope remains proposed). This delivered work is recorded as **18L** to avoid renumbering future milestones.
 
 **Objective:** Make broken and ambiguous wiki links actionable from Discovery, and keep title-based links working when a note is renamed, without introducing a persistent index, new storage format, or dependency.
 
@@ -1493,7 +1521,7 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 |---|---|---|---|
 | 15 | Advanced Database Queries | PLANNED | 7B, 7D, 11, 9 review |
 | 17 | Database Protection and Safeguards | PLANNED | 7A, 7B, 8, 15 |
-| 18 | Tasks and Project Management | PLANNED | 13, 15, 19 |
+| 18 | Tasks and Project Management | PARTIAL — Stage 3 MVP delivered (PR #33); advanced scope PROPOSED | 13, 15, 19 |
 | 19 | Calendar and Timeline Improvements | PLANNED | 7B, 10, 18 |
 | 20 | Notifications and Reminders | PLANNED | 12, 18, 19 |
 | 21 | Import and Migration | PLANNED | 7A, 8, 13 |
@@ -1600,7 +1628,9 @@ The following proposed sequence predates the verified Phase 22–24 merges and t
 - Dependency cycles are detected and surfaced.
 - Tests cover lifecycle, queries, and portability.
 
-**Status:** **PLANNED**
+**Delivered subset (2026-11-25):** Stage 3 shipped reusable Projects and Work Items templates, Task/Bug rows, status and priority, an optional Project relation, and table/board/filtered-Bugs views (PR #33, `62afa5c`). Advanced Phase 18 scope — assignees, dependencies, recurrence, WIP limits, progress summaries, and timeline visualisation — is **PROPOSED**, not implemented.
+
+**Status:** **PARTIAL — Stage 3 MVP delivered; advanced scope remains PROPOSED**
 
 ---
 
@@ -2346,12 +2376,13 @@ See [Phase 31 specification](phase31-automation-workflow.md) for the current cap
 | Feature | Implementation | Status |
 |---|---|---|
 | Sidebar navigation | `ui/src/Sidebar.tsx` | Implemented |
-| Folder/note tree | `ui/src/PageTree.tsx` | Implemented |
+| Folder/note tree | `ui/src/PageTree.tsx` | Implemented — virtualized for large trees (Stage 1, PR #30) |
 | Sidebar resize/collapse | `ui/src/App.tsx`, `react-resizable-panels` | Implemented |
 | Keyboard tree navigation | `ui/src/PageTree.tsx` | Implemented |
 | Move note/folder | `ui/src/NoteDialogs.tsx`, folder dialogs | Implemented via dialogs |
 | Drag-and-drop moves | — | Not implemented |
-| Breadcrumb | `ui/src/Editor.tsx` | Display only |
+| Breadcrumb | `ui/src/Editor.tsx`, `ui/src/breadcrumbNavigation.ts`, `ui/src/folderPaths.ts` | Implemented — actionable folder navigation on desktop and mobile drawer reveal (Stage 1, PR #30) |
+| Mobile workspace drawer navigation | `ui/src/App.tsx`, `ui/src/Sidebar.tsx` | Implemented — opens from a breadcrumb ancestor without changing the open note |
 | Backlinks panel | `ui/src/BacklinksPanel.tsx` | Implemented — incoming and outgoing wiki links |
 | Link repair suggestions and disambiguation | `src/links/link-repair.ts`, `ui/src/DiscoveryView.tsx` | Implemented — deterministic local suggestions, explicit action |
 | Safe single-occurrence link rewrite | `src/links/link-edit.ts`, `POST /api/notes/:id/links/repair` | Implemented — revision-checked, stable-ID pinned by default |
@@ -2413,6 +2444,7 @@ See [Phase 31 specification](phase31-automation-workflow.md) for the current cap
 | Typed filters | `ui/src/database-table.ts` | Implemented |
 | Property visibility | `ui/src/DatabasesView.tsx` | Implemented |
 | Saved view CRUD and ordering | `ui/src/SavedViewControls.tsx`, `src/database/database-view-order.ts` | Implemented |
+| Per-view column order and width | `ui/src/database-column-order.ts`, `ui/src/database/ColumnResizeHandle.tsx`, `src/database/database-view.ts` | Implemented — saved in view JSON v4 (Stage 2, PRs #31/#32) |
 | Gallery image previews | — | Not implemented |
 
 ### 5.7 Relations and rollups
@@ -2616,7 +2648,7 @@ See [Phase 31 specification](phase31-automation-workflow.md) for the current cap
 - Membership and stored row values live in the note’s `nodus_data` frontmatter.
 - Select values store option UUIDs; relations store note UUIDs.
 - Reverse relations, rollups, and formulas are derived projections and are never persisted.
-- Saved views are separate versioned JSON files; view ordering is a separate manifest.
+- Saved views are separate versioned JSON files; view ordering is a separate manifest. View JSON v4 also stores optional per-view column order and widths.
 
 **Why:** Portability, stable references, and no duplication of note content.
 
@@ -2813,7 +2845,7 @@ Manual smoke scripts (not package scripts): `scripts/attachments-smoke.mjs`, `di
 | L-24 | Views | Calendar create is two writes | Note may be created without date | Atomic flow in Phase 18 |
 | L-25 | Editor | Mixed line endings not preserved | Byte-level surprise | Document; avoid rewriting unchanged lines |
 | L-26 | Editor | No block editor/slash menu | Authoring UX gap | Phase 24 |
-| L-27 | Navigation | No drag-and-drop, breadcrumb not clickable | Slower organization | Phase 4 follow-up or Phase 30 |
+| L-27 | Navigation | No drag-and-drop for notes or folders; breadcrumb navigation resolved in Stage 1 (PR #30) | Drag-and-drop organization remains a Phase 4 follow-up |
 | L-28 | Graph | 200-node limit, derived only | Large graphs truncated | Phase 22 |
 | L-29 | Sync | Experimental and unwired | No multi-device support | Phase 28/29 |
 | L-30 | Sync | No production credential storage or encryption | Not release-safe | Phase 28/32 |
