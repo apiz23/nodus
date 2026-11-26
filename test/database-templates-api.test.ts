@@ -140,6 +140,16 @@ describe('template management API', () => {
     });
   });
 
+  it('configures the Work Items Calendar to use its Date property', () => {
+    const workItems = projectManagementTemplates(NOW).find(({ name }) => name === 'Work Items');
+    const date = workItems?.database.properties.find(({ name }) => name === 'Date');
+    expect(date).toMatchObject({ type: 'date', id: expect.any(String) });
+    expect(workItems?.views.find(({ name }) => name === 'Calendar')).toMatchObject({
+      type: 'calendar',
+      settings: { startDatePropertyId: date?.id },
+    });
+  });
+
   it('preserves project templates, saved views and linked work items across both archive paths', async () => {
     await withApi(async (base, source) => {
       const [projects, workItems] = projectManagementTemplates(NOW);
