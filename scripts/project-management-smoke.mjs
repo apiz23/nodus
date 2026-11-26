@@ -291,10 +291,103 @@ try {
   const create = page.getByRole('dialog', { name: 'Create a dated note' });
   assert.equal(await create.getByLabel('Date', { exact: true }).inputValue(), '2028-02-29');
   await create.getByLabel('Title', { exact: true }).fill('Calendar work item');
+  const createRoute = (url) => url.origin === base && url.pathname === '/api/notes';
+  const lostResponses = [];
+  await page.route(createRoute, async (route) => {
+    if (route.request().method() !== 'POST' || route.request().postDataJSON().title !== 'Calendar work item') {
+      return route.continue();
+    }
+    const response = await route.fetch({ maxRedirects: 0, maxRetries: 0 });
+    assert.equal(response.status(), 201);
+    const { note } = await response.json();
+    assert.equal((await request(`/notes/${note.id}`)).note.id, note.id);
+    lostResponses.push(note.id);
+    await route.abort('failed');
+  });
   await create.getByRole('button', { name: 'Create note and add date' }).click();
+  await create.getByRole('alert').filter({ hasText: 'Cannot reach the local Nodus API.' }).waitFor();
+  await create.getByRole('button', { name: 'Retry note creation' }).click();
+  await create.getByRole('alert').filter({ hasText: 'Cannot reach the local Nodus API.' }).waitFor();
+  assert.equal(lostResponses.length, 2);
+  assert.equal(lostResponses[1], lostResponses[0]);
+  await page.unroute(createRoute);
+  await page.reload();
+  await databases();
+  await openDatabase('Work Items Alpha');
+  await view('Calendar');
+  await month.fill('2028-02');
+  await calendar.getByRole('button', { name: 'Create note on 2028-02-29', exact: true }).click();
+  assert.equal(await create.getByLabel('Title', { exact: true }).inputValue(), 'Calendar work item');
+  assert.equal(await create.getByLabel('Date', { exact: true }).inputValue(), '2028-02-29');
+  await create.getByRole('button', { name: 'Retry note creation' }).click();
   await day('2028-02-29').getByRole('article', { name: 'Calendar work item' }).waitFor();
   const calendarRows = (await request(`/databases/${items.id}/rows`)).rows;
-  assert.equal(calendarRows.find(({ title }) => title === 'Calendar work item').values[date.id], '2028-02-29');
+  const created = calendarRows.find(({ title }) => title === 'Calendar work item');
+  assert.equal(created.noteId, lostResponses[0]);
+  assert.equal(created.values[date.id], '2028-02-29');
+  assert.deepEqual((await request('/notes')).notes.filter(({ title }) => title === 'Calendar work item').map(({ id }) => id), lostResponses.slice(0, 1));
+  // A definitive server rejection leaves the pending title editable across reload.
+  await page.reload();
+  await databases();
+  await openDatabase('Work Items Alpha');
+  await view('Calendar');
+  await month.fill('2028-02');
+  await calendar.getByRole('button', { name: 'Create note on 2028-02-29', exact: true }).click();
+  const titleInput = create.getByLabel('Title', { exact: true });
+  assert.equal(await titleInput.inputValue(), '');
+  const longTitle = 'x'.repeat(201);
+  await titleInput.fill(longTitle);
+  const rejected = page.waitForResponse((response) =>
+    createRoute(new URL(response.url())) && response.request().method() === 'POST');
+  await create.getByRole('button', { name: 'Create note and add date' }).click();
+  assert.equal((await rejected).status(), 400);
+  await create.getByRole('alert').filter({ hasText: 'title exceeds 200 characters' }).waitFor();
+  assert.equal(await titleInput.inputValue(), longTitle);
+  assert(await titleInput.isEditable());
+  await page.reload();
+  await databases();
+  await openDatabase('Work Items Alpha');
+  await view('Calendar');
+  await month.fill('2028-02');
+  await calendar.getByRole('button', { name: 'Create note on 2028-02-29', exact: true }).click();
+  assert.equal(await titleInput.inputValue(), longTitle);
+  assert(await titleInput.isEditable());
+  await titleInput.fill('Corrected Calendar title');
+  await create.getByRole('button', { name: 'Create note and add date' }).click();
+  await day('2028-02-29').getByRole('article', { name: 'Corrected Calendar title' }).waitFor();
+  const corrected = (await request('/notes')).notes.filter(({ title }) => title === 'Corrected Calendar title');
+  assert.equal(corrected.length, 1);
+  assert.notEqual(corrected[0].id, created.noteId);
+
+  // A manual recovery made after an ambiguous POST wins over stale date intent.
+  const recoveryTitle = 'Manually dated Calendar note';
+  let manuallyDated;
+  await page.route(createRoute, async (route) => {
+    if (route.request().method() !== 'POST' || route.request().postDataJSON().title !== recoveryTitle) {
+      return route.continue();
+    }
+    const response = await route.fetch({ maxRedirects: 0, maxRetries: 0 });
+    assert.equal(response.status(), 201);
+    manuallyDated = (await response.json()).note;
+    await route.abort('failed');
+  });
+  await calendar.getByRole('button', { name: 'Create note on 2028-02-29', exact: true }).click();
+  await titleInput.fill(recoveryTitle);
+  await create.getByRole('button', { name: 'Create note and add date' }).click();
+  await create.getByRole('alert').filter({ hasText: 'Cannot reach the local Nodus API.' }).waitFor();
+  assert(!(await titleInput.isEditable()));
+  await value(manuallyDated, date.id, '2028-02-28');
+  await page.unroute(createRoute);
+  await create.getByRole('button', { name: 'Retry note creation' }).click();
+  const dateConflict = create.getByRole('alert').filter({ hasText: 'already has a different or invalid Calendar date' });
+  await dateConflict.waitFor();
+  await create.getByRole('button', { name: 'Retry date assignment' }).click();
+  await dateConflict.waitFor();
+  const recovered = (await request(`/notes/${manuallyDated.id}/properties`)).rows.find(({ databaseId }) => databaseId === items.id);
+  assert.equal(recovered.values[date.id], '2028-02-28');
+  assert.deepEqual((await request('/notes')).notes.filter(({ title }) => title === recoveryTitle).map(({ id }) => id), [manuallyDated.id]);
+  await create.getByRole('button', { name: 'Close', exact: true }).last().click();
+
   await calendar.getByRole('button', { name: 'Today', exact: true }).click();
   assert.equal(await month.inputValue(), currentMonth);
   await calendar.getByText('No events on this day.', { exact: true }).waitFor();

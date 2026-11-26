@@ -366,7 +366,15 @@ export interface UiBackupValidationResult {
   };
 }
 
+export interface UiCreateNoteResponse {
+  note: UiNote;
+  /** Present when the server found the note from an earlier creation attempt. */
+  replayed?: true;
+}
+
 export interface UiCreateNoteInput {
+  /** Vault-scoped identity for retrying an unacknowledged creation. */
+  creation?: { id: string; vaultPath: string };
   title?: string;
   /** Existing vault-relative folder; omitted uses the default notes directory. */
   folder?: string;

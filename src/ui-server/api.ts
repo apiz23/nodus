@@ -63,6 +63,7 @@ import type {
   UiHealthIssue,
   UiMoveNoteInput,
   UiNote,
+  UiCreateNoteResponse,
   UiNoteSummary,
   UiNotePropertiesResponse,
   UiGeneralNotePropertiesResponse,
@@ -695,7 +696,13 @@ export function createLocalApiMiddleware(
 
     if (method === 'POST' && path === '/api/notes') {
       const body = await readJson(req);
-      return sendJson(res, 201, await createLocalNote(await getVault(), body, clock, backlinkIndex));
+      const creation = body.creation;
+      if (creation !== undefined && !isPlainRecord(creation)) {
+        throw new ApiError(400, 'INVALID_INPUT', 'creation must contain an ID and vault path');
+      }
+      const vault = await getVault(creation === undefined ? undefined : requireString(creation.vaultPath, 'creation vault path'));
+      const creationId = creation === undefined ? undefined : requireUuid(creation.id, 'creation ID');
+      return sendJson(res, 201, await createLocalNote(vault, body, clock, backlinkIndex, creationId));
     }
 
     if (method === 'GET' && path === '/api/properties') {
@@ -1723,7 +1730,8 @@ async function createLocalNote(
   body: Record<string, unknown>,
   clock: () => string,
   backlinkIndex: BacklinkIndex,
-): Promise<{ note: UiNote }> {
+  creationId?: string,
+): Promise<UiCreateNoteResponse> {
   const title = normalizeTitle(body.title);
   const content = body.body === undefined ? '' : requireString(body.body, 'body');
   if (content.length > MAX_BODY_CHARS) {
@@ -1740,15 +1748,45 @@ async function createLocalNote(
     extraFrontmatter = applyPageIcon(extraFrontmatter, normalized.value);
   }
   const now = clock();
-  const id = randomUUID();
+  const id = creationId ?? randomUUID();
   const folder = body.folder === undefined ? 'notes' : requireString(body.folder, 'folder');
+  const creationFingerprint = creationId === undefined ? undefined :
+    sha256Hex(JSON.stringify([id, title, content, tags, extraFrontmatter, folder]));
+  const recoverCreation = async (): Promise<UiCreateNoteResponse | undefined> => {
+    if (creationFingerprint === undefined) return undefined;
+    let stored;
+    try {
+      stored = await vault.readNoteWithHash(id);
+    } catch (error) {
+      if (isStorageError(error) && error.code === 'NOT_FOUND') return undefined;
+      throw error;
+    }
+    if (stored.note.extraFrontmatter.nodus_creation !== creationFingerprint) {
+      throw new ApiError(409, 'CONFLICT', 'This creation ID already belongs to a different note or request.');
+    }
+    backlinkIndex.markDirty();
+    return { note: toUiNote(stored.note, stored.hash), replayed: true };
+  };
+  const existing = await recoverCreation();
+  if (existing !== undefined) return existing;
+
   if (folder !== '' && body.folder !== undefined && !(await vault.listFolders()).includes(folder)) {
     throw new ApiError(404, 'NOT_FOUND', `Folder "${folder}" no longer exists. Refresh the sidebar and try again.`);
   }
   const path = await uniqueNotePath(vault, slugify(title), folder);
+  if (creationFingerprint !== undefined) extraFrontmatter.nodus_creation = creationFingerprint;
 
   const note = { ...createNote({ id, title, path, body: content, now, tags }), extraFrontmatter };
-  await vault.createNote(note);
+  try {
+    await vault.createNote(note);
+  } catch (error) {
+    // The root lock prevents a second writer from persisting the same ID.
+    if (creationId !== undefined && isStorageError(error) && (error.code === 'CONFLICT' || error.code === 'DUPLICATE_ID')) {
+      const recovered = await recoverCreation();
+      if (recovered !== undefined) return recovered;
+    }
+    throw error;
+  }
   backlinkIndex.markDirty();
 
   const stored = await vault.readNoteWithHash(id);
