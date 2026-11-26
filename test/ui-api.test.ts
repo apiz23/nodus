@@ -12,7 +12,7 @@ import { createBackup } from '../src/storage/backup/backup.js';
 import { COPY_OPERATION_JOURNAL_DIR } from '../src/storage/fs/copy-operation-journal.js';
 import { FileSystemVault } from '../src/storage/fs/vault.js';
 import { createLocalApiMiddleware, type LocalApiOptions } from '../src/ui-server/api.js';
-import type { UiDatabase, UiNote, UiVaultPickResult, UiVaultStatus } from '../src/ui-server/dto.js';
+import type { UiCreateNoteResponse, UiDatabase, UiNote, UiVaultPickResult, UiVaultStatus } from '../src/ui-server/dto.js';
 import { readLastVaultPreference, writeLastVaultPreference } from '../src/ui-server/app-preferences.js';
 import { withTempDir } from './tmp.js';
 
@@ -525,6 +525,136 @@ describe('local UI API', () => {
 
         const notes = await json<{ notes: Array<{ id: string }> }>(started.base, '/api/notes');
         expect(notes.body.notes[0]?.id).toBe(N1);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('reuses the same persisted creation across concurrent retries and API restart', async () => {
+    await withTempDir(async (root) => {
+      const vaultPath = join(await realpath(root), 'vault');
+      const input = { title: 'Retryable note', creation: { id: N1, vaultPath } };
+      const post = (base: string, body = input) =>
+        json<UiCreateNoteResponse>(base, '/api/notes', { method: 'POST', body });
+      const first = await startApi(vaultPath);
+      try {
+        const attempts = await Promise.all([post(first.base), post(first.base), post(first.base)]);
+        expect(attempts.filter(({ body }) => body.replayed === true)).toHaveLength(2);
+        for (const attempt of attempts) {
+          expect(attempt.status).toBe(201);
+          expect(attempt.body.note.id).toBe(N1);
+          expect(attempt.body.note.contentHash).toBe(attempts[0]?.body.note.contentHash);
+        }
+      } finally {
+        await stopApi(first);
+      }
+      const restarted = await startApi(vaultPath);
+      try {
+        const replay = await post(restarted.base);
+        expect(replay.body.note.id).toBe(N1);
+        expect(replay.body.replayed).toBe(true);
+        expect((await post(restarted.base, { ...input, title: 'Different request' })).status).toBe(409);
+        expect((await post(restarted.base, { ...input, creation: { ...input.creation, vaultPath: root } })).status).toBe(409);
+        const ordinary = await json<{ note: UiNote }>(restarted.base, '/api/notes', {
+          method: 'POST', body: { title: input.title },
+        });
+        expect(ordinary.status).toBe(201);
+        expect(ordinary.body.note.id).not.toBe(N1);
+        expect((await post(restarted.base, { ...input, creation: { id: ordinary.body.note.id, vaultPath } })).status).toBe(409);
+        const list = await json<{ notes: UiNote[] }>(restarted.base, '/api/notes');
+        expect(list.body.notes.map(({ id }) => id).sort()).toEqual([N1, ordinary.body.note.id].sort());
+      } finally {
+        await stopApi(restarted);
+      }
+    });
+  });
+
+  it('rejects an over-limit creation title without persisting a note, then accepts the corrected draft', async () => {
+    await withTempDir(async (root) => {
+      const vaultPath = join(await realpath(root), 'vault');
+      const started = await startApi(vaultPath);
+      try {
+        const creation = { id: N1, vaultPath };
+        const rejected = await json<{ error: { code: string } }>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'x'.repeat(201), creation },
+        });
+        expect(rejected.status).toBe(400);
+        expect(rejected.body.error.code).toBe('INVALID_INPUT');
+        expect((await json(started.base, `/api/notes/${N1}`)).status).toBe(404);
+
+        const corrected = await json<UiCreateNoteResponse>(started.base, '/api/notes', {
+          method: 'POST',
+          body: { title: 'Corrected title', creation: { id: N2, vaultPath } },
+        });
+        expect(corrected.status).toBe(201);
+        expect(corrected.body.note.title).toBe('Corrected title');
+        expect(corrected.body.replayed).toBeUndefined();
+        const notes = await json<{ notes: UiNote[] }>(started.base, '/api/notes');
+        expect(notes.body.notes.map(({ title }) => title)).toEqual(['Corrected title']);
+      } finally {
+        await stopApi(started);
+      }
+    });
+  });
+
+  it('never reapplies stale creation-date intent over a newer manual date', async () => {
+    const DATE_DB = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const DATE_PROP = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const dateDatabase: DatabaseDefinition = {
+      id: DATE_DB,
+      name: 'Calendar',
+      properties: [{ id: DATE_PROP, name: 'Date', type: 'date' }],
+    };
+    await withTempDir(async (root) => {
+      const vaultPath = join(await realpath(root), 'vault');
+      const vault = await FileSystemVault.open(vaultPath);
+      await vault.createDatabase(dateDatabase);
+      const started = await startApi(vaultPath);
+      const input = { title: 'Replay date', creation: { id: N1, vaultPath } };
+      const create = () => json<UiCreateNoteResponse>(started.base, '/api/notes', { method: 'POST', body: input });
+      const setDate = (value: string, baseHash: string) => json<{
+        contentHash: string;
+        rows: Array<{ values: Record<string, unknown> }>;
+      }>(started.base, `/api/notes/${N1}/properties`, {
+        method: 'PUT',
+        body: { databaseId: DATE_DB, propertyId: DATE_PROP, value, baseHash, confirmCreate: true },
+      });
+      const date = async () => {
+        const projection = await json<{ rows: Array<{ databaseId: string; values: Record<string, unknown> }> }>(
+          started.base,
+          `/api/notes/${N1}/properties`,
+        );
+        return projection.body.rows.find(({ databaseId }) => databaseId === DATE_DB)?.values[DATE_PROP];
+      };
+      try {
+        const created = await create();
+        expect(created.status).toBe(201);
+        const creationHash = created.body.note.contentHash;
+        const dateA = await setDate('2028-02-29', creationHash);
+        expect(dateA.status).toBe(200);
+
+        const replayA = await create();
+        expect(replayA.status).toBe(201);
+        expect(replayA.body.note.id).toBe(N1);
+        expect(replayA.body.replayed).toBe(true);
+        expect(await date()).toBe('2028-02-29');
+
+        const dateB = await setDate('2028-03-01', dateA.body.contentHash);
+        expect(dateB.status).toBe(200);
+        const replayB = await create();
+        expect(replayB.status).toBe(201);
+        expect(replayB.body.note.id).toBe(N1);
+        expect(replayB.body.replayed).toBe(true);
+        expect(await date()).toBe('2028-03-01');
+
+        const stale = await setDate('2028-02-29', creationHash);
+        expect(stale.status).toBe(409);
+        expect((stale.body as unknown as { error: { code: string } }).error.code).toBe('STALE_WRITE');
+        expect(await date()).toBe('2028-03-01');
+        const notes = await json<{ notes: UiNote[] }>(started.base, '/api/notes');
+        expect(notes.body.notes.filter(({ title }) => title === 'Replay date').map(({ id }) => id)).toEqual([N1]);
       } finally {
         await stopApi(started);
       }

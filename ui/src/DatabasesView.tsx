@@ -85,6 +85,7 @@ import {
   resetColumnOrder,
   visibleColumnIds,
 } from './database-column-order';
+import { decideRecoveredDateAction, isDefinitiveCreationRejection } from './calendarCreation';
 import { ColumnResizeHandle } from './database/ColumnResizeHandle';
 import { FormulaEditor } from './database/FormulaEditor';
 import { analyzeFormulaDraft, inferFormulaTypes } from './database/formula-editor-model';
@@ -596,7 +597,7 @@ export function DatabasesView({
   const [savedPresentation, setSavedPresentation] = useState<DatabaseView | null>(null);
   const [viewsLoading, setViewsLoading] = useState(true);
   const [viewSaving, setViewSaving] = useState(false);
-  const [newDatedEntry, setNewDatedEntry] = useState<{ date: string; title: string; noteId?: string; baseHash?: string } | null>(null);
+  const [newDatedEntry, setNewDatedEntry] = useState<{ date: string; title: string; creationId?: string; noteId?: string; baseHash?: string } | null>(null);
   const mutationGeneration = useRef(0);
   const schemaGeneration = useRef(0);
   const schemaTriggerRef = useRef<HTMLElement | null>(null);
@@ -1311,6 +1312,35 @@ export function DatabasesView({
     }
   }
 
+  function datedCreationKey(databaseId: string, propertyId: string): string {
+    return `nodus.calendar.creation:${JSON.stringify([vaultKey, databaseId, propertyId])}`;
+  }
+
+  function openDatedCreation(date: string): void {
+    if (selected === null || layoutProperty?.type !== 'date') return;
+    setActionError(null);
+    datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    try {
+      const saved = sessionStorage.getItem(datedCreationKey(selected.id, layoutProperty.id));
+      if (saved !== null) {
+        const pending: unknown = JSON.parse(saved);
+        if (pending === null || typeof pending !== 'object' ||
+            !('date' in pending) || typeof pending.date !== 'string' || !isDateOnly(pending.date) ||
+            !('title' in pending) || typeof pending.title !== 'string' ||
+            ('creationId' in pending && typeof pending.creationId !== 'string')) {
+          throw new Error('Calendar creation draft is invalid.');
+        }
+        const creationId = 'creationId' in pending && typeof pending.creationId === 'string' ? pending.creationId : undefined;
+        setNewDatedEntry({ date: pending.date, title: pending.title, creationId });
+        return;
+      }
+    } catch {
+      setActionError('Could not read the pending Calendar creation. Note creation is unavailable in this tab.');
+      return;
+    }
+    setNewDatedEntry({ date, title: '' });
+  }
+
   async function createDatedNote(): Promise<void> {
     if (selected === null || newDatedEntry === null || layoutProperty?.type !== 'date' || currentRowData === null || saving || viewIssues.length) return;
     const generation = mutationGeneration.current;
@@ -1319,21 +1349,58 @@ export function DatabasesView({
     if (!isDateOnly(draft.date)) { setActionError('Choose a valid calendar date before creating the note.'); return; }
     setSaving(true); setActionError(null); setActionNotice(null);
     try {
+      let reconcile = draft.noteId !== undefined;
+      let noteTitle = draft.title.trim() || 'Untitled note';
       if (!draft.noteId) {
-        const result = await api.createNote({ title: draft.title.trim() || 'Untitled note' });
-        draft.noteId = result.note.id; draft.baseHash = result.note.contentHash;
-        if (!mounted.current) return;
+        const key = datedCreationKey(selected.id, layoutProperty.id);
+        const creationId = draft.creationId ?? crypto.randomUUID();
+        const pending = { date: draft.date, title: draft.title };
+        try {
+          sessionStorage.setItem(key, JSON.stringify({ ...pending, creationId }));
+        } catch {
+          throw new Error('Could not save the Calendar retry draft. No creation request was sent.');
+        }
+        setNewDatedEntry({ ...pending, creationId });
+        let result;
+        try {
+          result = await api.createNote({ title: noteTitle, creation: { id: creationId, vaultPath: vaultKey } });
+        } catch (error) {
+          if (isDefinitiveCreationRejection(error)) {
+            // The server rejected the request without creating a note. Keep the
+            // user's text, but drop the creation lock so it can be corrected.
+            try { sessionStorage.setItem(key, JSON.stringify(pending)); } catch { /* the in-memory draft is still editable */ }
+            if (isCurrent()) setNewDatedEntry(pending);
+          }
+          throw error;
+        }
+        sessionStorage.removeItem(key);
+        draft.creationId = creationId;
+        draft.noteId = result.note.id;
+        draft.baseHash = result.note.contentHash;
+        noteTitle = result.note.title;
+        reconcile = result.replayed === true;
+        if (!mounted.current || !isCurrent()) return;
         onNoteCreated?.(result.note);
-        if (isCurrent()) setNewDatedEntry(draft);
+        setNewDatedEntry(draft);
       }
-      const result = await api.setNoteProperty(draft.noteId, {
+      const current = reconcile ? await api.noteProperties(draft.noteId) : undefined;
+      if (!isCurrent()) return;
+      const currentDate = current?.rows.find((row) => row.databaseId === selected.id)?.values[layoutProperty.id];
+      const hasDateIssue = current?.issues.some((issue) =>
+        (issue.databaseId === undefined || issue.databaseId === selected.id) &&
+        (issue.propertyId === undefined || issue.propertyId === layoutProperty.id)) ?? false;
+      const dateAction = decideRecoveredDateAction(currentDate, hasDateIssue, draft.date);
+      if (dateAction === 'conflict') {
+        throw new Error('The note already has a different or invalid Calendar date. Open the note to review it.');
+      }
+      const result = dateAction === 'keep-current-date' && current !== undefined ? current : await api.setNoteProperty(draft.noteId, {
         databaseId: selected.id, propertyId: layoutProperty.id, value: draft.date,
         baseHash: draft.baseHash ?? '', confirmCreate: true,
       });
       if (!isCurrent()) return;
       const projected = result.rows.find((row) => row.databaseId === selected.id);
       if (projected) setRowData((previous) => previous?.databaseId === selected.id && previous.schemaHash === currentRowData.schemaHash ? {
-        ...previous, rows: [...previous.rows.filter((row) => row.noteId !== draft.noteId), { ...projected, title: draft.title.trim() || 'Untitled note', updatedAt: '', contentHash: result.contentHash, issues: result.issues }],
+        ...previous, rows: [...previous.rows.filter((row) => row.noteId !== draft.noteId), { ...projected, title: noteTitle, updatedAt: '', contentHash: result.contentHash, issues: result.issues }],
       } : previous);
       setNewDatedEntry(null); setActionNotice('Dated note created.');
     } catch (cause) {
@@ -1851,7 +1918,7 @@ export function DatabasesView({
                     if (!task) throw new Error('Task changed or was removed. Refresh the Calendar.');
                     await api.scheduleTask(task.noteId, { taskId: task.id, scheduledDate: date, baseHash: task.noteContentHash });
                     setTasksReloadVersion((value) => value + 1);
-                  }} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null || rowsLoading} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={(date) => { datedTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setNewDatedEntry({ date, title: '' }); }} />
+                  }} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null || rowsLoading} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} onCreate={openDatedCreation} />
                 ) : viewConfiguration.type === 'gallery' ? (
                   <GalleryView rows={displayRows} visibleProperties={visibleProperties} disabled={saving || stale || editing !== null} onOpen={openLayoutNote} onEdit={(row, property) => beginEditing(row.noteId, property, row.values[property.id])} formatValue={formatPropertyValue} renderValue={(row, property) => property.type === 'relation' ? renderRelatedValue(row, property) : property.type === 'formula' ? <FormulaValueDisplay row={row} property={property} /> : formatRowPropertyValue(row, property)} />
                 ) : displayRows.length > 0 || visibleProperties.length > 0 ? (
@@ -1967,12 +2034,12 @@ export function DatabasesView({
 
                 {rowsLoading && currentRowData !== null ? <p className="mx-1 mb-3 text-xs text-muted-foreground" role="status">Refreshing rows…</p> : null}
                 <Dialog open={newDatedEntry !== null} onOpenChange={(open) => { if (!open && !saving) setNewDatedEntry(null); }}><DialogContent showCloseButton={!saving} onCloseAutoFocus={(event) => { event.preventDefault(); if (datedTriggerRef.current?.isConnected) datedTriggerRef.current.focus(); }} onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }} onPointerDownOutside={(event) => { if (saving) event.preventDefault(); }}>
-                  <DialogHeader><DialogTitle>Create a dated note</DialogTitle><DialogDescription>This creates a Markdown note and explicitly adds it to this database with a date. A failed date write keeps the new note for inspection.</DialogDescription></DialogHeader>
-                  <label className="flex flex-col gap-1 text-xs">Title<Input value={newDatedEntry?.title ?? ''} disabled={saving || !!newDatedEntry?.noteId} onChange={(event) => { const title = event.currentTarget.value; setNewDatedEntry((previous) => previous === null ? null : { ...previous, title }); }} /></label>
-                  <label className="flex flex-col gap-1 text-xs">Date<Input type="date" value={newDatedEntry?.date ?? ''} disabled={saving || !!newDatedEntry?.noteId} onChange={(event) => { const date = event.currentTarget.value; setNewDatedEntry((previous) => previous === null ? null : { ...previous, date }); }} /></label>
+                  <DialogHeader><DialogTitle>Create a dated note</DialogTitle><DialogDescription>This creates a Markdown note and explicitly adds it to this database with a date. A failed date write keeps the new note for inspection. If creation was interrupted, reopening a date in this Calendar resumes the pending note.</DialogDescription></DialogHeader>
+                  <label className="flex flex-col gap-1 text-xs">Title<Input value={newDatedEntry?.title ?? ''} disabled={saving || !!newDatedEntry?.creationId} onChange={(event) => { const title = event.currentTarget.value; setNewDatedEntry((previous) => previous === null ? null : { ...previous, title }); }} /></label>
+                  <label className="flex flex-col gap-1 text-xs">Date<Input type="date" value={newDatedEntry?.date ?? ''} disabled={saving || !!newDatedEntry?.creationId} onChange={(event) => { const date = event.currentTarget.value; setNewDatedEntry((previous) => previous === null ? null : { ...previous, date }); }} /></label>
                   {actionError ? <p role="alert" className="text-xs text-destructive">{actionError}</p> : null}
                   {newDatedEntry?.noteId ? <Button variant="link" onClick={() => onOpenNote(newDatedEntry.noteId!)}>Open created note</Button> : null}
-                  <DialogFooter><Button variant="outline" disabled={saving} onClick={() => setNewDatedEntry(null)}>Close</Button><Button disabled={saving || stale || !newDatedEntry?.date} onClick={() => void createDatedNote()}>{saving ? 'Creating…' : newDatedEntry?.noteId ? 'Retry date assignment' : 'Create note and add date'}</Button></DialogFooter>
+                  <DialogFooter><Button variant="outline" disabled={saving} onClick={() => setNewDatedEntry(null)}>Close</Button><Button disabled={saving || stale || !newDatedEntry?.date} onClick={() => void createDatedNote()}>{saving ? 'Creating…' : newDatedEntry?.noteId ? 'Retry date assignment' : newDatedEntry?.creationId ? 'Retry note creation' : 'Create note and add date'}</Button></DialogFooter>
                 </DialogContent></Dialog>
               </article>
             </div>

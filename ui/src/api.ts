@@ -23,6 +23,7 @@ import type {
   UiBackupValidationResult,
   UiCreateBackupInput,
   UiCreateNoteInput,
+  UiCreateNoteResponse,
   UiDatabase,
   UiDatabaseAutomationsResponse,
   UiDatabaseDefinition,
@@ -365,8 +366,8 @@ export const api = {
     return request<UiRelationBacklinksResponse>(`/api/notes/${encodeURIComponent(id)}/relation-backlinks${refresh ? '?refresh=true' : ''}`);
   },
 
-  createNote(input: UiCreateNoteInput): Promise<{ note: UiNote }> {
-    return request<{ note: UiNote }>('/api/notes', {
+  createNote(input: UiCreateNoteInput): Promise<UiCreateNoteResponse> {
+    return request<UiCreateNoteResponse>('/api/notes', {
       method: 'POST',
       body: jsonBody(input),
     });
