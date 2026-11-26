@@ -9,6 +9,7 @@ const typeId = id(3);
 const statusId = id(4);
 const priorityId = id(5);
 const bugId = id(7);
+const dateId = id(20);
 
 const properties: Property[] = [
   { id: typeId, name: 'Type', type: 'select', options: [{ id: id(6), name: 'Task' }, { id: bugId, name: 'Bug' }] },
@@ -18,6 +19,7 @@ const properties: Property[] = [
   { id: priorityId, name: 'Priority', type: 'select', options: [
     { id: id(11), name: 'Low' }, { id: id(12), name: 'Normal' }, { id: id(13), name: 'High' },
   ] },
+  { id: dateId, name: 'Date', type: 'date' },
 ];
 
 const workItemView = {
@@ -42,6 +44,7 @@ export function projectManagementTemplates(now: string): DatabaseTemplate[] {
       views: [
         { ...workItemView, id: id(16), name: 'All Work Items', type: 'table', settings: {}, filters: [] },
         { ...workItemView, id: id(17), name: 'Status board', type: 'kanban', settings: { groupPropertyId: statusId }, filters: [] },
+        { ...workItemView, id: id(21), name: 'Calendar', type: 'calendar', settings: { startDatePropertyId: dateId }, filters: [] },
         { ...workItemView, id: id(18), name: 'Bugs', type: 'table', settings: {},
           filters: [{ id: id(19), propertyId: typeId, operator: 'is', value: bugId }] },
       ],

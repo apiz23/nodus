@@ -191,8 +191,8 @@ export function CalendarView(props: LayoutProps & { endProperty?: Property; even
       <Button size="sm" variant="ghost" onClick={() => { setMonth(today.slice(0, 7)); setSelectedDate(today); }}>Today</Button>
       {mode === 'month' || mode === 'timeline' ? <label className="flex min-w-0 items-center gap-2 text-xs">Month<Input type="month" className="w-40 max-w-full" value={month} onChange={(event) => { const value = event.currentTarget.value; if (monthDays(value).length) { setMonth(value); setSelectedDate(`${value}-01`); } }} /></label> : null}
     </div>
-    {mode === 'month' || mode === 'week' ? <div className="rounded-md border">
-      <Table className="w-full table-fixed text-xs" aria-label={monthLabel}>
+    {mode === 'month' || mode === 'week' ? <div role="region" aria-label="Calendar dates" tabIndex={0} className="min-w-0 overflow-x-auto rounded-md border [&>[data-slot=table-container]]:overflow-visible">
+      <Table className="w-full min-w-[42rem] table-fixed text-xs" aria-label={monthLabel}>
         <TableHeader><TableRow>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <TableHead key={day} scope="col" className="p-2 font-medium whitespace-normal text-muted-foreground">{day}</TableHead>)}</TableRow></TableHeader>
         <TableBody>{Array.from({ length: days.length / 7 }, (_, week) => <TableRow key={week}>{days.slice(week * 7, week * 7 + 7).map((date, index) => <TableCell key={date ?? `blank-${index}`} className="border-t border-r p-1 align-top whitespace-normal last:border-r-0">
           {date === null ? <div className="min-h-28" aria-hidden="true" /> : <div className="flex min-h-28 flex-col gap-1">
