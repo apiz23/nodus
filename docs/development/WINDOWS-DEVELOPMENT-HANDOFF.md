@@ -8,7 +8,7 @@ Continuation notes for picking up the responsive editor redesign on a Windows ma
 |---|---|
 | Feature branch | `feat/responsive-editor-redesign` |
 | Base commit | `3aa063a28fb69cc2c490cda31c1bb565d8b9ff2d` ("Markdown composition: shared view data, saved layouts, large datasets (#38)") |
-| Branch tip at handoff | `e79b0ae` (this handoff commit); feature tip before it is `f481096dc16ccbd78c0361c62eac8884c04e8618` |
+| Branch tip at handoff | the handoff commit that contains this file; the feature commit before it is `f481096dc16ccbd78c0361c62eac8884c04e8618` |
 
 Feature commits (oldest first):
 
@@ -17,7 +17,6 @@ Feature commits (oldest first):
 | `df22600` | `docs: rewrite README as a workspace guide and fix the New note shortcut hint` |
 | `822ea1d` | `feat(ui): report vault storage health from the Settings action` |
 | `f481096` | `feat(editor): responsive editor and preview layout with compact tabs` |
-| `e79b0ae` | `docs: add Windows development handoff for the responsive editor branch` |
 
 ## 2. Implementation status
 
