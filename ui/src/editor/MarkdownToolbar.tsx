@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
-import { Bold, Code, Italic, List, ListOrdered, Pilcrow, Quote, Strikethrough, Type } from 'lucide-react';
+import { Bold, Code, Database, Italic, List, ListOrdered, Pilcrow, Quote, Strikethrough, Type } from 'lucide-react';
 import type { StateCommand } from '@codemirror/state';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
-import { insertCodeBlock, insertMarkdownLink, toggleBlockquote, toggleBold, toggleHeading, toggleInlineCode, toggleItalic, toggleList, toggleStrikethrough } from './markdownCommands';
+import { insertCodeBlock, insertMarkdownLink, insertNodusViewBlock, toggleBlockquote, toggleBold, toggleHeading, toggleInlineCode, toggleItalic, toggleList, toggleStrikethrough } from './markdownCommands';
+import { EmbedViewDialog } from './EmbedViewDialog';
 
 const inlineActions = [
   { label: 'Bold', icon: Bold, command: toggleBold },
@@ -20,6 +21,7 @@ const inlineActions = [
 
 export function MarkdownToolbar({ onCommand, onFocus }: { onCommand: (command: StateCommand) => boolean; onFocus: () => void }) {
   const [open, setOpen] = useState(false);
+  const [embedOpen, setEmbedOpen] = useState(false);
   const [language, setLanguage] = useState('');
   const [destination, setDestination] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -70,6 +72,19 @@ export function MarkdownToolbar({ onCommand, onFocus }: { onCommand: (command: S
           {feedback && <p role="status" className="text-xs text-muted-foreground">{feedback}</p>}
         </PopoverContent>
       </Popover>
+      <Button type="button" variant="ghost" size="xs" className="ml-1 gap-1" aria-label="Embed a database view" onClick={() => setEmbedOpen(true)}>
+        <Database className="size-3.5" aria-hidden="true" />
+        Embed view
+      </Button>
+      <EmbedViewDialog
+        open={embedOpen}
+        onOpenChange={setEmbedOpen}
+        onInsert={(directive) => {
+          const inserted = onCommand(insertNodusViewBlock(directive));
+          if (inserted) onFocus();
+          return inserted;
+        }}
+      />
     </div>
   );
 }

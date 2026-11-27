@@ -5,6 +5,8 @@ import { Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { parseWikiLinks, createLinkResolver, type LinkableNote } from '../../../src/links/wikilink.js';
 import { headingText, uniqueHeadingId } from './documentOutline.js';
+import { NODUS_VIEW_FENCE_LANGUAGE, parseNodusViewDirective } from '../embeds/nodusView';
+import { NodusViewEmbed, NodusViewEmbedError } from '../embeds/EmbeddedDatabaseView';
 
 const IMAGE_TYPES = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 
@@ -127,10 +129,12 @@ interface MarkdownPreviewProps {
   notes: readonly LinkableNote[];
   onOpenNote: (id: string) => void;
   onActiveHeadingChange?: (id: string | null) => void;
+  /** Active vault identity; scopes the shared embedded-view cache. */
+  vaultIdentity?: string;
 }
 
 /** Read-only, escaped Markdown view. The original Markdown remains the only saved representation. */
-export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHeadingChange }: MarkdownPreviewProps) {
+export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHeadingChange, vaultIdentity }: MarkdownPreviewProps) {
   const [document, setDocument] = useState<{ path: string; name: string; notePath: string } | null>(null);
   const articleRef = useRef<HTMLElement>(null);
   const rendered = useMemo(() => {
@@ -292,7 +296,14 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHe
         const code = kids.find((child) => child.name === 'CodeText');
         const info = kids.find((child) => child.name === 'CodeInfo');
         const language = info ? value.slice(info.from, info.to).trim().split(/\s+/, 1)[0] ?? '' : '';
-        return <FencedCode key={key} code={code ? value.slice(code.from, code.to) : ''} language={language} />;
+        const source = code ? value.slice(code.from, code.to) : '';
+        if (language === NODUS_VIEW_FENCE_LANGUAGE) {
+          const parsed = parseNodusViewDirective(source);
+          return parsed.ok
+            ? <NodusViewEmbed key={key} spec={parsed.spec} onOpenNote={onOpenNote} vaultIdentity={vaultIdentity} />
+            : <NodusViewEmbedError key={key} message={parsed.message} source={source} />;
+        }
+        return <FencedCode key={key} code={source} language={language} />;
       }
       if (name === 'Table') {
         const header = kids.find((child) => child.name === 'TableHeader');

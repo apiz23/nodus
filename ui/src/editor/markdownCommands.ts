@@ -361,6 +361,31 @@ function formattingKey(key: string, command: StateCommand): KeyBinding {
   }, preventDefault: true };
 }
 
+/** Insert a fenced `nodus-view` directive at the selection. */
+export function insertNodusViewBlock(directive: string): StateCommand {
+  return (target) => {
+    const body = directive.trim();
+    if (body === '' || body.includes('```')) return false;
+    return applyRanges(target, (range) => {
+      const { state } = target;
+      // A fence cannot live inside literal Markdown or a table cell. Refuse
+      // instead of producing nested fences; existing content stays untouched.
+      const literal = ancestor(state, range.from, ['FencedCode', 'CodeBlock', 'InlineCode', 'Table']);
+      if (literal !== null && range.from > literal.from && range.from < literal.to) return { range };
+      const line = state.doc.lineAt(range.from);
+      // Block inserts go after the current line so prose is never split.
+      // At a fence boundary that would land inside the literal block, so fall
+      // back to the line start instead.
+      let insertAt = line.text.trim() === '' ? line.from : line.to;
+      const atInsert = ancestor(state, Math.min(insertAt, state.doc.length), ['FencedCode', 'CodeBlock', 'InlineCode', 'Table']);
+      if (atInsert !== null && insertAt > atInsert.from && insertAt < atInsert.to) insertAt = line.from;
+      const lead = insertAt === line.from ? '' : '\n\n';
+      const text = `${lead}\`\`\`nodus-view\n${body}\n\`\`\`\n\n`;
+      return { changes: { from: insertAt, insert: text }, range: EditorSelection.cursor(insertAt + text.length) };
+    });
+  };
+}
+
 export const markdownEditingKeymap: readonly KeyBinding[] = [
   { key: 'Enter', run: markdownEnter },
   { key: 'Backspace', run: deleteMarkupBackward },

@@ -1,4 +1,5 @@
 import { hasBlockingRowIssues } from './database-table';
+import { formatPropertyValue } from './property-value-format';
 import { RelationControl, RelationValue } from './RelationControl';
 import { RelationSchemaFields } from './RelationSchemaFields';
 import { isDerivedProperty } from '../../src/database/schema';
@@ -274,22 +275,7 @@ function valueForInput(property: Property, value: unknown): unknown {
   return value === undefined ? initialValue(property) : value;
 }
 
-export function formatPropertyValue(property: Property, value: unknown): string {
-  if (value === undefined || value === null) return '—';
-  if (property.type === 'rollup' && property.rollup?.operation === 'completion-percentage') return `${Number(value).toFixed(1)}%`;
-  if (property.type === 'checkbox') return value === true ? 'Yes' : 'No';
-  if(property.type==='formula'&&property.formula?.resultType==='boolean')return value===true?'Yes':value===false?'No':String(value);
-  if (property.type === 'select') {
-    return property.options?.find((option) => option.id === value)?.name ?? String(value);
-  }
-  if (property.type === 'multi-select' && Array.isArray(value)) {
-    return value
-      .map((id) => property.options?.find((option) => option.id === id)?.name ?? String(id))
-      .join(', ') || '—';
-  }
-  if(property.type==='formula'&&typeof value==='object')return 'Formula error';
-  return String(value);
-}
+export { formatPropertyValue };
 function formatRowPropertyValue(row:UiDatabaseRow,property:Property):string{if(property.type==='formula'&&row.issues.some(issue=>issue.propertyId===property.id&&issue.code==='FORMULA_ERROR'))return 'Formula error';if(property.type==='formula'&&(row.values[property.id]===undefined||row.values[property.id]===null))return 'No value';return formatPropertyValue(property,row.values[property.id]);}
 
 export function FormulaValueDisplay({ row, property }: { row: UiDatabaseRow; property: Property }) {
