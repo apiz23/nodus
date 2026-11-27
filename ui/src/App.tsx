@@ -148,7 +148,6 @@ export default function App() {
   const [tagMutationBusy, setTagMutationBusy] = useState(false);
   const [propertyMutationBusy, setPropertyMutationBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
   const [pickingVault, setPickingVault] = useState(false);
   const [openingVault, setOpeningVault] = useState(false);
   const [vaultPathDraft, setVaultPathDraft] = useState('');
@@ -954,7 +953,6 @@ export default function App() {
     const request = ++noteRequestRef.current;
     draftRevisionRef.current += 1;
     createInFlightRef.current = true;
-    setCreating(true);
     setNotesError(null);
     try {
       const { note } = await api.createNote({ title: 'Untitled note', ...(folder === undefined ? {} : { folder }) });
@@ -982,7 +980,6 @@ export default function App() {
       setNotesError(messageOf(error));
     } finally {
       createInFlightRef.current = false;
-      setCreating(false);
     }
   }
 
@@ -1847,7 +1844,6 @@ export default function App() {
           onInspectFolder={inspectFolder}
           onDeleteFolder={deleteFolder}
           onFolderMutation={onFolderMutation}
-          creating={creating}
           status={status}
           theme={theme}
           onToggleTheme={toggleTheme}

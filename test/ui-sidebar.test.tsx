@@ -53,7 +53,8 @@ function renderSidebar(
     searchError = null,
     sectionOrder = DEFAULT_WORKSPACE_PREFERENCES.sidebar.order,
     hiddenSections = [],
-  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; folderNavigation?: { path: string | null; sequence: number }; searchError?: string | null; sectionOrder?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; hiddenSections?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][] } = {},
+    vaultStatus = status,
+  }: { notes?: UiNoteSummary[]; folders?: string[]; selectedId?: string | null; collapsed?: boolean; open?: boolean; folderError?: string | null; folderNavigation?: { path: string | null; sequence: number }; searchError?: string | null; sectionOrder?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; hiddenSections?: readonly (typeof DEFAULT_WORKSPACE_PREFERENCES.sidebar.order)[number][]; vaultStatus?: UiVaultStatus | null } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(
@@ -72,8 +73,7 @@ function renderSidebar(
         onInspectFolder: async (path) => ({ path, folders: 0, notes: 0, files: 0, token: 'a'.repeat(64), noteIds: [] }),
         onDeleteFolder: async () => [],
         onFolderMutation: () => {},
-        creating: false,
-        status,
+        status: vaultStatus,
         theme: 'light',
         onToggleTheme: () => {},
         sidebarSectionOrder: sectionOrder,
@@ -250,11 +250,42 @@ describe('Sidebar note tree visibility across main sections', () => {
     expect(markup).toContain('aria-label="Collapse sidebar"');
   });
 
-  it('keeps settings and storage health in the compact footer', () => {
-    const markup = renderSidebar('settings', { collapsed: true });
-    expect(markup).toContain('aria-label="Settings"');
-    expect(markup).toContain('Storage health: 0 issues');
+  it('keeps the Settings action name stable and describes storage health', () => {
+    const markup = renderSidebar('settings');
+    const button = markup.match(/<button[^>]*aria-label="Settings"[^>]*>/);
+    expect(button).not.toBeNull();
+    expect(markup).not.toContain('aria-label="Settings.');
+    const describedById = button?.[0].match(/aria-describedby="([^"]+)"/)?.[1];
+    expect(describedById).toBeTruthy();
+    expect(markup).toContain(`<span id="${describedById}" class="sr-only">Storage health: 0 issues.</span>`);
+    expect(markup).toMatch(/>Settings<span class="[^"]*ml-auto[^"]*bg-success/);
+    expect(markup).not.toContain('Storage healthy');
+    expect(markup).not.toContain('aria-label="Storage health:');
+    expect(markup).not.toContain('>New page</button>');
     expect(markup).not.toContain('Not connected');
+
+    const compactMarkup = renderSidebar('settings', { collapsed: true });
+    expect(compactMarkup).toContain('aria-label="Settings"');
+    expect(compactMarkup).toContain('Storage health: 0 issues.');
+    expect(compactMarkup).toContain('rounded-full bg-success');
+  });
+
+  it('reports outstanding storage issues through the Settings description', () => {
+    const markup = renderSidebar('settings', {
+      vaultStatus: { ...status, counts: { ...status.counts, issues: 1 } },
+    });
+    expect(markup).toContain('aria-label="Settings"');
+    expect(markup).toContain('Storage health: 1 issue.');
+    expect(markup).not.toContain('Storage health: 1 issues.');
+    expect(markup).toMatch(/size-1\.5 shrink-0 rounded-full ml-auto bg-destructive/);
+  });
+
+  it('reports unavailable storage health without inventing a status', () => {
+    const markup = renderSidebar('settings', { vaultStatus: null });
+    expect(markup).toContain('aria-label="Settings"');
+    expect(markup).toContain('Storage health unavailable.');
+    expect(markup).toMatch(/size-1\.5 shrink-0 rounded-full ml-auto bg-muted-foreground\/40/);
+    expect(markup).not.toMatch(/size-1\.5[^"]*bg-(success|destructive)/);
   });
 });
 

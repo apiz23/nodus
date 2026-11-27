@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 import {
   Activity,
   Sparkles,
@@ -13,7 +13,6 @@ import {
   ListTodo,
   Moon,
   Network,
-  Plus,
   Search,
   Settings,
   CopyPlus,
@@ -98,7 +97,6 @@ interface SidebarProps {
   onInspectFolder: (path: string) => Promise<UiFolderImpact>;
   onDeleteFolder: (path: string, token: string) => Promise<string[] | false>;
   onFolderMutation: () => void;
-  creating: boolean;
   status: UiVaultStatus | null;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
@@ -166,7 +164,6 @@ export function Sidebar({
   onInspectFolder,
   onDeleteFolder,
   onFolderMutation,
-  creating,
   status,
   theme,
   onToggleTheme,
@@ -215,6 +212,10 @@ export function Sidebar({
   openSearchPanelRef.current = openSearchPanel;
   let queryConstraints: ReturnType<typeof parseSearchQuery>['constraints'] = [];
   try { queryConstraints = parseSearchQuery(query).constraints; } catch { /* The API reports the syntax error beside results. */ }
+  const storageHealthLabel = status === null
+    ? 'Storage health unavailable'
+    : `Storage health: ${status.counts.issues} ${status.counts.issues === 1 ? 'issue' : 'issues'}`;
+  const storageHealthDescriptionId = useId();
 
   useEffect(() => {
     if (!open) return undefined;
@@ -417,18 +418,6 @@ export function Sidebar({
           variant="ghost"
           size="sm"
           className={cn('h-7 w-full justify-start gap-1.5 px-2 text-[13px] font-normal text-muted-foreground hover:text-foreground', compact && 'md:justify-center md:px-0')}
-          onClick={onCreate}
-          disabled={creating || navigationLocked}
-          aria-label={compact ? 'New page' : undefined}
-        >
-          <Plus data-icon={compact ? undefined : 'inline-start'} className="size-4" />
-          {compact ? null : creating ? 'Creating…' : 'New page'}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className={cn('h-7 w-full justify-start gap-1.5 px-2 text-[13px] font-normal text-muted-foreground hover:text-foreground', compact && 'md:justify-center md:px-0')}
           onClick={() => onView('templates')}
           disabled={navigationLocked}
           aria-label="Create from template"
@@ -520,31 +509,23 @@ export function Sidebar({
               view === 'settings' && 'bg-success/12 font-medium text-foreground hover:bg-success/15',
             )}
             aria-current={view === 'settings' ? 'page' : undefined}
-            aria-label={compact ? 'Settings' : undefined}
-            title={compact ? 'Settings' : undefined}
+            aria-label="Settings"
+            aria-describedby={storageHealthDescriptionId}
+            title={compact ? `Settings. ${storageHealthLabel}.` : undefined}
             disabled={navigationLocked}
             onClick={() => { onView('settings'); onClose(); }}
           >
             <Settings data-icon={compact ? undefined : 'inline-start'} className={cn('size-4', view === 'settings' ? 'text-success' : 'text-muted-foreground')} />
             {compact ? null : 'Settings'}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size={compact ? 'icon' : 'sm'}
-            className={cn('h-7 w-full justify-start gap-1.5 px-1.5 text-[11px] font-normal text-muted-foreground hover:text-foreground', compact && 'md:size-9 md:justify-center md:px-0')}
-            aria-label={`Storage health: ${status?.counts.issues ?? 0} ${status?.counts.issues === 1 ? 'issue' : 'issues'}. Open settings.`}
-            title={compact ? `Storage health: ${status?.counts.issues ?? 0} ${status?.counts.issues === 1 ? 'issue' : 'issues'}` : undefined}
-            onClick={() => { onView('settings'); onClose(); }}
-          >
             <span
               className={cn(
-                'size-1.5 rounded-full',
+                'size-1.5 shrink-0 rounded-full',
+                !compact && 'ml-auto',
                 status === null ? 'bg-muted-foreground/40' : status.counts.issues > 0 ? 'bg-destructive' : 'bg-success',
               )}
               aria-hidden="true"
             />
-            {compact ? null : <span className="truncate">{status?.counts.issues ? `${status.counts.issues} storage ${status.counts.issues === 1 ? 'issue' : 'issues'}` : 'Storage healthy'}</span>}
+            <span id={storageHealthDescriptionId} className="sr-only">{storageHealthLabel}.</span>
           </Button>
         </div>
 

@@ -8,7 +8,7 @@ interface GettingStartedGuideProps {
 }
 
 const steps: { icon: typeof FileText; title: string; detail: string; view: View; action: string; focusSearch?: boolean }[] = [
-  { icon: FileText, title: 'Create and organize notes', detail: 'Start with New page in the sidebar. Create folders there to group related notes.', view: 'notes', action: 'Go to notes' },
+  { icon: FileText, title: 'Create and organize notes', detail: 'Create a page from the page tree or a note inside a folder. Create folders there to group related notes.', view: 'notes', action: 'Go to notes' },
   { icon: Search, title: 'Find a note', detail: 'Use Search pages in the sidebar to find notes by title, path, or content.', view: 'notes', action: 'Go to search', focusSearch: true },
   { icon: Waypoints, title: 'Connect ideas', detail: 'Type [[ in a note to link another note. Discovery shows backlinks and linked mentions.', view: 'discovery', action: 'Open Discovery' },
   { icon: Network, title: 'Explore the knowledge graph', detail: 'See how notes connect, then open a note directly from the graph.', view: 'graph', action: 'Open graph' },
