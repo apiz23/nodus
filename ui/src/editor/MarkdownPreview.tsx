@@ -5,6 +5,8 @@ import { Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { parseWikiLinks, createLinkResolver, type LinkableNote } from '../../../src/links/wikilink.js';
 import { headingText, uniqueHeadingId } from './documentOutline.js';
+import { NODUS_VIEW_FENCE_LANGUAGE, parseNodusViewDirective } from '../embeds/nodusView';
+import { NodusViewEmbed, NodusViewEmbedError } from '../embeds/EmbeddedDatabaseView';
 
 const IMAGE_TYPES = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 
@@ -292,7 +294,14 @@ export function MarkdownPreview({ value, notePath, notes, onOpenNote, onActiveHe
         const code = kids.find((child) => child.name === 'CodeText');
         const info = kids.find((child) => child.name === 'CodeInfo');
         const language = info ? value.slice(info.from, info.to).trim().split(/\s+/, 1)[0] ?? '' : '';
-        return <FencedCode key={key} code={code ? value.slice(code.from, code.to) : ''} language={language} />;
+        const source = code ? value.slice(code.from, code.to) : '';
+        if (language === NODUS_VIEW_FENCE_LANGUAGE) {
+          const parsed = parseNodusViewDirective(source);
+          return parsed.ok
+            ? <NodusViewEmbed key={key} spec={parsed.spec} onOpenNote={onOpenNote} />
+            : <NodusViewEmbedError key={key} message={parsed.message} source={source} />;
+        }
+        return <FencedCode key={key} code={source} language={language} />;
       }
       if (name === 'Table') {
         const header = kids.find((child) => child.name === 'TableHeader');

@@ -361,6 +361,21 @@ function formattingKey(key: string, command: StateCommand): KeyBinding {
   }, preventDefault: true };
 }
 
+/** Insert a fenced `nodus-view` directive at the selection. */
+export function insertNodusViewBlock(directive: string): StateCommand {
+  return (target) => {
+    const body = directive.trim();
+    if (body === '' || body.includes('```')) return false;
+    return applyRanges(target, (range) => {
+      const { state } = target;
+      const line = state.doc.lineAt(range.from);
+      const lead = line.text.trim() === '' ? '' : '\n\n';
+      const text = `${lead}\`\`\`nodus-view\n${body}\n\`\`\`\n\n`;
+      return { changes: { from: range.from, to: range.to, insert: text }, range: EditorSelection.cursor(range.from + text.length) };
+    });
+  };
+}
+
 export const markdownEditingKeymap: readonly KeyBinding[] = [
   { key: 'Enter', run: markdownEnter },
   { key: 'Backspace', run: deleteMarkupBackward },
