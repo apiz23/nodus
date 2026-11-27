@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink, lstat, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile, symlink, lstat, link, open, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -391,6 +391,30 @@ describe('copy operation journal state machine', () => {
     expect(prepared.state).toBe('Prepared');
     expect((await readdir(join(root, COPY_OPERATION_JOURNAL_DIR))).sort()).toEqual(['operations', 'vault.json']);
     expect(await readdir(join(root, COPY_OPERATION_JOURNAL_DIR, 'operations'))).toEqual([prepared.operationId]);
+  });
+
+  it('accepts intact journal records delivered through short reads', async () => {
+    const { root } = await tempRoot();
+    const probe = await open(join(root, 'probe'), 'wx');
+    const prototype: Pick<FileHandle, 'read'> = Object.getPrototypeOf(probe);
+    await probe.close();
+    const read = prototype.read;
+    const splitRead = vi.spyOn(prototype, 'read').mockImplementation(function (this: FileHandle, ...args: unknown[]) {
+      const [buffer, offset, length, position] = args;
+      if (Buffer.isBuffer(buffer) && buffer.length === 1024 * 1024 + 1 &&
+          typeof offset === 'number' && typeof length === 'number' && typeof position === 'number') {
+        return Reflect.apply(read, this, [buffer, offset, Math.min(length, 32), position]);
+      }
+      return Reflect.apply(read, this, args);
+    });
+    try {
+      const prepared = await prepare(root);
+      expect(prepared.state).toBe('Prepared');
+      const recovered = await underLock(root, () => journal(root).recover(async () => true));
+      expect(recovered).toMatchObject({ prepared: 1, needsReview: 0, unresolved: true });
+    } finally {
+      splitRead.mockRestore();
+    }
   });
 
   it('blocks confirmation and transfer checks when an existing identity is missing operations', async () => {
