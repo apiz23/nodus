@@ -63,7 +63,23 @@ try {
   await splitHandle.focus();
   await splitHandle.press('ArrowRight');
   await page.waitForFunction((previous) => document.querySelector('article[aria-label="Markdown preview"]')?.getBoundingClientRect().x > previous, previewXBeforeResize);
+  assert.equal(await splitHandle.getAttribute('aria-orientation'), 'vertical', 'Desktop split separator is vertical');
   assert((await source.innerText()).includes('A changed draft that survives layout changes'), 'The editor draft remains mounted in split layout');
+  for (let step = 0; step < 20; step += 1) await splitHandle.press('ArrowRight');
+  await page.waitForTimeout(250);
+  const maxWidths = await page.evaluate(() => ({
+    editor: document.querySelector('#note-editor-panel')?.getBoundingClientRect().width ?? 0,
+    preview: document.querySelector('#note-preview-panel')?.getBoundingClientRect().width ?? 0,
+  }));
+  assert(maxWidths.editor >= 300 && maxWidths.preview >= 300, 'Desktop split keeps both panes above the minimum width');
+  for (let step = 0; step < 30; step += 1) await splitHandle.press('ArrowLeft');
+  await page.waitForTimeout(250);
+  const minWidths = await page.evaluate(() => ({
+    editor: document.querySelector('#note-editor-panel')?.getBoundingClientRect().width ?? 0,
+    preview: document.querySelector('#note-preview-panel')?.getBoundingClientRect().width ?? 0,
+  }));
+  assert(minWidths.editor >= 300 && minWidths.preview >= 300, 'Desktop split keeps both panes above the minimum width at the other extreme');
+  assert((await page.evaluate(() => document.documentElement.scrollWidth)) <= (await page.evaluate(() => document.documentElement.clientWidth)) + 1, 'Desktop split does not overflow horizontally');
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   await page.waitForTimeout(700);
   assert((await page.locator('article[aria-label="Markdown preview"]').innerText()).includes('A changed draft that survives layout changes'), 'Preview renders the current draft');
@@ -95,18 +111,38 @@ try {
   assert(dimensions.scroll <= dimensions.client + 1, 'Workspace settings do not overflow on mobile');
   await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
   await note.click();
+  const dismissGuide = page.getByRole('button', { name: 'Dismiss getting started guide', exact: true });
+  if (await dismissGuide.isVisible().catch(() => false)) await dismissGuide.click();
   const mobileMode = page.getByRole('combobox', { name: 'Markdown rendering mode', exact: true });
   await mobileMode.click();
   await page.getByRole('option', { name: 'Split', exact: true }).click();
-  const mobileSeparator = page.getByRole('separator', { name: 'Resize editor and preview', exact: true });
-  await mobileSeparator.waitFor();
-  const splitPanels = await page.evaluate(() => {
+  const mobileTabs = page.getByRole('tablist', { name: 'Editor and preview', exact: true });
+  await mobileTabs.waitFor();
+  assert.equal(await page.getByRole('separator', { name: 'Resize editor and preview', exact: true }).count(), 0, 'Mobile split has no resize separator');
+  const mobileEditorTab = page.getByRole('tab', { name: 'Editor', exact: true });
+  const mobilePreviewTab = page.getByRole('tab', { name: 'Preview', exact: true });
+  assert.equal(await mobileEditorTab.getAttribute('aria-selected'), 'true', 'Editor is the initial mobile split tab');
+  await mobileEditorTab.focus();
+  await mobileEditorTab.press('ArrowRight');
+  assert.equal(await mobilePreviewTab.getAttribute('aria-selected'), 'true', 'Arrow keys move between Editor and Preview tabs');
+  await mobilePreviewTab.click();
+  await page.getByRole('article', { name: 'Markdown preview', exact: true }).waitFor();
+  const mobilePanes = await page.evaluate(() => {
     const editorPanel = document.querySelector('#note-editor-panel')?.getBoundingClientRect();
     const previewPanel = document.querySelector('#note-preview-panel')?.getBoundingClientRect();
     return editorPanel && previewPanel ? { editor: editorPanel.toJSON(), preview: previewPanel.toJSON() } : null;
   });
-  assert(splitPanels && splitPanels.preview.y >= splitPanels.editor.bottom - 1, 'Mobile split layout stacks preview below editor');
-  assert((await mobileSeparator.getAttribute('aria-orientation')) === 'horizontal', 'Mobile split separator follows the stacked panel orientation');
+  assert(mobilePanes && mobilePanes.preview.width > 0 && mobilePanes.editor.width === 0, 'Mobile Preview tab replaces the editor panel');
+  const mobileWidths = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  assert(mobileWidths.scroll <= mobileWidths.client + 1, 'Mobile editor does not overflow horizontally');
+
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.getByRole('group', { name: 'Markdown rendering mode' }).getByRole('button', { name: 'Split', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Editor and preview', exact: true }).waitFor();
+  assert.equal(await page.getByRole('separator', { name: 'Resize editor and preview', exact: true }).count(), 0, 'Tablet split has no resize separator');
+  const tabletWidths = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  assert(tabletWidths.scroll <= tabletWidths.client + 1, 'Tablet editor does not overflow horizontally');
+  await page.setViewportSize({ width: 390, height: 844 });
 
   await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();

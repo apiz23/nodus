@@ -28,6 +28,7 @@ export interface CodeMirrorEditorProps {
   outlineNavigationRequest?: { id: string; sequence: number } | null;
   taskNavigationRequest?: { line: number; sequence: number } | null;
   notePath: string;
+  hidden?: boolean;
   className?: string;
   'aria-label'?: string;
 }
@@ -223,6 +224,13 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       annotations: [remoteAnnotation.of(true)],
     });
   }, [props.value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view === null || props.hidden === true) return;
+    const frame = requestAnimationFrame(() => view.requestMeasure());
+    return () => cancelAnimationFrame(frame);
+  }, [props.hidden]);
 
   useEffect(() => {
     const view = viewRef.current;

@@ -26,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { GroupImperativeHandle } from 'react-resizable-panels';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -100,6 +100,21 @@ interface EditorProps {
   taskNavigation: { line: number; sequence: number } | null;
 }
 
+// Measure the editor frame itself, not the viewport: the sidebar and the
+// comfortable reading measure both reduce the space available to two panes.
+// At 900 px each pane can hold roughly 450 px, which is the narrowest useful
+// Markdown writing/reading column. Below that, compact tabs are intentional.
+const DESKTOP_SPLIT_MIN_WIDTH = 900;
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function initialEditorAreaWidth(): number {
+  if (typeof window === 'undefined') return 0;
+  // The desktop sidebar is a fixed part of the frame. This estimate keeps the
+  // first client render from flashing a split that the measured content area
+  // cannot actually support; the ResizeObserver corrects it after mount.
+  return window.innerWidth - (window.innerWidth >= 1024 ? 256 : 0);
+}
+
 export function Editor({
   note,
   notes,
@@ -154,27 +169,87 @@ export function Editor({
   const [outlineNavigationRequest, setOutlineNavigationRequest] = useState<{ id: string; sequence: number } | null>(null);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [titleFocused, setTitleFocused] = useState(false);
-  const [widePreview, setWidePreview] = useState(false);
+  const [editorAreaWidth, setEditorAreaWidth] = useState(initialEditorAreaWidth);
+  const [compactTab, setCompactTab] = useState<'editor' | 'preview'>('editor');
+  const editorAreaRef = useRef<HTMLElement | null>(null);
   const previewGroupRef = useRef<GroupImperativeHandle | null>(null);
-  const editorSize = layout === 'preview' ? 0 : layout === 'split' ? splitRatio * 100 : 100;
+  const scrollMemoryRef = useRef<Map<string, number>>(new Map());
+  const scrollKey = layout === 'split' ? `tab:${compactTab}` : layout;
+  const scrollKeyRef = useRef(scrollKey);
+  const suppressScrollCaptureRef = useRef(false);
+  const splitDesktop = layout === 'split' && editorAreaWidth >= DESKTOP_SPLIT_MIN_WIDTH;
+  const tabbedSplit = layout === 'split' && !splitDesktop;
+  const editorSize = layout === 'preview'
+    ? 0
+    : layout === 'split'
+      ? splitDesktop
+        ? Math.min(0.7, Math.max(0.3, splitRatio)) * 100
+        : compactTab === 'editor' ? 100 : 0
+      : 100;
   const previewSize = 100 - editorSize;
 
-  useEffect(() => {
-    const media = window.matchMedia('(min-width: 768px)');
-    const update = () => setWidePreview(media.matches);
+  useIsomorphicLayoutEffect(() => {
+    const node = editorAreaRef.current;
+    if (node === null) return undefined;
+    const update = () => {
+      const next = node.getBoundingClientRect().width;
+      setEditorAreaWidth((current) => Math.abs(current - next) < 1 ? current : next);
+    };
     update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [note?.id]);
 
   useEffect(() => {
     previewGroupRef.current?.setLayout({ 'note-editor-panel': editorSize, 'note-preview-panel': previewSize });
   }, [editorSize, previewSize]);
 
   useEffect(() => {
-    if (layout !== 'split') return;
-    previewGroupRef.current?.setLayout({ 'note-editor-panel': splitRatio * 100, 'note-preview-panel': (1 - splitRatio) * 100 });
-  }, [layout, splitRatio]);
+    setCompactTab('editor');
+  }, [note?.id]);
+
+  useEffect(() => {
+    if (layout === 'split' && !splitDesktop) setCompactTab('editor');
+  }, [layout, splitDesktop]);
+
+  // Each rendered surface keeps its own scroll offset: the editor remembers where
+  // the caret view was, the preview opens at its natural top the first time, and
+  // returning to a surface restores its previous position. Panes stay mounted, so
+  // switching surfaces never recreates the CodeMirror document or loses drafts.
+  const resolveEditorScrollViewport = (): HTMLElement | null =>
+    editorAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]') ?? null;
+
+  useIsomorphicLayoutEffect(() => {
+    const root = editorAreaRef.current;
+    if (root === null) return undefined;
+    const capture = (event: Event) => {
+      if (suppressScrollCaptureRef.current) return;
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target !== resolveEditorScrollViewport()) return;
+      scrollMemoryRef.current.set(scrollKeyRef.current, target.scrollTop);
+    };
+    // Scroll events do not bubble, so listen in the capture phase on the section.
+    root.addEventListener('scroll', capture, true);
+    return () => root.removeEventListener('scroll', capture, true);
+  }, [note?.id]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (scrollKeyRef.current === scrollKey) return;
+    scrollKeyRef.current = scrollKey;
+    const viewport = resolveEditorScrollViewport();
+    if (viewport === null) return;
+    // Suppress capture while the browser clamps the offset to the newly rendered height.
+    suppressScrollCaptureRef.current = true;
+    viewport.scrollTop = scrollMemoryRef.current.get(scrollKey) ?? 0;
+    requestAnimationFrame(() => {
+      suppressScrollCaptureRef.current = false;
+    });
+  }, [scrollKey]);
 
   useEffect(() => {
     setHeadings([]);
@@ -242,9 +317,51 @@ export function Editor({
   const fileName = note.path.split('/').filter(Boolean).at(-1) ?? '';
   const folders = folderBreadcrumbSegments(note.path);
   const pageName = title.trim() === '' ? fileName.replace(/\.md$/, '') : title;
+  const editorPaneHidden = layout === 'preview' || (tabbedSplit && compactTab !== 'editor');
+  const previewPaneHidden = (layout !== 'preview' && layout !== 'split') || (tabbedSplit && compactTab !== 'preview');
+  const compactTabBar = tabbedSplit ? (
+    <div className="shrink-0 border-b border-border/70 bg-background px-3 py-2 sm:px-4">
+      <div
+        role="tablist"
+        aria-label="Editor and preview"
+        className="inline-flex max-w-full rounded-md border border-border/80 bg-muted/40 p-0.5"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+          event.preventDefault();
+          const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'editor' : 'preview';
+          setCompactTab(next);
+          requestAnimationFrame(() => document.getElementById(`note-${next}-tab`)?.focus());
+        }}
+      >
+        {(['editor', 'preview'] as const).map((tab) => {
+          const selected = compactTab === tab;
+          return (
+            <Button
+              key={tab}
+              type="button"
+              role="tab"
+              id={`note-${tab}-tab`}
+              aria-selected={selected}
+              aria-controls={`note-${tab}-panel`}
+              tabIndex={selected ? 0 : -1}
+              variant="ghost"
+              size="xs"
+              className={cn(
+                'h-11 rounded-[6px] px-4 text-xs font-medium',
+                selected ? 'bg-background text-foreground shadow-sm ring-1 ring-border/70' : 'text-muted-foreground hover:text-foreground',
+              )}
+              onClick={() => setCompactTab(tab)}
+            >
+              {tab === 'editor' ? 'Editor' : 'Preview'}
+            </Button>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
+    <section ref={editorAreaRef} className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Editor">
       <header className="flex min-h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 sm:px-4">
         <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <nav
@@ -515,11 +632,17 @@ export function Editor({
         </div>
       )}
 
+      {compactTabBar}
+
       <ScrollArea className="min-h-0 flex-1">
         <div
           className={cn(
             'mx-auto min-w-0 w-full py-12 sm:py-16',
-            fullWidth ? 'max-w-none px-5 sm:px-8 lg:px-12' : 'max-w-[43rem] px-6 sm:px-8',
+            fullWidth
+              ? 'max-w-none px-5 sm:px-8 lg:px-12'
+              : splitDesktop
+                ? 'max-w-[88rem] px-5 sm:px-8 lg:px-10'
+                : 'max-w-[43rem] px-6 sm:px-8',
           )}
         >
           <div className="mb-2 flex min-h-12 items-center">
@@ -625,18 +748,37 @@ export function Editor({
             <ResizablePanelGroup
               id="note-editor-preview-group"
               groupRef={previewGroupRef}
-              orientation={layout === 'split' ? (widePreview ? 'horizontal' : 'vertical') : 'horizontal'}
+              orientation="horizontal"
               defaultLayout={{ 'note-editor-panel': editorSize, 'note-preview-panel': previewSize }}
-              disabled={layout !== 'split'}
-              className={cn('min-h-[42vh] w-full overflow-hidden', layout === 'split' ? 'h-[min(68vh,52rem)] min-h-[24rem] max-h-[72vh]' : 'h-[min(68vh,52rem)] max-h-[72vh]')}
+              disabled={!splitDesktop}
+              style={{ height: 'auto', overflow: 'visible' }}
+              className="min-h-[42vh] w-full"
               onLayoutChanged={(next, meta) => {
-                if (!meta.isUserInteraction || layout !== 'split') return;
+                if (!meta.isUserInteraction || !splitDesktop) return;
                 const total = (next['note-editor-panel'] ?? 0) + (next['note-preview-panel'] ?? 0);
-                if (total > 0) onSplitRatioChange(Math.min(0.65, Math.max(0.35, (next['note-editor-panel'] ?? 50) / total)));
+                if (total > 0) onSplitRatioChange(Math.min(0.7, Math.max(0.3, (next['note-editor-panel'] ?? 50) / total)));
               }}
             >
-              <ResizablePanel id="note-editor-panel" collapsible collapsedSize={0} minSize={layout === 'split' ? 35 : 0} defaultSize={editorSize} className="min-h-0 min-w-0 overflow-hidden">
-                <div className={cn('w-full', layout === 'split' ? 'h-full min-h-0 overflow-auto' : 'min-h-full overflow-visible')}>
+              <ResizablePanel
+                id="note-editor-panel"
+                collapsible={!splitDesktop}
+                collapsedSize={0}
+                minSize={splitDesktop ? 300 : 0}
+                maxSize={splitDesktop ? '70%' : undefined}
+                defaultSize={`${editorSize}%`}
+                style={{ overflow: 'visible', maxHeight: 'none' }}
+                className="min-w-0"
+                role={tabbedSplit ? 'tabpanel' : undefined}
+                aria-labelledby={tabbedSplit ? 'note-editor-tab' : undefined}
+                aria-hidden={tabbedSplit ? compactTab !== 'editor' : undefined}
+              >
+                <div className={cn('w-full', editorPaneHidden && 'hidden')}>
+                  {splitDesktop ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/70 pb-1.5 text-[11px] font-medium text-muted-foreground">
+                      <span>Editor</span>
+                      <span className="tabular-nums">{words} words</span>
+                    </div>
+                  ) : null}
                   <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading Markdown editor…</div>}>
                     <CodeMirrorEditor
                       key={note.id}
@@ -650,19 +792,38 @@ export function Editor({
                       notes={notes}
                       onOpenNote={onOpenNote}
                       notePath={note.path}
-                      className={cn('w-full [&_.cm-editor]:outline-none', layout === 'split' ? 'h-full [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto' : '[&_.cm-editor]:h-auto [&_.cm-scroller]:overflow-visible')}
+                      hidden={editorPaneHidden}
+                      className="w-full [&_.cm-editor]:h-auto [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-visible"
                       aria-label="Markdown body"
                     />
                   </Suspense>
                 </div>
               </ResizablePanel>
-              {layout === 'split' ? <ResizableHandle withHandle aria-label="Resize editor and preview" className="data-[orientation=vertical]:h-1 data-[orientation=vertical]:w-full" /> : null}
-              <ResizablePanel id="note-preview-panel" collapsible collapsedSize={0} minSize={layout === 'split' ? 35 : 0} defaultSize={previewSize} className="min-h-0 min-w-0 overflow-hidden">
+              {splitDesktop ? <ResizableHandle withHandle aria-label="Resize editor and preview" className="mx-1 w-3 bg-border/70 hover:bg-border [&>div]:h-8 [&>div]:bg-foreground/20" /> : null}
+              <ResizablePanel
+                id="note-preview-panel"
+                collapsible={!splitDesktop}
+                collapsedSize={0}
+                minSize={splitDesktop ? 300 : 0}
+                maxSize={splitDesktop ? '70%' : undefined}
+                defaultSize={`${previewSize}%`}
+                style={{ overflow: 'visible', maxHeight: 'none' }}
+                className="min-w-0"
+                role={tabbedSplit ? 'tabpanel' : undefined}
+                aria-labelledby={tabbedSplit ? 'note-preview-tab' : undefined}
+                aria-hidden={tabbedSplit ? compactTab !== 'preview' : undefined}
+              >
                 <div
-                  className={cn('h-full min-h-0 w-full overflow-auto', layout === 'split' && !widePreview ? 'border-t' : 'border-l')}
+                  className={cn('w-full', previewPaneHidden && 'hidden')}
                   data-testid={layout === 'preview' || layout === 'split' ? 'editor-markdown-preview' : undefined}
                   data-vault-identity={layout === 'preview' || layout === 'split' ? vaultIdentity : undefined}
                 >
+                  {splitDesktop ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/70 pb-1.5 text-[11px] font-medium text-muted-foreground">
+                      <span>Preview</span>
+                      <span className="tabular-nums">{body.trim() === '' ? 'Empty' : 'Rendered'}</span>
+                    </div>
+                  ) : null}
                   {layout === 'preview' || layout === 'split' ? <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading preview…</div>}><MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} onActiveHeadingChange={setActiveHeadingId} vaultIdentity={vaultIdentity} /></Suspense> : null}
                 </div>
               </ResizablePanel>

@@ -38,7 +38,7 @@ export function MarkdownToolbar({ onCommand, onFocus }: { onCommand: (command: S
   };
 
   return (
-    <div className="mb-2 flex items-center">
+    <div className="flex items-center">
       <Popover open={open} onOpenChange={(value) => { setOpen(value); setFeedback(''); }}>
         <PopoverTrigger asChild>
           <Button type="button" variant="ghost" size="xs" aria-label="Format Markdown"><Type data-icon="inline-start" />Format</Button>

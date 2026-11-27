@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["ui/src/**/*.ts", "ui/src/**/*.tsx", "ui/vite.config.ts", "src/ui-server/dto.ts", "test/ui-sidebar.test.tsx", "test/markdown-embed-limits.test.tsx", "test/editor-vault-identity.test.tsx", "test/editor-preview-prop.test.tsx", "test/view-data-invalidation.test.tsx", "test/embed-picker-state.test.tsx"]
+  "include": ["ui/src/**/*.ts", "ui/src/**/*.tsx", "ui/vite.config.ts", "src/ui-server/dto.ts", "test/ui-sidebar.test.tsx", "test/markdown-embed-limits.test.tsx", "test/editor-vault-identity.test.tsx", "test/editor-preview-prop.test.tsx", "test/ui-editor-split-layout.test.tsx", "test/view-data-invalidation.test.tsx", "test/embed-picker-state.test.tsx"]
 }
