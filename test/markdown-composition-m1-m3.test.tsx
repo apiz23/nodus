@@ -26,6 +26,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const flushNotifications = () => new Promise<void>((resolve) => { queueMicrotask(resolve); });
+
 describe('M1 shared view data service', () => {
   it('shares one in-flight request across twenty concurrent embeds', async () => {
     const gate = deferred<UiDatabase[]>();
@@ -91,6 +93,7 @@ describe('M1 shared view data service', () => {
     await service.rows(DATABASE_ID);
     await service.rows(other);
     service.invalidateDatabase(DATABASE_ID);
+    await flushNotifications();
     expect(listener).toHaveBeenCalledWith(DATABASE_ID);
     await service.rows(other);
     expect(rowsLoader).toHaveBeenCalledTimes(2);

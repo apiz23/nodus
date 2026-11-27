@@ -66,6 +66,7 @@ import type {
 } from '../../src/ui-server/dto.js';
 import type { DatabaseView } from '../../src/database/database-view.js';
 import type { ResolutionSnapshot } from '../../src/sync/resolution-decisions.js';
+import { invalidationForMutation } from './embeds/viewDataInvalidation.js';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -144,13 +145,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
-  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') {
-    const runtime = globalThis as typeof globalThis & {
-      dispatchEvent?: (event: unknown) => boolean;
-      Event?: new (type: string) => unknown;
-    };
-    if (typeof runtime.dispatchEvent === 'function' && typeof runtime.Event === 'function') {
-      runtime.dispatchEvent(new runtime.Event('nodus:data-changed'));
+  const method = (init?.method ?? 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    const invalidation = invalidationForMutation(method, path, typeof init?.body === 'string' ? init.body : null);
+    if (invalidation.kind !== 'none') {
+      const runtime = globalThis as typeof globalThis & {
+        dispatchEvent?: (event: unknown) => boolean;
+        CustomEvent?: new (type: string, init?: { detail?: unknown }) => unknown;
+        Event?: new (type: string, init?: { detail?: unknown }) => unknown;
+      };
+      const EventConstructor = runtime.CustomEvent ?? runtime.Event;
+      if (typeof runtime.dispatchEvent === 'function' && EventConstructor !== undefined) {
+        runtime.dispatchEvent(new EventConstructor('nodus:data-changed', { detail: invalidation }));
+      }
     }
   }
 
