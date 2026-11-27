@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { findEmbeddedView, type NodusViewSpec } from './nodusView';
 import { resolveEmbedLayout, type EmbedLayout } from './embedLayout';
+import { EMBED_BOARD_CARD_LIMIT, EMBED_BOARD_COLUMN_LIMIT, EMBED_GALLERY_CARD_LIMIT, EMBED_UNDATED_LIMIT } from './embedLimits';
 import { viewDataService } from './viewDataService';
 
 const VIRTUALIZE_AFTER = 50;
@@ -128,11 +129,11 @@ export function EmbeddedBody({ layout, rows, properties, height, databaseId, onO
         ? <p className="px-3 py-6 text-sm text-muted-foreground">No rows match this view.</p>
         : <EmbeddedViewTable properties={properties} rows={rows} height={height} onOpenNote={onOpenNote} />;
     case 'gallery':
-      return <div className="px-3 pb-3"><GalleryView {...common} /></div>;
+      return <div className="px-3 pb-3"><GalleryView {...common} maxCards={EMBED_GALLERY_CARD_LIMIT} /></div>;
     case 'list':
       return <div className="px-3 pb-3"><ListView {...common} groupProperty={layout.groupProperty} /></div>;
     case 'kanban':
-      return <div className="px-3 pb-3"><KanbanView {...common} property={layout.groupProperty} /></div>;
+      return <div className="px-3 pb-3"><KanbanView {...common} property={layout.groupProperty} maxCards={EMBED_BOARD_CARD_LIMIT} maxColumns={EMBED_BOARD_COLUMN_LIMIT} /></div>;
     case 'calendar': {
       const events = projectCalendarEvents({
         databaseSources: [{ databaseId, startDatePropertyId: layout.startProperty.id, ...(layout.endProperty === undefined ? {} : { endDatePropertyId: layout.endProperty.id }) }],
@@ -145,6 +146,7 @@ export function EmbeddedBody({ layout, rows, properties, height, databaseId, onO
             property={layout.startProperty}
             endProperty={layout.endProperty}
             events={events}
+            maxUndated={EMBED_UNDATED_LIMIT}
             onOpenEvent={(event) => onOpenNote(event.navigation.noteId)}
             onCreate={() => undefined}
           />
@@ -251,6 +253,7 @@ export function NodusViewEmbed({ spec, onOpenNote, vaultIdentity = '' }: Props) 
         <span className="text-sm font-medium">{state.databaseName}</span>
         <span className="text-xs text-muted-foreground">/ {state.view.name}</span>
         <Badge variant="outline" className="capitalize">{state.layout.kind === 'unsupported' ? state.layout.requested : state.layout.kind}</Badge>
+        {state.layout.kind === 'kanban' || state.layout.kind === 'gallery' ? <Badge variant="outline" title="Renders a bounded preview; open the database for every record.">Experimental preview</Badge> : null}
         <Badge variant="secondary" className="ml-auto tabular-nums">{state.total} {state.total === 1 ? 'row' : 'rows'}</Badge>
         <Badge variant="outline">Read-only</Badge>
       </header>

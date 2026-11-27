@@ -16,7 +16,7 @@ import type { CalendarEvent } from '../../src/calendar/events';
 import { projectCalendarEvents } from '../../src/calendar/events';
 import { calendarDays, monthGrid, shiftDate, undatedReason, weekDates, type CalendarViewMode } from '../../src/calendar/layout';
 
-interface LayoutProps {
+export interface LayoutProps {
   rows: UiDatabaseRow[];
   renderValue?: (row: UiDatabaseRow, property: Property) => ReactNode;
   property: Property;
@@ -52,14 +52,30 @@ function CompactCard({ row, property, visibleProperties, disabled, onOpen, onEdi
   </article>;
 }
 
-export function KanbanView(props: LayoutProps) {
-  const columns = kanbanColumns(props.rows, props.property);
-  return <section aria-label={`Kanban grouped by ${props.property.name}`} className="my-4 flex gap-3 overflow-x-auto pb-3">
-    {columns.map((column) => <section key={column.id} aria-label={`${column.name} column`} className="flex w-64 shrink-0 flex-col gap-2 rounded-md bg-muted/40 p-2">
-      <h3 className="flex min-w-0 items-center justify-between gap-2 px-1 py-2 text-sm font-medium"><span className="min-w-0 truncate" title={column.name}>{column.name}</span><Badge variant="secondary" className="shrink-0">{column.rows.length}</Badge></h3>
-      {column.rows.map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}
-      {column.rows.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">No notes</p> : null}
-    </section>)}
+export function KanbanView(props: LayoutProps & { maxCards?: number; maxColumns?: number }) {
+  const allColumns = kanbanColumns(props.rows, props.property);
+  const columns = props.maxColumns === undefined ? allColumns : allColumns.slice(0, Math.max(1, props.maxColumns));
+  const hiddenColumns = allColumns.length - columns.length;
+  // Bounded embeds share one card budget across the visible columns so a board
+  // with many options cannot multiply the DOM by column count.
+  const cardsPerColumn = props.maxCards === undefined ? undefined : Math.max(1, Math.floor(props.maxCards / Math.max(1, columns.length)));
+  const shownCards = columns.reduce((total, column) => total + (cardsPerColumn === undefined ? column.rows.length : Math.min(column.rows.length, cardsPerColumn)), 0);
+  const limited = shownCards < props.rows.length || hiddenColumns > 0;
+  return <section aria-label={`Kanban grouped by ${props.property.name}`} className="my-4 flex flex-col gap-2">
+    <div className="flex gap-3 overflow-x-auto pb-3">
+      {columns.map((column) => {
+        const cards = cardsPerColumn === undefined ? column.rows : column.rows.slice(0, cardsPerColumn);
+        return <section key={column.id} aria-label={`${column.name} column`} className="flex w-64 shrink-0 flex-col gap-2 rounded-md bg-muted/40 p-2">
+          <h3 className="flex min-w-0 items-center justify-between gap-2 px-1 py-2 text-sm font-medium"><span className="min-w-0 truncate" title={column.name}>{column.name}</span><Badge variant="secondary" className="shrink-0">{column.rows.length}</Badge></h3>
+          {cards.map((row) => <NoteCard key={row.noteId} {...props} row={row} />)}
+          {cards.length < column.rows.length ? <p className="px-1 pb-1 text-[11px] text-muted-foreground">Showing {cards.length} of {column.rows.length} cards</p> : null}
+          {column.rows.length === 0 ? <p className="px-1 py-3 text-xs text-muted-foreground">No notes</p> : null}
+        </section>;
+      })}
+    </div>
+    {limited ? <p role="status" data-testid="embed-layout-limited" className="rounded-md border border-dashed px-2 py-1.5 text-[11px] text-muted-foreground">
+      Board preview: showing {shownCards} of {props.rows.length} cards in {columns.length} of {allColumns.length} columns.{hiddenColumns > 0 ? ` ${hiddenColumns} more ${hiddenColumns === 1 ? 'column' : 'columns'} hidden.` : ''} Open the database for the full view.
+    </p> : null}
   </section>;
 }
 
@@ -120,7 +136,7 @@ export function ListView(props: Omit<LayoutProps, 'property'> & { groupProperty?
   </section>;
 }
 
-export function CalendarView(props: LayoutProps & { endProperty?: Property; events?: CalendarEvent[]; eventsLoading?: boolean; eventsError?: string | null; onRetryEvents?: () => void; onOpenEvent?: (event: CalendarEvent) => void; onEditCalendarEvent?: (event: CalendarEvent, start: string, end?: string) => Promise<void>; onScheduleTask?: (event: CalendarEvent, date: string) => Promise<void>; onCreate: (date: string) => void }) {
+export function CalendarView(props: LayoutProps & { endProperty?: Property; maxUndated?: number; events?: CalendarEvent[]; eventsLoading?: boolean; eventsError?: string | null; onRetryEvents?: () => void; onOpenEvent?: (event: CalendarEvent) => void; onEditCalendarEvent?: (event: CalendarEvent, start: string, end?: string) => Promise<void>; onScheduleTask?: (event: CalendarEvent, date: string) => Promise<void>; onCreate: (date: string) => void }) {
   const today = todayDate();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [selectedDate, setSelectedDate] = useState(today);
@@ -142,6 +158,7 @@ export function CalendarView(props: LayoutProps & { endProperty?: Property; even
   const projections = calendarDays(events, mode === 'timeline' ? timelineDates : mode === 'day' ? [selectedDate] : visibleDates);
   const byDate = new Map(projections.map((day) => [day.date, day]));
   const undated = events.filter((event) => event.dateState !== 'scheduled');
+  const visibleUndated = props.maxUndated === undefined ? undated : undated.slice(0, Math.max(0, props.maxUndated));
   const selectedEvents = byDate.get(selectedDate)?.events ?? [];
   const openEvent = (event: CalendarEvent) => props.onOpenEvent?.(event);
   const openEditor = (event: CalendarEvent) => { setEditingEvent(event); setEditStart(event.dateRange?.startDate ?? ''); setEditEnd(event.dateRange?.endDate ?? ''); setEditError(null); };
@@ -211,18 +228,21 @@ export function CalendarView(props: LayoutProps & { endProperty?: Property; even
       {selectedEvents.length ? selectedEvents.map((event) => <div key={event.id} className="flex min-w-0 items-start gap-2"><Button variant="ghost" className="h-auto min-w-0 flex-1 justify-start whitespace-normal text-left" onClick={() => openEvent(event)}><span className="mr-2 shrink-0 text-muted-foreground">{event.source.kind === 'markdown-task' ? (event.completed ? 'Completed task' : 'Task') : 'Database'}</span><span className={event.completed ? 'line-through opacity-70' : ''}>{event.title}</span></Button><Button size="xs" variant="outline" disabled={props.disabled} onClick={() => openEditor(event)}>{event.source.kind === 'markdown-task' ? 'Schedule' : 'Edit date'}</Button></div>) : <p className="text-sm text-muted-foreground">No events on this day.</p>}
     </section>
     <section aria-label="Undated calendar events" className="flex flex-col gap-2"><h3 className="text-sm font-medium">Undated ({undated.length})</h3>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{undated.map((event) => <div key={event.id} className="flex min-w-0 items-start gap-2 rounded-md border p-2"><Button variant="ghost" className="h-auto min-w-0 flex-1 justify-start whitespace-normal text-left" onClick={() => openEvent(event)}><span>{event.title} — {undatedReason(event)}</span></Button><Button size="xs" variant="outline" disabled={props.disabled} onClick={() => openEditor(event)}>{event.source.kind === 'markdown-task' ? 'Schedule' : 'Edit date'}</Button></div>)}</div>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{visibleUndated.map((event) => <div key={event.id} className="flex min-w-0 items-start gap-2 rounded-md border p-2"><Button variant="ghost" className="h-auto min-w-0 flex-1 justify-start whitespace-normal text-left" onClick={() => openEvent(event)}><span>{event.title} — {undatedReason(event)}</span></Button><Button size="xs" variant="outline" disabled={props.disabled} onClick={() => openEditor(event)}>{event.source.kind === 'markdown-task' ? 'Schedule' : 'Edit date'}</Button></div>)}</div>
+      {visibleUndated.length < undated.length ? <p role="status" data-testid="embed-layout-limited" className="text-[11px] text-muted-foreground">Calendar preview: showing {visibleUndated.length} of {undated.length} undated events. Open the database for the full view.</p> : null}
       {undated.length === 0 ? <p className="text-xs text-muted-foreground">Every event has a valid scheduled date.</p> : null}
     </section>
     <Dialog open={editingEvent !== null} onOpenChange={(open) => { if (!open && !editSaving) setEditingEvent(null); }}><DialogContent><DialogHeader><DialogTitle>{editingEvent?.source.kind === 'markdown-task' ? 'Schedule task' : 'Edit Calendar dates'}</DialogTitle><DialogDescription>{editingEvent?.title}</DialogDescription></DialogHeader><label className="grid gap-1 text-sm">{editingEvent?.source.kind === 'markdown-task' ? 'Scheduled date' : 'Start date'}<Input type="date" value={editStart} onChange={(event) => setEditStart(event.currentTarget.value)} /></label>{editingEvent?.source.kind === 'database-record' && props.endProperty ? <label className="grid gap-1 text-sm">End date (inclusive)<Input type="date" value={editEnd} onChange={(event) => setEditEnd(event.currentTarget.value)} /></label> : null}{editError ? <p role="alert" className="text-sm text-destructive">{editError}</p> : null}<DialogFooter><Button variant="outline" disabled={editSaving} onClick={() => setEditingEvent(null)}>Cancel</Button><Button disabled={editSaving || !editStart} onClick={() => void saveEvent()}>{editSaving ? 'Saving…' : 'Save dates'}</Button></DialogFooter></DialogContent></Dialog>
   </section>;
 }
 
-export function GalleryView(props: Omit<LayoutProps, 'property'>) {
-  return <section aria-label="Database gallery view" className="my-4 min-w-0">
+export function GalleryView(props: Omit<LayoutProps, 'property'> & { maxCards?: number }) {
+  const cards = props.maxCards === undefined ? props.rows : props.rows.slice(0, Math.max(0, props.maxCards));
+  const limited = cards.length < props.rows.length;
+  return <section aria-label="Database gallery view" className="my-4 flex min-w-0 flex-col gap-2">
     {props.rows.length === 0 ? <p className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">No records match this view.</p> :
       <div role="list" aria-label="Database gallery records" className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {props.rows.map((row) => <article key={row.noteId} role="listitem" aria-label={row.title} className="min-w-0 overflow-hidden rounded-md border bg-card">
+        {cards.map((row) => <article key={row.noteId} role="listitem" aria-label={row.title} className="min-w-0 overflow-hidden rounded-md border bg-card">
           <div aria-hidden="true" className="flex h-28 items-center justify-center border-b bg-muted/30 text-xs text-muted-foreground">No preview</div>
           <div className="min-w-0 p-3">
             <Button data-note-open={row.noteId} variant="link" size="sm" className="h-auto max-w-full justify-start whitespace-normal p-0 text-left font-medium" onClick={() => props.onOpen(row.noteId)}>{row.title}</Button>
@@ -234,5 +254,8 @@ export function GalleryView(props: Omit<LayoutProps, 'property'>) {
           </div>
         </article>)}
       </div>}
+    {limited ? <p role="status" data-testid="embed-layout-limited" className="rounded-md border border-dashed px-2 py-1.5 text-[11px] text-muted-foreground">
+      Gallery preview: showing {cards.length} of {props.rows.length} cards. Open the database for the full view.
+    </p> : null}
   </section>;
 }

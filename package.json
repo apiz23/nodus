@@ -18,6 +18,7 @@
     "bench:databases": "vitest run --config vitest.database-benchmark.config.ts",
     "bench:graph": "vitest run --config vitest.graph-benchmark.config.ts",
     "bench:database-ui": "node scripts/database-performance-smoke.mjs",
+    "bench:embed-layouts": "node scripts/benchmark-embed-layouts.mjs",
     "analyze:bundle": "node scripts/analyze-bundle.mjs",
     "test": "vitest run",
     "test:executor-lock": "node-gyp rebuild --directory native/executor-lock && vitest run test/storage-executor-lock.test.ts --maxWorkers=1",
