@@ -7,7 +7,7 @@ Nodus keeps application shortcuts in one registry (`ui/src/shortcuts.ts`) and de
 | Action | macOS | Windows / Linux | Available while typing |
 |---|---|---|---|
 | Command palette | `⌘K` | `Ctrl+K` | Yes, in the Markdown editor and sidebar search |
-| New note | `⌘N` | `Ctrl+N` | No; use the palette or New page button |
+| New note | `⌘N` | `Ctrl+N` | No; use the command palette or the **New note** action in the Pages panel |
 | Save note | `⌘S` | `Ctrl+S` | Yes, in the Markdown editor and title |
 | Recent notes | `⌘⇧H` | `Ctrl+Shift+H` | Yes, in the Markdown editor |
 | Keyboard shortcuts | `⌘/` | `Ctrl+/` | Yes, including text fields |

@@ -1,145 +1,89 @@
 # Nodus
 
-Nodus is a local-first, Markdown-native knowledge workspace that combines linked notes with structured databases.
+Nodus is a local-first workspace for notes, projects, and personal work management. Write in Markdown, link ideas across notes, and organize the same notes as rows, cards, or calendar entries. A vault is a folder on your computer. You can read its Markdown files outside Nodus and use the local workspace without an account.
 
-**Plain Markdown files. Portable database definitions and saved views. Local-first storage.**
+[Quick start](#quick-start) · [Workspace guide](#workspace-guide) · [Projects and Work Items](#projects-and-work-items) · [Backup and moving data](#backup-and-moving-data) · [Development](#development)
 
-Your notes are ordinary Markdown files. YAML frontmatter is optional; when present, Nodus preserves its metadata. Notes work without an account or network connection and remain usable outside Nodus.
+## Quick start
 
-## Status
-
-**Markdown storage and local workspace features implemented; relay and sync remain experimental.** The package provides:
-
-- Phase 1 domain, format, and migration contracts.
-- A filesystem vault adapter: create, read, update, move, and delete notes and database definitions.
-- Vault-level duplicate ID detection, path containment, and per-file atomic writes.
-- Portable export/import that validates before writing and refuses silent overwrites.
-- Verified backups with SHA-256 manifests, validation, and explicit-overwrite restoration.
-- A local React UI (`ui/`) with a live Markdown editor, task checkboxes, wiki links, page icons, attachments, advanced note search across titles, aliases, paths, content, tags and registered properties, query operators, saved searches and history, [content-assisted related notes](docs/knowledge-retrieval.md), backlinks, link repair with stable-ID pinning, rename-safe title links, a command palette (`Ctrl/Cmd+K`), and a database browser/schema editor.
-- Vault-scoped workspace customization with versioned browser-local preferences, adjustable/reorderable sidebar navigation, persistent editor/preview layouts, linked-note panel visibility, and previewable presets. See [workspace customization](docs/workspace-customization.md).
-- **Smart organization** suggests existing tags, possible duplicate notes, folder destinations, and registered-property review opportunities from local Markdown and the derived graph/retrieval snapshot. Tag changes require an explicit preview and conditional write. Folder proposals are read-only previews; see [Smart organization](docs/smart-organization.md).
-- **Tasks** are derived from ordinary Markdown checkboxes, with open/completed filters, search, grouping, due dates, priorities, source-note navigation, and revision-safe completion. No separate task store is introduced; see [task management](docs/task-management.md).
-- A relay server, sync client, and conflict handling (`src/relay/`, `src/sync/`) — **experimental**. They are not wired to any npm script, CLI bin, or the UI.
-
-The database browser supports typed rows and saved Table, List, Kanban, Calendar, and Gallery views with sorting, filters, grouping, and property visibility. View configurations are portable JSON; card moves and dates use revision-checked Markdown property writes. Relations, rollups, and formula properties are supported. Database automations provide local event triggers and a constrained action set; note and database templates have preview and explicit apply workflows. The knowledge graph is derived locally from Markdown links. Database/property/option removal, integrated sync, and web/mobile clients are not implemented.
-
-## Storage
-
-A vault is a directory of ordinary files:
-
-```
-<vault>/notes/roadmap.md
-<vault>/databases/<database-id>.json
-<vault>/database-views/<database-id>/<view-id>.json
-```
-
-Notes use the Phase 1 Markdown format at their workspace-relative paths. Database definitions and saved views are separate versioned JSON files. Hidden directories are not scanned, symbolic links are not followed, and the `databases/` and `database-views/` trees are reserved.
-
-Writes go through a temporary sibling and an atomic rename. Imports and restores validate the entire source before changing anything, and never overwrite existing data unless `{ overwrite: true }` is passed explicitly. Backups are byte-for-byte copies plus a manifest written last, so an incomplete backup is detectable.
-
-See [Storage](docs/storage.md) for the contracts, layout, error codes, guarantees, limitations, and future synchronization requirements.
-
-## Scope and deferrals
-
-The table records current status; deferred items need a separate design and approval before implementation:
-
-| Item | Status | Reason |
-|---|---|---|
-| Persisted vault entity/metadata | Deferred | The filesystem vault is a directory plus adapter; there is no vault metadata file. |
-| Folder entity | Deferred | Folders are implied by note paths. No explicit folder format is approved. |
-| Attachment metadata | Deferred | Requires a blob storage decision. |
-| Link references (stored records) | Deferred | Search and discovery share an in-memory, rebuildable Markdown snapshot; link records are not persisted. |
-| Saved database views | Implemented | Portable Table, List, Kanban, Calendar, and Gallery views; explicit save, rename, duplicate, switch, and conditional delete. |
-| Relations and rollups | Implemented | Stable note IDs, single/multiple forward fields, derived reverse fields and typed rollups; see [relations](docs/database-relations.md). |
-| Formula properties | Implemented | Safe formula engine, derived query values, dependency diagnostics, and schema-sheet authoring; see [formula properties](docs/database-formulas.md). |
-| Note graph | Implemented | Derived graph and navigation UI; link records are not persisted. |
-| Link repair and rename safety | Implemented | Discovery suggests deterministic targets, repairs one occurrence with revision checks, and retains a previous title as an alias when incoming title links would otherwise break; see [wiki links](docs/wiki-links.md). |
-| Knowledge health and recommendations | Implemented | Vault-scoped graph metrics, connected clusters, related-note evidence, and a read-only insights dashboard; see [knowledge graph](docs/knowledge-graph.md). |
-| Advanced graph exploration | Implemented | Saved graph views, portable view export/import, bounded shortest paths and history, cluster filtering/insights, focus history, node dragging, pointer-centered canvas navigation, cluster-aware layout, and bounded rendering; see [knowledge graph](docs/knowledge-graph.md). |
-| Markdown tasks | Implemented with limits | Derived GFM checkboxes, nested task context, due/priority metadata, filtering/grouping, and revision-safe completion; no separate task store; see [task management](docs/task-management.md). |
-| Database automations | Implemented with limits | Local triggers and constrained workflow actions; see [automations](docs/database-automations.md). |
-| Note and database templates | Implemented with limits | Versioned definitions, preview, explicit apply, and health diagnostics; see [templates](docs/templates.md). |
-| Cross-device sync | **Experimental** | The local Conflicts UI exposes explicit pairing and user-initiated incoming pulls through the existing relay/sync client. General multi-device setup, background/cloud sync, accounts and collaboration remain unsupported. |
-
-Also not implemented: database/property/option removal, accounts, AI, telemetry, and third-party data transfer.
-
-## Consistency boundaries
-
-- Nodus-format note identity is the UUID v4 in frontmatter, independent of title and path. Plain Markdown uses a stable path-derived ID until it is moved through Nodus, which adds metadata to preserve identity.
-- Duplicate note IDs are detected by `FileSystemVault` at the vault boundary (`DUPLICATE_ID`), not by `parseNote`.
-- Phase 1 has no revision field, and Phase 2 does not invent one: no new frontmatter and no `nodus.version` bump. The revision token is the SHA-256 of the raw file bytes. `replaceNote`, `moveNote`, and `deleteNote` take an optional `expectedHash`; when it no longer matches the file, they throw `STALE_WRITE` (with the current hash in `details.currentHash`) and write nothing. Without the option, behavior is unchanged (last-write-wins). A per-root lock serializes Nodus mutations within and across processes, and the vault re-hashes immediately before the rename. It does not protect against external editors or other non-cooperating processes; see [docs/storage.md](docs/storage.md#concurrency).
-- Imports and restores fail with `CONFLICT` before writing unless overwrite is explicit.
-- File-level writes are atomic; multi-file operations are not transactions and report `PARTIAL_WRITE` on failure.
-
-## Compatibility policy
-
-- Every persistent format has an integer version field. Note files use `nodus.version`. Database and saved-view files use `version`. Backups use the manifest `version`.
-- A reader accepts only the versions it implements.
-- A higher version of a known format is rejected with `UNSUPPORTED_VERSION`; nothing is parsed further or rewritten. An unknown version inside an opaque top-level extension namespace is preserved and ignored as described below.
-- Within version 1, changes are limited to additions that older readers can reject explicitly. Removing or renaming a field requires a new version.
-- Compatibility exception: opaque, independently versioned namespaces such as top-level `nodus_data` may be added without changing `nodus.version`. Older Nodus readers may ignore these namespaces but must preserve their YAML values when serializing a note. The namespace payload stays within the existing core-YAML subset; older readers do not validate or display its semantics. This does not apply to unknown keys under `nodus`, database definition files, or arbitrary third-party frontmatter editors.
-- Unknown keys are never silently dropped: top-level note keys are preserved, and unknown keys under `nodus` or in database files are rejected.
-- Migrations, when they exist, follow the contract in [note-format.md](docs/note-format.md#migration-contract).
-
-## Documentation
-
-See the [documentation index](docs/README.md) for current feature guides, architecture notes, testing references, and archived project history. The [product vision](docs/product-vision.md) describes the long-term local-first workspace direction, reusable database goals, optional future cloud providers, and product acceptance targets. For the task dashboard, see [Task management](docs/task-management.md). [Setup and development instructions](#development) remain in this README.
-
-## Development
-
-Requires Node.js **24.0.0 or later**, matching the verified built-in SQLite runtime. Node 22 is unsupported by the declared engine and is not a supported configuration. This repository uses **pnpm 11.9.0**.
+From a checkout of this repository, use Node.js **24 or later** and pnpm **11.9.0**.
 
 ```sh
-pnpm install
-pnpm test
-pnpm test:browser
-pnpm typecheck
-pnpm build
-```
-
-Storage tests create isolated temporary directories and never touch a real vault. Relay and UI API tests use loopback HTTP only; there is no external network access. The optional real-browser workflow and its Chromium requirement are documented in [docs/browser-smoke.md](docs/browser-smoke.md).
-
-## Local UI
-
-The local-only React UI lives in `ui/`. It uses Tailwind CSS v4, shadcn/ui (`radix-nova`), Lucide icons, and Google Fonts (Sora headings + Inter body). It reads and writes a chosen vault through a small localhost API that reuses `FileSystemVault`; the browser never imports Node, SQLite, or relay code.
-
-```sh
-# PowerShell
-$env:NODUS_VAULT = 'C:\path\to\your\vault'
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
+1. Open the [local workspace](http://127.0.0.1:5173/app). The [root page](http://127.0.0.1:5173/) is the product landing page.
+2. On first launch, choose the default `./vault` folder or use **Browse…** to select an existing vault folder. Nodus remembers the choice for the next launch. You can change it later from the vault menu or **Settings → Local vault**.
+3. In the sidebar’s **Pages** section, choose **New note**, give it a title, and write something. Use **New folder** to organize pages, or a folder’s **New note here** action to create a note directly inside it.
+4. Type `[[` in a note to link another page. Use sidebar search to find notes, or press **⌘K** on macOS or **Ctrl+K** to open the command palette and search for notes, folders, databases, and commands.
+
+Use **Browse…** for an existing vault outside the allowed roots for typed paths. If you use **Use folder**, enter an absolute path under an allowed root. By default, typed paths are restricted to the parent of the active vault, or the parent of the default vault on first run. Set `NODUS_VAULT_ROOTS` for additional roots. Use the platform path separator (`:` on macOS/Linux, `;` on Windows).
+
+## Workspace guide
+
+| Where | What you can do |
+|---|---|
+| **All notes / Pages** | Browse and organize notes and folders, use folder breadcrumbs, edit Markdown, and switch between Live, Source, Preview, or split layouts. Use the editor outline for headings and **Connections** for linked-note context. Add page icons and attachments as needed. [Editor](docs/editor.md) · [Wiki links](docs/wiki-links.md) · [Page icons](docs/page-icons.md) |
+| **Search and command palette** | Find notes by title, alias, path, body text, tags, and registered properties. Use operators such as `tag:` and `folder:`, structured filters, saved searches, and search history. The palette also opens recent notes and runs workspace commands. [Search](docs/global-search.md) · [Shortcuts](docs/shortcuts.md) |
+| **Tasks** | Write Markdown checkboxes in any note. Open Tasks to search, filter open or completed items, group them, and jump to their source notes. Due dates, scheduled dates, and priorities use Markdown metadata. Checking off a task updates its source note. [Task management](docs/task-management.md) |
+| **Databases** | Create a schema, add typed properties, and add notes as records. Open existing records or edit source properties in the view. Save Table, List, Kanban, Calendar, and Gallery views with their own configuration. Relations connect records, while rollups and formulas show derived values. [Saved views](docs/database-views.md) · [Relations and rollups](docs/database-relations.md) · [Formulas](docs/database-formulas.md) |
+| **Templates / From template** | Preview and apply reusable note or database templates. Note templates can use variables. Database templates can include saved views and starter rows. The built-in Projects and Work Items templates are available here. [Templates](docs/templates.md) |
+| **Discovery** | Review unresolved or ambiguous wiki links, choose the intended note to repair a link, and explore backlinks and related notes. [Wiki links](docs/wiki-links.md) · [Related notes](docs/knowledge-retrieval.md) |
+| **Local graph** | Explore connections between notes, filter clusters, find paths between notes, and save graph views. Open a note directly from the graph. [Knowledge graph](docs/knowledge-graph.md) |
+| **Knowledge health** | Review vault metrics, connected clusters, and highly connected or recently modified notes. Use the results to navigate to notes, Discovery, or the graph. [Knowledge health](docs/knowledge-graph.md) |
+| **Smart organization** | Review suggestions for tags, possible duplicates, folder destinations, and registered properties. Tag changes need preview and explicit application. Folder suggestions are previews. [Smart organization](docs/smart-organization.md) |
+| **Documents** | Expand this sidebar section to browse managed PDF and Word (`.docx`) attachments and open them from the workspace. |
+| **Settings** | Switch vaults, inspect storage health, manage backups and workspace transfers, and adjust the theme, sidebar, editor, and note panels. Workspace layout preferences are scoped to the vault in the current browser. [Workspace customization](docs/workspace-customization.md) · [Storage health](docs/storage.md#health-checks) |
+| **Conflicts** | Experimental relay tools for explicit pairing, manual checks for incoming changes, and conflict review. The local workspace works independently of these tools. |
+
+### Projects and Work Items
+
+1. Open **Templates** or choose **From template** in the sidebar. Under **Project management**, preview and apply **Projects**, then repeat for **Work Items**.
+2. In **Databases**, open **Work Items → Edit schema**. Add a **Relation** named **Project**, target your **Projects** database, choose **One record**, and save. This connects Work Items to the project database in your vault.
+3. Add project records in **Projects**. Add work records in **Work Items**, then set their **Project**, **Status**, **Priority**, and **Date** as needed. A Markdown checkbox in the **Tasks** dashboard and a Work Items record serve different workflows.
+4. Select the **Calendar** saved view in Work Items to see records by their **Date** property. Use the period controls to browse dates and **Today** to jump back. Open an entry to edit its source note. Use a date’s create action to start a Work Item with that date filled in. Work Items without a date stay outside the dated grid.
+5. If Calendar reports that a note was created but its date could not be saved, inspect the note before starting another one. The note can remain in the vault while the date write is incomplete. [Calendar behavior and recovery](docs/database-views.md#ui-and-note-mutations)
+
+### Make a database view fit your work
+
+Use filters and sorts to narrow the view. Choose a Select property to group a Kanban board, or choose a Date property to place records on a Calendar. Calendar also supports an optional end date and Month, Week, Day, and Timeline layouts.
+
+In a Table view, open **Columns** to show, hide, or reorder properties. Drag a property header’s divider to resize it, or focus the divider and use the arrow keys. Choose **Save view** to keep the settings for that view. The note title column stays fixed. [Column settings and view formats](docs/database-views.md)
+
+For repeatable local actions, open **Database automations** from the command palette. Automations have local triggers and a constrained set of actions. [Database automations](docs/database-automations.md)
+
+## Backup and moving data
+
+A vault stores Markdown and separate JSON files for database definitions and saved views. It can also contain managed attachments, registered properties, and template data. [Vault layout and storage guarantees](docs/storage.md)
+
+- **Back up before updating or moving a vault.** Open **Backup and restore** from the command palette. Create a backup in an empty directory outside the vault and validate it. Backups use a manifest with file hashes.
+- **Verify restore in an empty vault first.** Switch to a separate empty vault, preview the backup, and confirm the source and active destination. Restore merges into the active vault. Overwrite is off by default, and some conflicts remain blocked even when overwrite is enabled. If a restore reports a partial failure, inspect the destination before retrying. [Backup and recovery](docs/storage.md#backup-and-recovery)
+- **Transfer a workspace with portable export and import.** Use **Import or export workspace** from the command palette. Export to an empty folder outside the vault. On import, preview the source, review conflicts, and confirm the requested changes. Backups and portable exports have different coverage, so check the included resources before relying on either for migration. [Export and import](docs/storage.md#export-and-import) · [Template portability](docs/templates.md#persistence-and-portability)
+
+## Current limits and privacy
+
+Notes are stored and edited locally. The UI loads font assets from Google Fonts. Normal workspace use requires no account, analytics, telemetry, or AI service. The experimental Conflicts workflow communicates with the relay you explicitly configure, so keep it disconnected for local-only use.
+
+Database, property, and select-option deletion and existing-property type conversion are outside the current UI scope. Background or cloud sync, collaboration, hosted deployment, and a standalone mobile client are outside the current product scope.
+
+## Development
+
+The workspace uses React, Vite, TypeScript, and shadcn/ui. A loopback API opens the filesystem vault from the Node process.
+
 ```sh
-# macOS / Linux
-NODUS_VAULT=/path/to/your/vault pnpm dev
+pnpm typecheck     # root and UI TypeScript checks
+pnpm test          # automated suite
+pnpm build         # production build
+pnpm preview       # serve the build locally
 ```
 
-Open `http://127.0.0.1:5173` for the public landing page, or `http://127.0.0.1:5173/app` for the local workspace. On first launch, choose to create/use the default `./vault` folder or open an existing folder. Later launches restore the last successfully selected vault. If `NODUS_VAULT` is set, it overrides the saved choice and retains the existing create-if-missing behavior.
+The built workspace is available at [127.0.0.1:4173/app](http://127.0.0.1:4173/app). For the optional Chromium smoke suite, see the [browser test guide](docs/browser-smoke.md). For platform-specific development notes, see the [Windows handoff](docs/windows-development.md).
 
-Production-style local preview:
+Set `NODUS_VAULT` to pin a vault at startup. That setting overrides the remembered selection on every server restart and creates the configured folder if it is missing. Use the default local ports when possible. If you start on a custom port, set `NODUS_ALLOWED_ORIGINS` to the exact browser origin, including its port, so actions such as vault switching reach the loopback API.
 
-```sh
-pnpm build
-pnpm preview
-```
-
-Open `http://127.0.0.1:4173` for the landing page, or `http://127.0.0.1:4173/app` for the workspace.
-
-The UI supports note listing, create, open, title/body editing, save, rename path, delete with confirmation, a Markdown-task dashboard with filtering, grouping, and revision-safe completion, title/alias/path/content/tag/registered-property search with deterministic ranking, wiki-link and database-relation backlinks, command palette (`Ctrl/Cmd+K`), and database schema editing. Discovery repairs unresolved and ambiguous wiki links to a chosen note, pins the rewrite to a stable ID, and retains the previous title as an alias when a title change would otherwise break incoming title links. Path links still break on move; use ID-pinned links for references that must remain stable. Users can create schemas, add typed properties, rename schemas/properties/options, configure formulas, and add select options while retaining stable IDs. Existing property types and options cannot be removed from the UI. The browser discovers notes with explicit membership, displays and edits supported source values, requires confirmation when adding a note to a database, and provides sorting, typed filters, grouping, and property visibility saved through Table, List, Kanban, Calendar, and Gallery views. Relations support record selection/navigation and derived reverse fields. Rollups support count, conditional count, numeric sum, completed-task count, and completion percentage. Formula properties are derived and read-only in rows; their editor provides stable-ID references, function help, validation, and preview. Graph UI and attachments are implemented. The app preserves frontmatter fields and stable UUIDs; note and schema saves check raw file hashes and refuse to overwrite an external edit.
-
-The active vault can also be changed from the sidebar vault menu or **Settings**: type an absolute folder path and choose **Use folder**, or use **Browse…** for the host OS picker. A successful choice is remembered outside the vault. `NODUS_VAULT` overrides this preference at startup. If a saved folder is unavailable, Nodus does not create a replacement; it offers recovery choices. **Typed paths are restricted to an allow-list of roots.** Roots come from `NODUS_VAULT_ROOTS` (a list separated by `:` on macOS/Linux, `;` on Windows) and default to the parent directory of the current vault (or the default vault location during first-run setup); the user's home directory is not allowed unless listed. The native folder picker is an explicit user selection. Targets and roots are resolved with `realpath` before the containment check, so a symlink escape is rejected. Failures return HTTP 403 with error code `VAULT_NOT_ALLOWED` and are shown in the UI. The request origin must still match the UI (`NODUS_ALLOWED_ORIGINS` can override the allowed origins), and the API binds to `127.0.0.1` only.
-
-**Not implemented in the UI:** sync connection (the relay/sync code exists but is not wired in), editor live-reload for external file changes, database/property/option removal, and any web/mobile client. Sync is not connected.
-
-The API binds to `127.0.0.1` only.
-
-## Privacy
-
-Vault content and storage are local and offline. The public UI requests font assets from Google Fonts; note contents are not sent there. There is no telemetry, analytics, AI call, account, or credential handling. Backups are written only where the caller asks. The experimental relay code is not reachable from the UI or any npm script.
+The [documentation index](docs/README.md) covers feature guides, architecture, and project history. See the [note format](docs/note-format.md) and [storage guide](docs/storage.md) for versioning, conditional writes, recovery behavior, and compatibility.
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
-
-Windows development setup and unverified native-platform gates are recorded in
-[the Windows handoff](docs/windows-development.md). See the [core completion audit](docs/core-completion-audit-20261116.md) for outstanding acceptance and integration work.
