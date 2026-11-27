@@ -1005,7 +1005,12 @@ async function readBoundedFile(path: string, maximum: number): Promise<Buffer> {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.nlink !== 1 || (opened.mode & 0o077) !== 0 || before.dev !== opened.dev || before.ino !== opened.ino || opened.size > maximum) throw corruptError(path, 'journal file identity changed while opening');
     const bytes = Buffer.alloc(maximum + 1);
-    const { bytesRead } = await handle.read(bytes, 0, maximum + 1, 0);
+    let bytesRead = 0;
+    while (bytesRead < bytes.length) {
+      const chunk = await handle.read(bytes, bytesRead, bytes.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
     const after = await handle.stat();
     const named = await lstat(path);
     if (bytesRead > maximum || bytesRead !== after.size || after.size !== opened.size || after.dev !== opened.dev || after.ino !== opened.ino
