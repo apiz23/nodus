@@ -658,7 +658,11 @@ export function Editor({
               </ResizablePanel>
               {layout === 'split' ? <ResizableHandle withHandle aria-label="Resize editor and preview" className="data-[orientation=vertical]:h-1 data-[orientation=vertical]:w-full" /> : null}
               <ResizablePanel id="note-preview-panel" collapsible collapsedSize={0} minSize={layout === 'split' ? 35 : 0} defaultSize={previewSize} className="min-h-0 min-w-0 overflow-hidden">
-                <div className={cn('h-full min-h-0 w-full overflow-auto', layout === 'split' && !widePreview ? 'border-t' : 'border-l')}>
+                <div
+                  className={cn('h-full min-h-0 w-full overflow-auto', layout === 'split' && !widePreview ? 'border-t' : 'border-l')}
+                  data-testid={layout === 'preview' || layout === 'split' ? 'editor-markdown-preview' : undefined}
+                  data-vault-identity={layout === 'preview' || layout === 'split' ? vaultIdentity : undefined}
+                >
                   {layout === 'preview' || layout === 'split' ? <Suspense fallback={<div className="flex min-h-[42vh] items-center justify-center text-xs text-muted-foreground" role="status">Loading preview…</div>}><MarkdownPreview value={body} notePath={note.path} notes={notes} onOpenNote={onOpenNote} onActiveHeadingChange={setActiveHeadingId} vaultIdentity={vaultIdentity} /></Suspense> : null}
                 </div>
               </ResizablePanel>
