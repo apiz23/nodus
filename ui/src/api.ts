@@ -144,6 +144,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
+  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') {
+    const runtime = globalThis as typeof globalThis & {
+      dispatchEvent?: (event: unknown) => boolean;
+      Event?: new (type: string) => unknown;
+    };
+    if (typeof runtime.dispatchEvent === 'function' && typeof runtime.Event === 'function') {
+      runtime.dispatchEvent(new runtime.Event('nodus:data-changed'));
+    }
+  }
+
   return body as T;
 }
 

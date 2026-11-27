@@ -34,6 +34,8 @@ const V = {
   bugs: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
   testsStaging: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
   testsModule: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2',
+  testsBoard: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',
+  testsCalendar: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc4',
 };
 const P = {
   docsItem: 'd0000001-0000-4000-8000-000000000001',
@@ -48,6 +50,7 @@ const P = {
   testStatus: 'd0000003-0000-4000-8000-000000000002',
   testVersion: 'd0000003-0000-4000-8000-000000000003',
   testPriority: 'd0000003-0000-4000-8000-000000000004',
+  testDue: 'd0000003-0000-4000-8000-000000000005',
 };
 const O = {
   uiCheck: 'e0000001-0000-4000-8000-000000000001',
@@ -99,6 +102,7 @@ const databases = [
       { id: P.testStatus, name: 'Status', type: 'select', options: [select(O.testNotStarted, 'Not started'), select(O.testInProgress, 'In progress'), select(O.testDone, 'Done')] },
       { id: P.testVersion, name: 'Version', type: 'text' },
       { id: P.testPriority, name: 'Priority', type: 'select', options: [select(O.testHigh, 'High'), select(O.testMedium, 'Medium'), select(O.testLow, 'Low')] },
+      { id: P.testDue, name: 'Due', type: 'date' },
     ],
   },
 ];
@@ -125,6 +129,16 @@ const views = [
     type: 'table', settings: {}, sort: { propertyId: 'title', direction: 'desc' }, sorts: [{ propertyId: 'title', direction: 'desc' }],
     filters: [], visiblePropertyIds: [P.testModule, P.testPriority, P.testVersion],
   },
+  {
+    format: 'nodus-database-view', version: 4, id: V.testsBoard, databaseId: D.tests, name: 'Stage board',
+    type: 'kanban', settings: { groupPropertyId: P.testStatus }, sort: { propertyId: 'title', direction: 'asc' },
+    sorts: [{ propertyId: 'title', direction: 'asc' }], filters: [], visiblePropertyIds: [P.testModule, P.testPriority],
+  },
+  {
+    format: 'nodus-database-view', version: 4, id: V.testsCalendar, databaseId: D.tests, name: 'Due calendar',
+    type: 'calendar', settings: { startDatePropertyId: P.testDue }, sort: { propertyId: P.testDue, direction: 'asc' },
+    sorts: [{ propertyId: P.testDue, direction: 'asc' }], filters: [], visiblePropertyIds: [P.testStatus, P.testPriority],
+  },
 ];
 
 const docsRows = [
@@ -142,12 +156,12 @@ const bugRows = [
   ['Comment filter allows the middle-finger emoji', O.medium, O.bugDone, 'v1.1.1', '2026-11-20'],
 ];
 const testRows = [
-  ['Store build on production', O.uiModule, O.testNotStarted, 'v1.1.1', O.testHigh],
-  ['Update over the store build', O.uiModule, O.testNotStarted, 'v1.1.1', O.testHigh],
-  ['Offline cache keeps the last feed', O.dataModule, O.testDone, 'v1.1.1', O.testLow],
-  ['iPad menus stay inside the viewport', O.uiModule, O.testNotStarted, 'v1.1.1', O.testLow],
-  ['Report a comment and find it in the operator queue', O.dataModule, O.testInProgress, 'v1.1.1', O.testHigh],
-  ['Account info clears after sign-out (previous build)', O.uiModule, O.testInProgress, 'v1.1.0', O.testLow],
+  ['Store build on production', O.uiModule, O.testNotStarted, 'v1.1.1', O.testHigh, '2026-11-18'],
+  ['Update over the store build', O.uiModule, O.testNotStarted, 'v1.1.1', O.testHigh, '2026-11-20'],
+  ['Offline cache keeps the last feed', O.dataModule, O.testDone, 'v1.1.1', O.testLow, '2026-11-20'],
+  ['iPad menus stay inside the viewport', O.uiModule, O.testNotStarted, 'v1.1.1', O.testLow, '2026-11-24'],
+  ['Report a comment and find it in the operator queue', O.dataModule, O.testInProgress, 'v1.1.1', O.testHigh, '2026-11-25'],
+  ['Account info clears after sign-out (previous build)', O.uiModule, O.testInProgress, 'v1.1.0', O.testLow, '2026-11-26'],
 ];
 
 let counter = 1;
@@ -187,8 +201,8 @@ const rowNotes = [
   ...bugRows.map(([title, severity, status, version, reported]) => note(title, `# ${title}\n\nBug seeded for the note-composition demo.`, {
     [D.bugs]: { [P.bugSeverity]: severity, [P.bugStatus]: status, [P.bugVersion]: version, [P.bugReported]: reported },
   })),
-  ...testRows.map(([title, module, status, version, priority]) => note(title, `# ${title}\n\nTest case seeded for the note-composition demo.`, {
-    [D.tests]: { [P.testModule]: module, [P.testStatus]: status, [P.testVersion]: version, [P.testPriority]: priority },
+  ...testRows.map(([title, module, status, version, priority, due]) => note(title, `# ${title}\n\nTest case seeded for the note-composition demo.`, {
+    [D.tests]: { [P.testModule]: module, [P.testStatus]: status, [P.testVersion]: version, [P.testPriority]: priority, [P.testDue]: due },
   })),
 ];
 
@@ -225,6 +239,22 @@ The same database can appear again with a different saved view and its own heigh
 database: ${D.tests}
 view: ${V.testsModule}
 height: 200
+\`\`\`
+
+## The same rows as a board
+
+\`\`\`nodus-view
+database: ${D.tests}
+view: ${V.testsBoard}
+height: 360
+\`\`\`
+
+## And as a calendar
+
+\`\`\`nodus-view
+database: ${D.tests}
+view: ${V.testsCalendar}
+height: 420
 \`\`\`
 
 ## Why this is not a block editor

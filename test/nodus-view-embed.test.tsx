@@ -6,7 +6,7 @@ import type { UiDatabaseRow } from '../src/ui-server/dto';
 import type { LinkableNote } from '../src/links/wikilink';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { MarkdownPreview } from '@/editor/MarkdownPreview';
-import { EmbeddedViewTable } from '@/embeds/EmbeddedDatabaseView';
+import { EmbeddedBody, EmbeddedViewTable } from '@/embeds/EmbeddedDatabaseView';
 import { findEmbeddedView, parseNodusViewDirective, serializeNodusViewDirective } from '@/embeds/nodusView';
 
 const DATABASE = '11111111-1111-4111-8111-111111111111';
@@ -87,36 +87,32 @@ describe('embedded view table', () => {
     row(2, 'Offline cache', { [status.id]: 'e0000003-0000-4000-8000-000000000023', [version.id]: 'v1.1.0' }),
   ];
 
-  it('renders the database, view, row count and option labels', () => {
+  it('renders property columns and option labels', () => {
     const html = renderToStaticMarkup(createElement(EmbeddedViewTable, {
-      databaseName: 'Test case repository',
-      viewName: 'Staging checklist',
       properties: [status, version],
       rows,
       height: 320,
-      total: 2,
       onOpenNote: () => undefined,
     }));
-    expect(html).toContain('Test case repository');
-    expect(html).toContain('Staging checklist');
-    expect(html).toContain('2 rows');
+    expect(html).toContain('Title');
+    expect(html).toContain('Status');
+    expect(html).toContain('Version');
     expect(html).toContain('Done');
     expect(html).toContain('Not started');
     expect(html).toContain('v1.1.0');
-    expect(html).toContain('Read-only');
   });
 
-  it('renders an empty state without rows', () => {
+  it('caps rendered rows for a large result set', () => {
+    const many = Array.from({ length: 200 }, (_, index) => row(index + 1, `Record ${index + 1}`, {}));
     const html = renderToStaticMarkup(createElement(EmbeddedViewTable, {
-      databaseName: 'Bug tracker',
-      viewName: 'Open bugs',
       properties: [status],
-      rows: [],
+      rows: many,
       height: 320,
-      total: 0,
       onOpenNote: () => undefined,
     }));
-    expect(html).toContain('No rows match this view.');
+    const rendered = (html.match(/<tr/g) ?? []).length;
+    expect(rendered).toBeGreaterThan(1);
+    expect(rendered).toBeLessThan(60);
   });
 });
 
@@ -157,5 +153,33 @@ describe('Markdown preview embedding', () => {
     expect(html).toContain('Legacy');
     expect(html).toContain('Markdown');
     expect(html).not.toContain('nodus-view-embed');
+  });
+});
+
+describe('embedded layout fallbacks', () => {
+  it('shows an explicit empty state', () => {
+    const html = renderToStaticMarkup(createElement(EmbeddedBody, {
+      layout: { kind: 'table' },
+      rows: [],
+      properties: [],
+      height: 320,
+      databaseId: '11111111-1111-4111-8111-111111111111',
+      onOpenNote: () => undefined,
+    }));
+    expect(html).toContain('No rows match this view.');
+  });
+
+  it('never silently falls back to a table for an unsupported layout', () => {
+    const html = renderToStaticMarkup(createElement(EmbeddedBody, {
+      layout: { kind: 'unsupported', requested: 'timeline', reason: 'Timeline views are not supported in embeds.' },
+      rows: [],
+      properties: [],
+      height: 320,
+      databaseId: '11111111-1111-4111-8111-111111111111',
+      onOpenNote: () => undefined,
+    }));
+    expect(html).toContain('cannot be rendered here');
+    expect(html).toContain('Timeline views are not supported');
+    expect(html).not.toContain('<table');
   });
 });
