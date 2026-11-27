@@ -1,10 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
 import { Database, RefreshCw } from 'lucide-react';
 import { api } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { serializeNodusViewDirective } from '@/embeds/nodusView';
+import {
+  embedPickerReducer,
+  INITIAL_EMBED_PICKER_STATE,
+  pickerCanInsert,
+  pickerDatabasesPlaceholder,
+  pickerHint,
+  pickerViewPlaceholder,
+} from './embedPickerState';
 
 interface Props {
   open: boolean;
@@ -12,56 +20,60 @@ interface Props {
   onInsert: (body: string) => boolean;
 }
 
+function messageOf(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
 /**
  * Insertion surface for `nodus-view` embeds. It only writes a fenced block into
  * the note; the database and view stay external.
  */
 export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
-  const [databases, setDatabases] = useState<Array<{ id: string; name: string }>>([]);
-  const [databaseId, setDatabaseId] = useState('');
-  const [views, setViews] = useState<Array<{ id: string; name: string }>>([]);
-  const [viewId, setViewId] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(embedPickerReducer, INITIAL_EMBED_PICKER_STATE);
+  const [attempt, setAttempt] = useState(0);
+  const [insertError, setInsertError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    dispatch({ type: 'reset' });
+    setInsertError(null);
     let active = true;
-    setLoading(true);
-    setError(null);
+    dispatch({ type: 'databases-loading' });
     api.databases()
       .then((result) => {
         if (!active) return;
-        setDatabases(result.databases.map((database) => ({ id: database.id, name: database.name })));
-        setDatabaseId((current) => current !== '' && result.databases.some((database) => database.id === current) ? current : result.databases[0]?.id ?? '');
+        dispatch({ type: 'databases-loaded', databases: result.databases.map((database) => ({ id: database.id, name: database.name })) });
       })
-      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (active) setLoading(false); });
+      .catch((reason) => { if (active) dispatch({ type: 'databases-failed', message: messageOf(reason) }); });
     return () => { active = false; };
-  }, [open]);
+  }, [open, attempt]);
 
   useEffect(() => {
-    if (!open || databaseId === '') { setViews([]); setViewId(''); return; }
+    if (!open || state.databaseId === '') return;
     let active = true;
-    setLoading(true);
-    setError(null);
-    api.databaseViews(databaseId)
+    dispatch({ type: 'views-loading' });
+    api.databaseViews(state.databaseId)
       .then((result) => {
         if (!active) return;
-        setViews(result.views.map((entry) => ({ id: entry.view.id, name: entry.view.name })));
-        setViewId((current) => current !== '' && result.views.some((entry) => entry.view.id === current) ? current : result.views[0]?.view.id ?? '');
+        dispatch({ type: 'views-loaded', views: result.views.map((entry) => ({ id: entry.view.id, name: entry.view.name })) });
       })
-      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (active) setLoading(false); });
+      .catch((reason) => { if (active) dispatch({ type: 'views-failed', message: messageOf(reason) }); });
     return () => { active = false; };
-  }, [open, databaseId]);
+  }, [open, state.databaseId, attempt]);
 
-  const directive = useMemo(() => databaseId === '' || viewId === '' ? '' : serializeNodusViewDirective({ databaseId, viewId, height: 320 }), [databaseId, viewId]);
+  const directive = useMemo(() => {
+    if (!pickerCanInsert(state)) return '';
+    return serializeNodusViewDirective({ databaseId: state.databaseId, viewId: state.viewId, height: 320 });
+  }, [state]);
+
+  const hint = insertError ?? pickerHint(state);
+  const loading = state.databaseStatus === 'loading' || state.viewStatus === 'loading';
+  const isError = insertError !== null || state.databaseStatus === 'error' || state.viewStatus === 'error';
 
   function insert(): void {
     if (directive === '') return;
     if (onInsert(directive)) onOpenChange(false);
-    else setError('This position is inside a code block or table. Move the cursor and try again.');
+    else setInsertError('This position is inside a code block or table. Move the cursor and try again.');
   }
 
   return (
@@ -75,27 +87,38 @@ export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          {error === null ? null : <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">{error}</p>}
+          {hint === null ? null : <p role={isError ? 'alert' : undefined} className={`rounded-md border px-2 py-1.5 text-xs ${isError ? 'border-destructive/40 bg-destructive/5 text-destructive' : 'bg-muted/40 text-muted-foreground'}`}>{hint}</p>}
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium">Database</span>
-            <Select value={databaseId} onValueChange={(value) => { setDatabaseId(value); setViews([]); setViewId(''); setError(null); }} disabled={loading || databases.length === 0}>
-              <SelectTrigger aria-label="Database to embed"><SelectValue placeholder={databases.length === 0 ? 'No databases in this vault' : 'Choose a database'} /></SelectTrigger>
+            <Select
+              value={state.databaseId}
+              onValueChange={(value) => { setInsertError(null); dispatch({ type: 'select-database', databaseId: value }); }}
+              disabled={loading || state.databases.length === 0}
+            >
+              <SelectTrigger aria-label="Database to embed"><SelectValue placeholder={pickerDatabasesPlaceholder(state)} /></SelectTrigger>
               <SelectContent>
-                {databases.map((database) => <SelectItem key={database.id} value={database.id}>{database.name}</SelectItem>)}
+                {state.databases.map((database) => <SelectItem key={database.id} value={database.id}>{database.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium">Saved view</span>
-            <Select value={viewId} onValueChange={setViewId} disabled={loading || views.length === 0}>
-              <SelectTrigger aria-label="Saved view to embed"><SelectValue placeholder={views.length === 0 ? 'This database has no saved view' : 'Choose a view'} /></SelectTrigger>
+            <Select
+              value={state.viewId}
+              onValueChange={(value) => { setInsertError(null); dispatch({ type: 'select-view', viewId: value }); }}
+              disabled={state.viewStatus !== 'ready' || state.views.length === 0}
+            >
+              <SelectTrigger aria-label="Saved view to embed"><SelectValue placeholder={pickerViewPlaceholder(state)} /></SelectTrigger>
               <SelectContent>
-                {views.map((view) => <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>)}
+                {state.views.map((view) => <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
-          {databases.length === 0 && !loading ? <p className="text-xs text-muted-foreground">Create a database and save a view first, then embed it here.</p> : null}
-          {databaseId !== '' && views.length === 0 && !loading ? <p className="text-xs text-muted-foreground">Save a view on this database before embedding it.</p> : null}
+          {state.databaseStatus === 'error' || state.viewStatus === 'error' ? (
+            <Button type="button" variant="outline" size="xs" className="self-start" onClick={() => setAttempt((value) => value + 1)}>
+              <RefreshCw className="size-3" aria-hidden="true" />Retry
+            </Button>
+          ) : null}
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium">Will insert</span>
             <pre className="overflow-x-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px]">{directive === '' ? '```nodus-view\n…\n```' : `\`\`\`nodus-view\n${directive}\n\`\`\``}</pre>
@@ -104,7 +127,7 @@ export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={insert} disabled={directive === '' || loading}>{loading ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" /> : null}Insert view</Button>
+          <Button onClick={insert} disabled={directive === ''}>{loading ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" /> : null}Insert view</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
