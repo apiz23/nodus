@@ -61,6 +61,7 @@ export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
   function insert(): void {
     if (directive === '') return;
     if (onInsert(directive)) onOpenChange(false);
+    else setError('This position is inside a code block or table. Move the cursor and try again.');
   }
 
   return (
@@ -77,7 +78,7 @@ export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
           {error === null ? null : <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">{error}</p>}
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium">Database</span>
-            <Select value={databaseId} onValueChange={setDatabaseId} disabled={loading || databases.length === 0}>
+            <Select value={databaseId} onValueChange={(value) => { setDatabaseId(value); setViews([]); setViewId(''); setError(null); }} disabled={loading || databases.length === 0}>
               <SelectTrigger aria-label="Database to embed"><SelectValue placeholder={databases.length === 0 ? 'No databases in this vault' : 'Choose a database'} /></SelectTrigger>
               <SelectContent>
                 {databases.map((database) => <SelectItem key={database.id} value={database.id}>{database.name}</SelectItem>)}
@@ -103,7 +104,7 @@ export function EmbedViewDialog({ open, onOpenChange, onInsert }: Props) {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={insert} disabled={directive === ''}>{loading ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" /> : null}Insert view</Button>
+          <Button onClick={insert} disabled={directive === '' || loading}>{loading ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" /> : null}Insert view</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
